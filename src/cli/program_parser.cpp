@@ -2,6 +2,7 @@
 
 #include <cstdint>
 #include <fstream>
+#include <istream>
 #include <limits>
 #include <sstream>
 #include <utility>
@@ -175,17 +176,7 @@ std::ifstream open_input_file(const std::string& path, const std::string& kind) 
     return input;
 }
 
-} // namespace
-
-ParseError::ParseError(std::size_t line, const std::string& message)
-    : std::runtime_error(message), line_(line) {}
-
-std::size_t ParseError::line() const {
-    return line_;
-}
-
-model::Program parse_program_file(const std::string& path) {
-    std::ifstream input = open_input_file(path, "program");
+model::Program parse_program_stream(std::istream& input) {
     model::Program program;
     std::vector<std::pair<std::size_t, model::ThreadId>> joins;
     std::size_t current_thread = std::numeric_limits<std::size_t>::max();
@@ -239,6 +230,68 @@ model::Program parse_program_file(const std::string& path) {
     return program;
 }
 
+} // namespace
+
+ParseError::ParseError(std::size_t line, const std::string& message)
+    : std::runtime_error(message), line_(line) {}
+
+std::size_t ParseError::line() const {
+    return line_;
+}
+
+std::string action_text(const model::Action& action) {
+    std::ostringstream output;
+    switch (action.kind) {
+    case model::ActionKind::Read:
+        output << "read " << action.address;
+        break;
+    case model::ActionKind::Write:
+        output << "write " << action.address;
+        break;
+    case model::ActionKind::AtomicLoad:
+        output << "atomic_load " << action.address;
+        break;
+    case model::ActionKind::AtomicStore:
+        output << "atomic_store " << action.address;
+        break;
+    case model::ActionKind::AtomicRmw:
+        output << "atomic_rmw " << action.address;
+        break;
+    case model::ActionKind::Lock:
+        output << "lock " << action.mutex;
+        break;
+    case model::ActionKind::Unlock:
+        output << "unlock " << action.mutex;
+        break;
+    case model::ActionKind::Join:
+        output << "join " << action.target;
+        break;
+    case model::ActionKind::Wait:
+        output << "wait " << action.condition << " " << action.mutex;
+        break;
+    case model::ActionKind::Signal:
+        output << "signal " << action.condition;
+        break;
+    case model::ActionKind::Broadcast:
+        output << "broadcast " << action.condition;
+        break;
+    case model::ActionKind::Yield:
+        output << "yield";
+        break;
+    }
+    return output.str();
+}
+
+model::Program parse_program_file(const std::string& path) {
+    std::ifstream input = open_input_file(path, "program");
+    return parse_program_stream(input);
+}
+
+model::Program parse_program_text(const std::string& text) {
+    std::istringstream input(text);
+    return parse_program_stream(input);
+}
+
 model::Schedule parse_schedule_file(const std::string& path) {
     std::ifstream input = open_input_file(path, "schedule");
     model::Schedule schedule;
@@ -263,6 +316,17 @@ model::Schedule parse_schedule_file(const std::string& path) {
     }
 
     return schedule;
+}
+
+std::string render_program(const model::Program& program) {
+    std::ostringstream output;
+    for (const auto& thread : program.threads) {
+        output << "thread:\n";
+        for (const auto& action : thread) {
+            output << "  " << action_text(action) << '\n';
+        }
+    }
+    return output.str();
 }
 
 } // namespace cli

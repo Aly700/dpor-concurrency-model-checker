@@ -123,6 +123,19 @@ clauses. Two same-address atomic loads are independent; same-address pairs
 involving atomic store or RMW are dependent; and same-address mixed
 plain/atomic pairs are dependent.
 
+## Verification Gates
+
+The DPOR implementation is checked against three deterministic gates. The
+2-thread oracle sweep enumerates small programs by length pair and compares
+naive vs. DPOR verdicts, schedule dominance, and report replay identity. The
+3-thread oracle sweep uses an evenly strided deterministic sample of the larger
+3-thread action space, plus hand-picked disabled-transition cases, to exercise
+join and condition-variable enabledness. The seeded differential fuzz gate
+generates 3000 fixed-seed programs across 2-5 threads, 1-6 actions per thread,
+plain and atomic memory, mutexes, condition variables, joins, yields, and
+modeled-error cases; capped explorations are counted but excluded from verdict
+equality because truncation can legitimately hide a later endpoint.
+
 ## Design bias
 
 The checker should first be obviously correct on tiny programs. Reduction is valuable only while the naive oracle can still validate it on small state spaces.

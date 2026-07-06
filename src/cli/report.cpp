@@ -112,49 +112,6 @@ void print_schedule(std::ostream& output, const model::Schedule& schedule) {
 
 } // namespace
 
-std::string action_text(const model::Action& action) {
-    std::ostringstream output;
-    switch (action.kind) {
-    case model::ActionKind::Read:
-        output << "read " << action.address;
-        break;
-    case model::ActionKind::Write:
-        output << "write " << action.address;
-        break;
-    case model::ActionKind::AtomicLoad:
-        output << "atomic_load " << action.address;
-        break;
-    case model::ActionKind::AtomicStore:
-        output << "atomic_store " << action.address;
-        break;
-    case model::ActionKind::AtomicRmw:
-        output << "atomic_rmw " << action.address;
-        break;
-    case model::ActionKind::Lock:
-        output << "lock " << action.mutex;
-        break;
-    case model::ActionKind::Unlock:
-        output << "unlock " << action.mutex;
-        break;
-    case model::ActionKind::Join:
-        output << "join " << action.target;
-        break;
-    case model::ActionKind::Wait:
-        output << "wait " << action.condition << " " << action.mutex;
-        break;
-    case model::ActionKind::Signal:
-        output << "signal " << action.condition;
-        break;
-    case model::ActionKind::Broadcast:
-        output << "broadcast " << action.condition;
-        break;
-    case model::ActionKind::Yield:
-        output << "yield";
-        break;
-    }
-    return output.str();
-}
-
 std::string verdict_of(const model::CheckResult& result) {
     if (result.first_race.has_value()) {
         return "race";
