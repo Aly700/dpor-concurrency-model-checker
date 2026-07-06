@@ -1,0 +1,2 @@
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar qc libmodel_checker.a CMakeFiles/model_checker.dir/src/model/action.cpp.o CMakeFiles/model_checker.dir/src/model/vector_clock.cpp.o CMakeFiles/model_checker.dir/src/model/checker.cpp.o
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib libmodel_checker.a

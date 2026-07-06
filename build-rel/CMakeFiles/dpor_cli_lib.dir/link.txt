@@ -1,0 +1,2 @@
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ar qc libdpor_cli_lib.a CMakeFiles/dpor_cli_lib.dir/src/cli/program_parser.cpp.o CMakeFiles/dpor_cli_lib.dir/src/cli/report.cpp.o
+/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/ranlib libdpor_cli_lib.a

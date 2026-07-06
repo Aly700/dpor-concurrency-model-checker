@@ -1,0 +1,110 @@
+[
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -Wall -Wextra -Wpedantic -o CMakeFiles/model_checker.dir/src/model/action.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/model/action.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/model/action.cpp",
+  "output": "CMakeFiles/model_checker.dir/src/model/action.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -Wall -Wextra -Wpedantic -o CMakeFiles/model_checker.dir/src/model/vector_clock.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/model/vector_clock.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/model/vector_clock.cpp",
+  "output": "CMakeFiles/model_checker.dir/src/model/vector_clock.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -Wall -Wextra -Wpedantic -o CMakeFiles/model_checker.dir/src/model/checker.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/model/checker.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/model/checker.cpp",
+  "output": "CMakeFiles/model_checker.dir/src/model/checker.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -Wall -Wextra -Wpedantic -o CMakeFiles/dpor_cli_lib.dir/src/cli/program_parser.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli/program_parser.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli/program_parser.cpp",
+  "output": "CMakeFiles/dpor_cli_lib.dir/src/cli/program_parser.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -Wall -Wextra -Wpedantic -o CMakeFiles/dpor_cli_lib.dir/src/cli/report.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli/report.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli/report.cpp",
+  "output": "CMakeFiles/dpor_cli_lib.dir/src/cli/report.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -Wall -Wextra -Wpedantic -o CMakeFiles/dpor.dir/src/cli/main.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli/main.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli/main.cpp",
+  "output": "CMakeFiles/dpor.dir/src/cli/main.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/dpor_smoke.dir/tests/smoke.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/smoke.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/smoke.cpp",
+  "output": "CMakeFiles/dpor_smoke.dir/tests/smoke.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/dpor_phase1.dir/tests/phase1.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/phase1.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/phase1.cpp",
+  "output": "CMakeFiles/dpor_phase1.dir/tests/phase1.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/vector_clock_tests.dir/tests/vector_clock_tests.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/vector_clock_tests.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/vector_clock_tests.cpp",
+  "output": "CMakeFiles/vector_clock_tests.dir/tests/vector_clock_tests.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/independence_tests.dir/tests/independence.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/independence.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/independence.cpp",
+  "output": "CMakeFiles/independence_tests.dir/tests/independence.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/dpor_oracle.dir/tests/dpor_oracle.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/dpor_oracle.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/dpor_oracle.cpp",
+  "output": "CMakeFiles/dpor_oracle.dir/tests/dpor_oracle.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/dpor_oracle_3threads.dir/tests/dpor_oracle_3threads.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/dpor_oracle_3threads.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/dpor_oracle_3threads.cpp",
+  "output": "CMakeFiles/dpor_oracle_3threads.dir/tests/dpor_oracle_3threads.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/minimize_tests.dir/tests/minimize.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/minimize.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/minimize.cpp",
+  "output": "CMakeFiles/minimize_tests.dir/tests/minimize.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/condvar_tests.dir/tests/condvar.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/condvar.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/condvar.cpp",
+  "output": "CMakeFiles/condvar_tests.dir/tests/condvar.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/hb_edge_probes.dir/tests/hb_edge_probes.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/hb_edge_probes.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/hb_edge_probes.cpp",
+  "output": "CMakeFiles/hb_edge_probes.dir/tests/hb_edge_probes.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -o CMakeFiles/atomics_tests.dir/tests/atomics.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/atomics.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/atomics.cpp",
+  "output": "CMakeFiles/atomics_tests.dir/tests/atomics.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++   -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -Wall -Wextra -Wpedantic -o CMakeFiles/cli_tests.dir/tests/cli.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/cli.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/cli.cpp",
+  "output": "CMakeFiles/cli_tests.dir/tests/cli.cpp.o"
+},
+{
+  "directory": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/build-rel",
+  "command": "/Applications/Xcode.app/Contents/Developer/Toolchains/XcodeDefault.xctoolchain/usr/bin/c++  -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/src/cli -I/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/include -O3 -DNDEBUG -std=gnu++20 -arch arm64 -isysroot /Applications/Xcode.app/Contents/Developer/Platforms/MacOSX.platform/Developer/SDKs/MacOSX26.1.sdk -Wall -Wextra -Wpedantic -o CMakeFiles/dpor_fuzz_differential.dir/tests/fuzz_differential.cpp.o -c /Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/fuzz_differential.cpp",
+  "file": "/Users/affan/Projects/frontier-architecture-projects/04-dpor-concurrency-model-checker/tests/fuzz_differential.cpp",
+  "output": "CMakeFiles/dpor_fuzz_differential.dir/tests/fuzz_differential.cpp.o"
+}
+]
