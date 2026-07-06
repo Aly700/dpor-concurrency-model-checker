@@ -3,6 +3,7 @@
 #include "model/vector_clock.hpp"
 
 #include <algorithm>
+#include <cstddef>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -525,31 +526,13 @@ void validate_replay_step(const Program& program,
     }
 }
 
-} // namespace
-
-ModelChecker::ModelChecker(Program program) : program_(std::move(program)) {}
-
-CheckResult ModelChecker::explore_naive(std::size_t max_schedules) const {
+CheckResult replay_schedule(const Program& program, const Schedule& schedule) {
     CheckResult result;
-    dfs(program_, initial_state(program_), result, max_schedules);
-    return result;
-}
-
-CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
-    CheckResult result;
-    std::vector<DporNode> nodes;
-    std::vector<ExecutedTransition> trace;
-    dpor_dfs(program_, initial_state(program_), result, max_schedules, nodes, trace);
-    return result;
-}
-
-CheckResult ModelChecker::replay(const Schedule& schedule) const {
-    CheckResult result;
-    ExecutionState state = initial_state(program_);
+    ExecutionState state = initial_state(program);
 
     for (std::size_t i = 0; i < schedule.size(); ++i) {
-        validate_replay_step(program_, state, schedule[i], i);
-        const StepReport step_report = execute_enabled_step(program_, state, schedule[i].thread);
+        validate_replay_step(program, state, schedule[i], i);
+        const StepReport step_report = execute_enabled_step(program, state, schedule[i].thread);
         record_step_report(result, step_report);
         if (step_report.error.has_value()) {
             if (i + 1 < schedule.size()) {
@@ -560,14 +543,256 @@ CheckResult ModelChecker::replay(const Schedule& schedule) const {
         }
     }
 
-    if (!any_enabled(program_, state)) {
+    if (!any_enabled(program, state)) {
         ++result.schedules_explored;
-        if (!all_finished(program_, state)) {
-            result.first_deadlock = make_deadlock_report(program_, state);
+        if (!all_finished(program, state)) {
+            result.first_deadlock = make_deadlock_report(program, state);
         }
     }
 
     return result;
+}
+
+bool schedule_step_less(const ScheduleStep& lhs, const ScheduleStep& rhs) {
+    if (lhs.thread != rhs.thread) {
+        return lhs.thread < rhs.thread;
+    }
+    return lhs.action_index < rhs.action_index;
+}
+
+struct RaceIdentity {
+    std::string address;
+    ScheduleStep first;
+    ScheduleStep second;
+
+    bool operator==(const RaceIdentity&) const = default;
+};
+
+struct DeadlockIdentity {
+    std::vector<BlockedThread> blocked_threads;
+
+    bool operator==(const DeadlockIdentity&) const = default;
+};
+
+struct ErrorIdentity {
+    ScheduleStep endpoint;
+
+    bool operator==(const ErrorIdentity&) const = default;
+};
+
+struct BugIdentitySet {
+    std::optional<RaceIdentity> race;
+    std::optional<DeadlockIdentity> deadlock;
+    std::optional<ErrorIdentity> error;
+};
+
+bool blocked_thread_less(const BlockedThread& lhs, const BlockedThread& rhs) {
+    if (lhs.thread != rhs.thread) {
+        return lhs.thread < rhs.thread;
+    }
+    if (lhs.mutex != rhs.mutex) {
+        return lhs.mutex < rhs.mutex;
+    }
+    if (lhs.owner.has_value() != rhs.owner.has_value()) {
+        return !lhs.owner.has_value();
+    }
+    return lhs.owner.value_or(0) < rhs.owner.value_or(0);
+}
+
+RaceIdentity identity_of(const RaceReport& report) {
+    ScheduleStep first = report.first;
+    ScheduleStep second = report.second;
+    if (schedule_step_less(second, first)) {
+        std::swap(first, second);
+    }
+    return RaceIdentity{report.address, first, second};
+}
+
+DeadlockIdentity identity_of(const DeadlockReport& report) {
+    auto blocked = report.blocked_threads;
+    std::sort(blocked.begin(), blocked.end(), blocked_thread_less);
+    return DeadlockIdentity{std::move(blocked)};
+}
+
+ErrorIdentity identity_of(const ModelErrorReport& report) {
+    return ErrorIdentity{report.endpoint};
+}
+
+BugIdentitySet identities_of(const CheckResult& result) {
+    BugIdentitySet identities;
+    if (result.first_race.has_value()) {
+        identities.race = identity_of(*result.first_race);
+    }
+    if (result.first_deadlock.has_value()) {
+        identities.deadlock = identity_of(*result.first_deadlock);
+    }
+    if (result.first_error.has_value()) {
+        identities.error = identity_of(*result.first_error);
+    }
+    return identities;
+}
+
+bool empty(const BugIdentitySet& identities) {
+    return !identities.race.has_value() &&
+           !identities.deadlock.has_value() &&
+           !identities.error.has_value();
+}
+
+bool reproduces_identities(const CheckResult& result, const BugIdentitySet& target) {
+    if (target.race.has_value()) {
+        if (!result.first_race.has_value() || identity_of(*result.first_race) != *target.race) {
+            return false;
+        }
+    }
+    if (target.deadlock.has_value()) {
+        if (!result.first_deadlock.has_value() || identity_of(*result.first_deadlock) != *target.deadlock) {
+            return false;
+        }
+    }
+    if (target.error.has_value()) {
+        if (!result.first_error.has_value() || identity_of(*result.first_error) != *target.error) {
+            return false;
+        }
+    }
+    return true;
+}
+
+bool is_report_endpoint(const ScheduleStep& step, const BugIdentitySet& target) {
+    if (target.race.has_value() &&
+        (step == target.race->first || step == target.race->second)) {
+        return true;
+    }
+    if (target.error.has_value() && step == target.error->endpoint) {
+        return true;
+    }
+    return false;
+}
+
+std::optional<std::size_t> last_step_index_for_thread(const Schedule& schedule, ThreadId tid) {
+    for (std::size_t index = schedule.size(); index > 0; --index) {
+        if (schedule[index - 1].thread == tid) {
+            return index - 1;
+        }
+    }
+    return std::nullopt;
+}
+
+Schedule minimize_schedule_for_identities(const Program& program,
+                                          const Schedule& schedule,
+                                          const BugIdentitySet& target) {
+    Schedule minimized = schedule;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (std::size_t tid_index = 0; tid_index < program.threads.size(); ++tid_index) {
+            const auto tid = static_cast<ThreadId>(tid_index);
+            const auto last_step_index = last_step_index_for_thread(minimized, tid);
+            if (!last_step_index.has_value()) {
+                continue;
+            }
+
+            if (is_report_endpoint(minimized.at(*last_step_index), target)) {
+                continue;
+            }
+
+            Schedule candidate = minimized;
+            candidate.erase(candidate.begin() + static_cast<std::ptrdiff_t>(*last_step_index));
+
+            try {
+                const CheckResult replayed = replay_schedule(program, candidate);
+                if (reproduces_identities(replayed, target)) {
+                    minimized = std::move(candidate);
+                    changed = true;
+                }
+            } catch (const std::invalid_argument&) {
+                // Removing a per-thread tail can still change enabledness for
+                // later threads. Replay is the ground truth; invalid
+                // candidates are rejected.
+            }
+        }
+    }
+    return minimized;
+}
+
+RaceReport minimized_race_report(const Program& program, const RaceReport& report) {
+    BugIdentitySet target;
+    target.race = identity_of(report);
+
+    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target);
+    const CheckResult replayed = replay_schedule(program, minimized);
+    if (!reproduces_identities(replayed, target) || !replayed.first_race.has_value()) {
+        throw std::logic_error("race schedule minimization failed to preserve bug identity");
+    }
+    return *replayed.first_race;
+}
+
+DeadlockReport minimized_deadlock_report(const Program& program, const DeadlockReport& report) {
+    BugIdentitySet target;
+    target.deadlock = identity_of(report);
+
+    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target);
+    const CheckResult replayed = replay_schedule(program, minimized);
+    if (!reproduces_identities(replayed, target) || !replayed.first_deadlock.has_value()) {
+        throw std::logic_error("deadlock schedule minimization failed to preserve bug identity");
+    }
+    return *replayed.first_deadlock;
+}
+
+ModelErrorReport minimized_error_report(const Program& program, const ModelErrorReport& report) {
+    BugIdentitySet target;
+    target.error = identity_of(report);
+
+    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target);
+    const CheckResult replayed = replay_schedule(program, minimized);
+    if (!reproduces_identities(replayed, target) || !replayed.first_error.has_value()) {
+        throw std::logic_error("error schedule minimization failed to preserve bug identity");
+    }
+    return *replayed.first_error;
+}
+
+void minimize_result_reports(const Program& program, CheckResult& result) {
+    if (result.first_race.has_value()) {
+        result.first_race = minimized_race_report(program, *result.first_race);
+    }
+    if (result.first_deadlock.has_value()) {
+        result.first_deadlock = minimized_deadlock_report(program, *result.first_deadlock);
+    }
+    if (result.first_error.has_value()) {
+        result.first_error = minimized_error_report(program, *result.first_error);
+    }
+}
+
+} // namespace
+
+ModelChecker::ModelChecker(Program program) : program_(std::move(program)) {}
+
+CheckResult ModelChecker::explore_naive(std::size_t max_schedules) const {
+    CheckResult result;
+    dfs(program_, initial_state(program_), result, max_schedules);
+    minimize_result_reports(program_, result);
+    return result;
+}
+
+CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
+    CheckResult result;
+    std::vector<DporNode> nodes;
+    std::vector<ExecutedTransition> trace;
+    dpor_dfs(program_, initial_state(program_), result, max_schedules, nodes, trace);
+    minimize_result_reports(program_, result);
+    return result;
+}
+
+CheckResult ModelChecker::replay(const Schedule& schedule) const {
+    return replay_schedule(program_, schedule);
+}
+
+Schedule ModelChecker::minimize_schedule(const Schedule& schedule) const {
+    const CheckResult replayed = replay_schedule(program_, schedule);
+    const BugIdentitySet target = identities_of(replayed);
+    if (empty(target)) {
+        return schedule;
+    }
+    return minimize_schedule_for_identities(program_, schedule, target);
 }
 
 } // namespace model

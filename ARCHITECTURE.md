@@ -15,6 +15,10 @@ controlled concurrent program -> scheduler -> explored schedules -> HB/race/dead
   `independent()` when pruning equivalent orderings.
 - `ModelChecker::replay` re-executes a deterministic schedule and rejects
   disabled or out-of-range steps with a clear error.
+- `ModelChecker::minimize_schedule` greedily deletes per-thread tail steps only
+  when replay proves the same race, deadlock, or modeled-error identity still
+  reproduces; public exploration reports are normalized through it before
+  return.
 - `VectorClock` is the base happens-before data structure.
 - The cross-validation executable `dpor_oracle` checks a deterministic capped
   family of tiny programs against the naive oracle.
