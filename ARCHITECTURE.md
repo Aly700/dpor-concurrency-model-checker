@@ -3,12 +3,15 @@
 ## Pipeline
 
 ```text
-controlled concurrent program -> scheduler -> explored schedules -> HB/race/deadlock analysis -> minimal replay
+.dpor text program -> CLI parser -> model::Program -> scheduler -> explored schedules -> HB/race/deadlock analysis -> minimal replay -> CLI report/replay schedule
 ```
 
 ## Current scaffold
 
 - `model::Program` is a tiny action IR.
+- `dpor` is a deterministic CLI consumer that parses `.dpor` text programs,
+  runs check or replay through the public `ModelChecker` API, and renders
+  stable reports plus replayable schedule blocks.
 - `ModelChecker::explore_naive` is the exhaustive oracle.
 - `ModelChecker::explore_dpor` is the reduced oracle added beside the naive
   DFS. It uses deterministic backtrack/done sets and relies exclusively on

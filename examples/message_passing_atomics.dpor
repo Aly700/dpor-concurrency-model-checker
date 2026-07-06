@@ -1,0 +1,8 @@
+# Atomics can order this program on some schedules, but exploration still finds
+# the unordered interleavings.
+thread:
+  write x
+  atomic_store f
+thread:
+  atomic_load f
+  read x

@@ -1,0 +1,12 @@
+verdict: deadlock
+schedules_explored: 6
+deadlock:
+  blocked:
+    thread 0: mutex b owned_by 1
+    thread 1: mutex a owned_by 0
+trace:
+  0: thread 0 action 0 lock a
+  1: thread 1 action 0 lock b
+schedule:
+  0 0
+  1 0

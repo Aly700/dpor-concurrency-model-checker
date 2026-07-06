@@ -1,0 +1,3 @@
+# Modeled runtime error: the mutex is not owned by the unlocking thread.
+thread:
+  unlock m

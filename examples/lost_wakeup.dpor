@@ -1,0 +1,9 @@
+# The second signal is lost because no waiter is asleep yet.
+thread:
+  lock m
+  wait cv m
+  wait cv m
+  unlock m
+thread:
+  signal cv
+  signal cv

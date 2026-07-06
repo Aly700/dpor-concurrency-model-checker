@@ -1,0 +1,9 @@
+# Both writes are protected by the same mutex.
+thread:
+  lock m
+  write x
+  unlock m
+thread:
+  lock m
+  write x
+  unlock m

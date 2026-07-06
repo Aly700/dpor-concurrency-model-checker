@@ -1,0 +1,11 @@
+# Opposite lock ordering exposes an AB-BA mutex deadlock.
+thread:
+  lock a
+  lock b
+  unlock b
+  unlock a
+thread:
+  lock b
+  lock a
+  unlock a
+  unlock b

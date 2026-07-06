@@ -13,6 +13,15 @@ add_library(model_checker
 target_include_directories(model_checker PUBLIC include)
 target_compile_options(model_checker PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(dpor
+    src/cli/main.cpp
+    src/cli/program_parser.cpp
+    src/cli/report.cpp
+)
+target_include_directories(dpor PRIVATE src/cli)
+target_link_libraries(dpor PRIVATE model_checker)
+target_compile_options(dpor PRIVATE -Wall -Wextra -Wpedantic)
+
 add_executable(dpor_smoke tests/smoke.cpp)
 target_link_libraries(dpor_smoke PRIVATE model_checker)
 
@@ -43,6 +52,9 @@ target_link_libraries(hb_edge_probes PRIVATE model_checker)
 add_executable(atomics_tests tests/atomics.cpp)
 target_link_libraries(atomics_tests PRIVATE model_checker)
 
+add_executable(cli_tests tests/cli.cpp)
+target_compile_options(cli_tests PRIVATE -Wall -Wextra -Wpedantic)
+
 include(CTest)
 add_test(NAME dpor_smoke COMMAND dpor_smoke)
 add_test(NAME dpor_phase1 COMMAND dpor_phase1)
@@ -54,3 +66,4 @@ add_test(NAME minimize_tests COMMAND minimize_tests)
 add_test(NAME condvar_tests COMMAND condvar_tests)
 add_test(NAME hb_edge_probes COMMAND hb_edge_probes)
 add_test(NAME atomics_tests COMMAND atomics_tests)
+add_test(NAME cli_tests COMMAND cli_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})

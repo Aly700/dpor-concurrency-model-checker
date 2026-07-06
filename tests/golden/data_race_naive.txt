@@ -1,0 +1,12 @@
+verdict: race
+schedules_explored: 2
+race:
+  address: x
+  first: thread 0 action 0
+  second: thread 1 action 0
+trace:
+  0: thread 0 action 0 write x
+  1: thread 1 action 0 write x
+schedule:
+  0 0
+  1 0
