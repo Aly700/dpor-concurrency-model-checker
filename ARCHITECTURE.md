@@ -70,21 +70,30 @@ prefix that reports it.
 
 ## DPOR Reduction
 
-DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, and done
-thread sets. Each prefix starts from a conservative persistent set and dynamic
-backtracking adds alternatives when an executed or terminal blocked transition
-is dependent with an earlier transition. If the later dependent thread was not
-enabled at the earlier point, every enabled thread at that point is added as the
-classic disabled-transition fallback.
+DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, done, and
+sleep thread sets. Each enabled node records both the replay endpoint and the
+phase-aware effective action for each enabled thread, so `Wait` release/sleep
+and woken mutex reacquire are reduced as different transition semantics while
+public schedules remain `(thread, action_index)` pairs.
 
-Blocked terminal transitions now include blocked joins, sleeping condition
-waiters, and woken waiters waiting to reacquire their mutex. `next_action()`
-still returns the original IR action for these states, so DPOR records the same
-`(thread, action_index)` schedule representation that replay validates.
+Dynamic backtracking follows the Flanagan-Godefroid last-point rule for enabled
+transitions: it adds the later thread only at the last earlier dependent
+transition that is not happens-before ordered before it. Each trace entry stores
+the executing thread's post-step vector clock for this check. If the later
+effective transition was not enabled at the candidate prefix, DPOR keeps the
+classic disabled-transition fallback and adds every enabled thread at a repair
+point.
 
-No sleep sets are currently used. Race and error detection still run through the
-same interpreter as naive exploration, and every DPOR report is expected to
-replay identically.
+Godefroid sleep sets prune alternatives whose trace class has already been
+represented. A child inherits slept threads only while their current effective
+next action is still independent of the transition just executed; slept threads
+are never executed, and explored choices are added to the node sleep set for
+later alternatives. Modeled-error endpoints still clear pruning at that node and
+add every enabled sibling, and sleep-blocked prefixes still apply the disabled
+fallback before being pruned.
+
+Race and error detection still run through the same interpreter as naive
+exploration, and every DPOR report is expected to replay identically.
 
 ## Design bias
 

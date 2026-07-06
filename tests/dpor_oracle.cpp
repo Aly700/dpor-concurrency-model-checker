@@ -207,6 +207,14 @@ void assert_strict_reduction(const model::Program& program) {
     assert(dpor.schedules_explored < naive.schedules_explored);
 }
 
+void assert_exact_dpor_schedules(const model::Program& program, std::size_t expected) {
+    const model::ModelChecker checker(program);
+    const auto naive = checker.explore_naive();
+    const auto dpor = checker.explore_dpor();
+    assert(dpor.schedules_explored < naive.schedules_explored);
+    assert(dpor.schedules_explored == expected);
+}
+
 std::vector<model::Program> hand_picked_programs() {
     return {
         model::Program{{
@@ -300,6 +308,14 @@ int main() {
         {lock("m"), write("x"), unlock("m")},
         {yield(), yield(), yield()},
     }});
+    assert_exact_dpor_schedules(model::Program{{
+        {yield(), yield(), lock("m"), unlock("m")},
+        {yield(), yield(), lock("m"), unlock("m")},
+    }}, 2);
+    assert_exact_dpor_schedules(model::Program{{
+        {write("a"), write("b"), lock("m"), unlock("m")},
+        {write("c"), write("d"), lock("m"), unlock("m")},
+    }}, 2);
 
     std::cout << "dpor_oracle: programs checked=" << programs_checked
               << " alphabet=" << kActions.size()

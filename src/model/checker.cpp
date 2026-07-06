@@ -41,16 +41,24 @@ struct StepReport {
     std::optional<ModelErrorReport> error;
 };
 
+struct EnabledTransition {
+    ScheduleStep endpoint;
+    Action effective_action;
+};
+
 struct DporNode {
     std::vector<ThreadId> enabled;
+    std::map<ThreadId, EnabledTransition> enabled_transitions;
     std::vector<ThreadId> backtrack;
     std::vector<ThreadId> done;
+    std::vector<ThreadId> sleep;
 };
 
 struct ExecutedTransition {
     ThreadId thread{0};
-    Action action;
+    Action effective_action;
     ScheduleStep endpoint;
+    VectorClock clock;
 };
 
 ExecutionState initial_state(const Program& program) {
@@ -81,6 +89,24 @@ bool all_finished(const Program& program, const ExecutionState& state) {
 
 const Action& next_action(const Program& program, const ExecutionState& state, ThreadId tid) {
     return program.threads.at(tid).at(state.pc.at(tid));
+}
+
+Action effective_next_action(const Program& program, const ExecutionState& state, ThreadId tid) {
+    Action action = next_action(program, state, tid);
+    if (action.kind == ActionKind::Wait && state.wait_phase.at(tid) == WaitPhase::Woken) {
+        // Wait is deliberately phase-aware for DPOR. The release/sleep phase
+        // mutates the condition wait set and releases the mutex, while the
+        // later woken phase is only the mutex reacquire. Keying sleep-set or
+        // backtracking dependence on the static Wait action would incorrectly
+        // make the reacquire look dependent with later Signal/Broadcast
+        // operations on the same cv; replay still records the original
+        // (thread, action_index), but reduction uses this effective Lock.
+        Action reacquire;
+        reacquire.kind = ActionKind::Lock;
+        reacquire.mutex = action.mutex;
+        return reacquire;
+    }
+    return action;
 }
 
 bool owns_mutex(const ExecutionState& state, ThreadId tid, const std::string& mutex) {
@@ -154,6 +180,23 @@ std::vector<ThreadId> enabled_threads(const Program& program, const ExecutionSta
     return enabled;
 }
 
+std::map<ThreadId, EnabledTransition> enabled_transitions(const Program& program,
+                                                          const ExecutionState& state) {
+    std::map<ThreadId, EnabledTransition> transitions;
+    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+        if (!is_enabled(program, state, tid)) {
+            continue;
+        }
+        transitions.emplace(
+            tid,
+            EnabledTransition{
+                ScheduleStep{tid, state.pc.at(tid)},
+                effective_next_action(program, state, tid),
+            });
+    }
+    return transitions;
+}
+
 bool contains_thread(const std::vector<ThreadId>& threads, ThreadId tid) {
     return std::binary_search(threads.begin(), threads.end(), tid);
 }
@@ -163,6 +206,13 @@ void insert_thread(std::vector<ThreadId>& threads, ThreadId tid) {
     if (position == threads.end() || *position != tid) {
         threads.insert(position, tid);
     }
+}
+
+bool transition_enabled_at_node(const DporNode& node, const ExecutedTransition& transition) {
+    const auto enabled = node.enabled_transitions.find(transition.thread);
+    return enabled != node.enabled_transitions.end() &&
+           enabled->second.endpoint == transition.endpoint &&
+           enabled->second.effective_action == transition.effective_action;
 }
 
 std::optional<ThreadId> next_unexplored_backtrack(const DporNode& node) {
@@ -450,19 +500,32 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
         return;
     }
 
-    insert_thread(node.backtrack, node.enabled.front());
+    const auto first_awake = std::find_if(
+        node.enabled.begin(),
+        node.enabled.end(),
+        [&](ThreadId tid) { return !contains_thread(node.sleep, tid); });
+    if (first_awake == node.enabled.end()) {
+        // Sleep sets interact with the max_schedules cutoff only by reducing
+        // the number of representative schedules counted. If every enabled
+        // transition at this prefix is asleep, the prefix is Mazurkiewicz-
+        // equivalent to one already explored and contributes no schedule.
+        return;
+    }
+
+    insert_thread(node.backtrack, *first_awake);
 
     bool changed = true;
     while (changed) {
         changed = false;
         for (const ThreadId candidate : node.enabled) {
-            if (contains_thread(node.backtrack, candidate)) {
+            if (contains_thread(node.backtrack, candidate) ||
+                contains_thread(node.sleep, candidate)) {
                 continue;
             }
 
             for (const ThreadId selected : node.backtrack) {
-                if (!independent(next_action(program, state, candidate),
-                                 next_action(program, state, selected))) {
+                if (!independent(effective_next_action(program, state, candidate),
+                                 effective_next_action(program, state, selected))) {
                     // INVARIANTS.md Soundness/Independence: an enabled
                     // transition is pruned from the initial persistent set
                     // only when independent() says it commutes with every
@@ -482,7 +545,9 @@ void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
                                                   const std::vector<ExecutedTransition>& trace,
                                                   const ExecutedTransition& current,
                                                   std::size_t prefix_size) {
-    for (std::size_t previous_index = 0; previous_index < prefix_size; ++previous_index) {
+    std::optional<std::size_t> earliest_disabled_dependent;
+    for (std::size_t index = prefix_size; index > 0; --index) {
+        const std::size_t previous_index = index - 1;
         const ExecutedTransition& previous = trace.at(previous_index);
         if (previous.thread == current.thread) {
             // INVARIANTS.md Replay: schedules preserve per-thread action-index
@@ -491,7 +556,7 @@ void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
             continue;
         }
 
-        if (independent(previous.action, current.action)) {
+        if (independent(previous.effective_action, current.effective_action)) {
             // INVARIANTS.md Soundness/Independence: this is the DPOR pruning
             // predicate. We may commute and therefore avoid a backtrack only
             // when independent() says ordering cannot affect observable state
@@ -500,21 +565,52 @@ void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
         }
 
         DporNode& backtrack_point = nodes.at(previous_index);
-        if (contains_thread(backtrack_point.enabled, current.thread)) {
-            // INVARIANTS.md Soundness: dependent transitions may expose a
-            // distinct bug class, so force a representative that schedules the
-            // later thread at the earlier dependent point when it was enabled.
-            insert_thread(backtrack_point.backtrack, current.thread);
-        } else {
-            // INVARIANTS.md Soundness, highest-risk disabled-transition
-            // fallback: the later dependent thread could not be scheduled at
-            // this earlier point, so add every enabled thread. This is the
-            // classic conservative DPOR fallback that preserves deadlock
-            // detection by exploring whichever enabled transition may make the
-            // dependent thread reachable before the earlier transition.
-            for (const ThreadId enabled : backtrack_point.enabled) {
-                insert_thread(backtrack_point.backtrack, enabled);
-            }
+        if (!transition_enabled_at_node(backtrack_point, current)) {
+            // Disabled-transition fallback is about reaching the later
+            // effective transition at all, not just reversing two already
+            // enabled transitions. A thread may be enabled here with an
+            // earlier action, or a Wait may be enabled in the opposite phase;
+            // in both cases an HB edge observed in this trace can disappear
+            // after those prerequisites run before the earlier transition.
+            // Keep the earliest dependent repair point so lock-order,
+            // Join-enabledness, and cv wakeup bugs are not pruned.
+            earliest_disabled_dependent = previous_index;
+            continue;
+        }
+
+        if (previous.clock.happens_before_or_equal(current.clock)) {
+            // INVARIANTS.md Soundness/HB: an HB-ordered pair cannot be reversed
+            // by any schedule in any Mazurkiewicz class reachable from this
+            // prefix, so skipping this backtrack loses no race/deadlock/error
+            // class. Signal/Broadcast wake edges are already joined into the
+            // woken thread before its reacquire transition is recorded, so a
+            // reacquire HB-after its concrete waker is safely skipped; other
+            // possible waiter-set/waker orders are protected earlier because
+            // Wait and Signal/Broadcast on the same cv remain dependent.
+            // Join is similarly safe: after a successful Join, the joiner's
+            // clock includes the target's final clock, so target actions that
+            // are HB-before the Join do not need reversal backtracks.
+            continue;
+        }
+
+        // Flanagan-Godefroid DPOR adds the later thread at the last dependent,
+        // non-HB-ordered prefix only. Earlier required reversal points are
+        // added inductively when exploration reaches those prefixes, which
+        // avoids the old conservative "every dependent prefix" explosion
+        // without weakening INVARIANTS.md Soundness.
+        insert_thread(backtrack_point.backtrack, current.thread);
+        return;
+    }
+
+    if (earliest_disabled_dependent.has_value()) {
+        DporNode& backtrack_point = nodes.at(*earliest_disabled_dependent);
+        // INVARIANTS.md Soundness, highest-risk disabled-transition fallback:
+        // the later effective transition could not be scheduled at this
+        // earlier point, so add every enabled thread. This preserves deadlock
+        // and pre-error detection by exploring whichever enabled transition
+        // may make the dependent transition reachable before the earlier one.
+        for (const ThreadId enabled : backtrack_point.enabled) {
+            insert_thread(backtrack_point.backtrack, enabled);
         }
     }
 }
@@ -539,8 +635,9 @@ void add_disabled_backtracks(const Program& program,
 
         const ExecutedTransition blocked{
             tid,
-            next_action(program, state, tid),
+            effective_next_action(program, state, tid),
             ScheduleStep{tid, state.pc.at(tid)},
+            state.thread_clock.at(tid),
         };
         // INVARIANTS.md Soundness/Deadlock: a blocked Lock, Join, sleeping
         // Wait, or woken-Wait reacquire absent from the executed trace may be
@@ -548,9 +645,34 @@ void add_disabled_backtracks(const Program& program,
         // race, or error schedule. We therefore apply the same
         // independent()-guarded backtrack rule to disabled next actions at
         // terminal leaves; independent blocked actions remain pruned only when
-        // the Independence invariant permits commuting them.
+        // the Independence invariant permits commuting them. effective_next_action()
+        // makes the woken-Wait case a mutex reacquire, not a cv wait, while a
+        // still-sleeping waiter remains condition-dependent for wakeup order.
         add_backtracks_for_transition_against_prefix(nodes, trace, blocked, trace.size());
     }
+}
+
+std::vector<ThreadId> inherited_sleep_set(const Program& program,
+                                          const ExecutionState& state_after_transition,
+                                          const DporNode& parent,
+                                          const ExecutedTransition& transition) {
+    std::vector<ThreadId> inherited;
+    for (const ThreadId tid : parent.sleep) {
+        if (tid == transition.thread || !is_enabled(program, state_after_transition, tid)) {
+            continue;
+        }
+
+        const Action slept_action = effective_next_action(program, state_after_transition, tid);
+        if (independent(slept_action, transition.effective_action)) {
+            // Classic Godefroid sleep-set propagation: a slept transition is
+            // inherited only while its phase-aware next action still commutes
+            // with the transition just executed. If it is dependent, it must
+            // be removed so the child prefix can keep a representative for any
+            // newly distinct Mazurkiewicz class.
+            insert_thread(inherited, tid);
+        }
+    }
+    return inherited;
 }
 
 void dpor_dfs(const Program& program,
@@ -558,13 +680,20 @@ void dpor_dfs(const Program& program,
               CheckResult& result,
               std::size_t max_schedules,
               std::vector<DporNode>& nodes,
-              std::vector<ExecutedTransition>& trace) {
+              std::vector<ExecutedTransition>& trace,
+              std::vector<ThreadId> sleep_set) {
     if (result.schedules_explored >= max_schedules) {
         return;
     }
 
     const auto depth = nodes.size();
-    nodes.push_back(DporNode{enabled_threads(program, state), {}, {}});
+    nodes.push_back(DporNode{
+        enabled_threads(program, state),
+        enabled_transitions(program, state),
+        {},
+        {},
+        std::move(sleep_set),
+    });
 
     if (nodes.at(depth).enabled.empty()) {
         ++result.schedules_explored;
@@ -579,6 +708,19 @@ void dpor_dfs(const Program& program,
     }
 
     initialize_dpor_backtrack(program, state, nodes.at(depth));
+    if (nodes.at(depth).backtrack.empty()) {
+        if (!all_finished(program, state)) {
+            // A sleep-blocked prefix is equivalent to an explored execution
+            // only for the enabled transitions it would run. Disabled Lock,
+            // Join, and Wait-reacquire transitions can still be the evidence
+            // that an earlier enabledness repair is needed, especially before
+            // a slept modeled-error endpoint. Apply the terminal disabled
+            // fallback before pruning the slept representative.
+            add_disabled_backtracks(program, state, nodes, trace);
+        }
+        nodes.pop_back();
+        return;
+    }
 
     while (result.schedules_explored < max_schedules) {
         const std::optional<ThreadId> next_tid = next_unexplored_backtrack(nodes.at(depth));
@@ -590,16 +732,25 @@ void dpor_dfs(const Program& program,
         if (!contains_thread(nodes.at(depth).enabled, *next_tid)) {
             continue;
         }
+        if (contains_thread(nodes.at(depth).sleep, *next_tid)) {
+            // Sleep-blocked prefixes are not counted as explored schedules:
+            // the schedule budget applies to representatives that actually
+            // execute. Choice order remains deterministic because slept
+            // backtrack entries are skipped in ascending thread-id order.
+            continue;
+        }
 
         const auto action_index = state.pc.at(*next_tid);
-        const ExecutedTransition transition{
-            *next_tid,
-            program.threads.at(*next_tid).at(action_index),
-            ScheduleStep{*next_tid, action_index},
-        };
+        const Action effective_action = effective_next_action(program, state, *next_tid);
 
         ExecutionState next = state;
         const StepReport step_report = execute_enabled_step(program, next, *next_tid);
+        const ExecutedTransition transition{
+            *next_tid,
+            effective_action,
+            ScheduleStep{*next_tid, action_index},
+            next.thread_clock.at(*next_tid),
+        };
         trace.push_back(transition);
         add_backtracks_for_transition(nodes, trace);
         record_step_report(result, step_report);
@@ -612,6 +763,7 @@ void dpor_dfs(const Program& program,
             // this node after an error endpoint; add every enabled sibling so
             // races, deadlocks, or other errors reachable before this error
             // still have a representative schedule.
+            nodes.at(depth).sleep.clear();
             for (const ThreadId enabled : nodes.at(depth).enabled) {
                 insert_thread(nodes.at(depth).backtrack, enabled);
             }
@@ -622,10 +774,19 @@ void dpor_dfs(const Program& program,
             // The initial persistent set and dynamic backtrack additions above
             // omit an alternative solely after independent() justifies
             // commuting it with the representative transition.
-            dpor_dfs(program, std::move(next), result, max_schedules, nodes, trace);
+            std::vector<ThreadId> child_sleep =
+                inherited_sleep_set(program, next, nodes.at(depth), transition);
+            dpor_dfs(program,
+                     std::move(next),
+                     result,
+                     max_schedules,
+                     nodes,
+                     trace,
+                     std::move(child_sleep));
         }
 
         trace.pop_back();
+        insert_thread(nodes.at(depth).sleep, *next_tid);
     }
 
     nodes.pop_back();
@@ -972,7 +1133,7 @@ CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
     CheckResult result;
     std::vector<DporNode> nodes;
     std::vector<ExecutedTransition> trace;
-    dpor_dfs(program_, initial_state(program_), result, max_schedules, nodes, trace);
+    dpor_dfs(program_, initial_state(program_), result, max_schedules, nodes, trace, {});
     minimize_result_reports(program_, result);
     return result;
 }
