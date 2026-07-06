@@ -2,6 +2,7 @@
 
 #include "model/vector_clock.hpp"
 
+#include <algorithm>
 #include <map>
 #include <sstream>
 #include <stdexcept>
@@ -32,6 +33,18 @@ struct ExecutionState {
 struct StepReport {
     std::optional<RaceReport> race;
     std::optional<ModelErrorReport> error;
+};
+
+struct DporNode {
+    std::vector<ThreadId> enabled;
+    std::vector<ThreadId> backtrack;
+    std::vector<ThreadId> done;
+};
+
+struct ExecutedTransition {
+    ThreadId thread{0};
+    Action action;
+    ScheduleStep endpoint;
 };
 
 ExecutionState initial_state(const Program& program) {
@@ -82,6 +95,36 @@ bool any_enabled(const Program& program, const ExecutionState& state) {
         }
     }
     return false;
+}
+
+std::vector<ThreadId> enabled_threads(const Program& program, const ExecutionState& state) {
+    std::vector<ThreadId> enabled;
+    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+        if (is_enabled(program, state, tid)) {
+            enabled.push_back(tid);
+        }
+    }
+    return enabled;
+}
+
+bool contains_thread(const std::vector<ThreadId>& threads, ThreadId tid) {
+    return std::binary_search(threads.begin(), threads.end(), tid);
+}
+
+void insert_thread(std::vector<ThreadId>& threads, ThreadId tid) {
+    const auto position = std::lower_bound(threads.begin(), threads.end(), tid);
+    if (position == threads.end() || *position != tid) {
+        threads.insert(position, tid);
+    }
+}
+
+std::optional<ThreadId> next_unexplored_backtrack(const DporNode& node) {
+    for (const ThreadId tid : node.backtrack) {
+        if (!contains_thread(node.done, tid)) {
+            return tid;
+        }
+    }
+    return std::nullopt;
 }
 
 bool ordered_by_happens_before(const MemoryAccess& lhs, const MemoryAccess& rhs) {
@@ -219,6 +262,191 @@ void record_step_report(CheckResult& result, const StepReport& report) {
     }
 }
 
+void initialize_dpor_backtrack(const Program& program, const ExecutionState& state, DporNode& node) {
+    if (!node.backtrack.empty() || node.enabled.empty()) {
+        return;
+    }
+
+    insert_thread(node.backtrack, node.enabled.front());
+
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (const ThreadId candidate : node.enabled) {
+            if (contains_thread(node.backtrack, candidate)) {
+                continue;
+            }
+
+            for (const ThreadId selected : node.backtrack) {
+                if (!independent(next_action(program, state, candidate),
+                                 next_action(program, state, selected))) {
+                    // INVARIANTS.md Soundness/Independence: an enabled
+                    // transition is pruned from the initial persistent set
+                    // only when independent() says it commutes with every
+                    // selected enabled transition. A dependent enabled
+                    // transition is kept so a distinct bug class is not
+                    // skipped.
+                    insert_thread(node.backtrack, candidate);
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
+void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
+                                                  const std::vector<ExecutedTransition>& trace,
+                                                  const ExecutedTransition& current,
+                                                  std::size_t prefix_size) {
+    for (std::size_t previous_index = 0; previous_index < prefix_size; ++previous_index) {
+        const ExecutedTransition& previous = trace.at(previous_index);
+        if (previous.thread == current.thread) {
+            // INVARIANTS.md Replay: schedules preserve per-thread action-index
+            // order, so same-thread transitions cannot be swapped into a new
+            // legal replay schedule.
+            continue;
+        }
+
+        if (independent(previous.action, current.action)) {
+            // INVARIANTS.md Soundness/Independence: this is the DPOR pruning
+            // predicate. We may commute and therefore avoid a backtrack only
+            // when independent() says ordering cannot affect observable state
+            // or future enabledness.
+            continue;
+        }
+
+        DporNode& backtrack_point = nodes.at(previous_index);
+        if (contains_thread(backtrack_point.enabled, current.thread)) {
+            // INVARIANTS.md Soundness: dependent transitions may expose a
+            // distinct bug class, so force a representative that schedules the
+            // later thread at the earlier dependent point when it was enabled.
+            insert_thread(backtrack_point.backtrack, current.thread);
+        } else {
+            // INVARIANTS.md Soundness, highest-risk disabled-transition
+            // fallback: the later dependent thread could not be scheduled at
+            // this earlier point, so add every enabled thread. This is the
+            // classic conservative DPOR fallback that preserves deadlock
+            // detection by exploring whichever enabled transition may make the
+            // dependent thread reachable before the earlier transition.
+            for (const ThreadId enabled : backtrack_point.enabled) {
+                insert_thread(backtrack_point.backtrack, enabled);
+            }
+        }
+    }
+}
+
+void add_backtracks_for_transition(std::vector<DporNode>& nodes,
+                                   const std::vector<ExecutedTransition>& trace) {
+    if (trace.empty()) {
+        return;
+    }
+
+    add_backtracks_for_transition_against_prefix(nodes, trace, trace.back(), trace.size() - 1);
+}
+
+void add_disabled_backtracks(const Program& program,
+                             const ExecutionState& state,
+                             std::vector<DporNode>& nodes,
+                             const std::vector<ExecutedTransition>& trace) {
+    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+        if (is_finished(program, state, tid) || is_enabled(program, state, tid)) {
+            continue;
+        }
+
+        const ExecutedTransition blocked{
+            tid,
+            next_action(program, state, tid),
+            ScheduleStep{tid, state.pc.at(tid)},
+        };
+        // INVARIANTS.md Soundness/Deadlock: a blocked transition absent from
+        // the executed trace may be exactly the dependent action needed to
+        // expose another deadlock, race, or error schedule. We therefore apply
+        // the same independent()-guarded backtrack rule to disabled next
+        // actions at terminal leaves; independent blocked actions remain
+        // pruned only when the Independence invariant permits commuting them.
+        add_backtracks_for_transition_against_prefix(nodes, trace, blocked, trace.size());
+    }
+}
+
+void dpor_dfs(const Program& program,
+              ExecutionState state,
+              CheckResult& result,
+              std::size_t max_schedules,
+              std::vector<DporNode>& nodes,
+              std::vector<ExecutedTransition>& trace) {
+    if (result.schedules_explored >= max_schedules) {
+        return;
+    }
+
+    const auto depth = nodes.size();
+    nodes.push_back(DporNode{enabled_threads(program, state), {}, {}});
+
+    if (nodes.at(depth).enabled.empty()) {
+        ++result.schedules_explored;
+        if (!all_finished(program, state)) {
+            add_disabled_backtracks(program, state, nodes, trace);
+        }
+        if (!all_finished(program, state) && !result.first_deadlock.has_value()) {
+            result.first_deadlock = make_deadlock_report(program, state);
+        }
+        nodes.pop_back();
+        return;
+    }
+
+    initialize_dpor_backtrack(program, state, nodes.at(depth));
+
+    while (result.schedules_explored < max_schedules) {
+        const std::optional<ThreadId> next_tid = next_unexplored_backtrack(nodes.at(depth));
+        if (!next_tid.has_value()) {
+            break;
+        }
+
+        insert_thread(nodes.at(depth).done, *next_tid);
+        if (!contains_thread(nodes.at(depth).enabled, *next_tid)) {
+            continue;
+        }
+
+        const auto action_index = state.pc.at(*next_tid);
+        const ExecutedTransition transition{
+            *next_tid,
+            program.threads.at(*next_tid).at(action_index),
+            ScheduleStep{*next_tid, action_index},
+        };
+
+        ExecutionState next = state;
+        const StepReport step_report = execute_enabled_step(program, next, *next_tid);
+        trace.push_back(transition);
+        add_backtracks_for_transition(nodes, trace);
+        record_step_report(result, step_report);
+
+        if (step_report.error.has_value()) {
+            add_disabled_backtracks(program, state, nodes, trace);
+            // INVARIANTS.md Soundness: a modeled error terminates this
+            // schedule, so even independent enabled siblings cannot be
+            // represented by running them after the error. Do not prune at
+            // this node after an error endpoint; add every enabled sibling so
+            // races, deadlocks, or other errors reachable before this error
+            // still have a representative schedule.
+            for (const ThreadId enabled : nodes.at(depth).enabled) {
+                insert_thread(nodes.at(depth).backtrack, enabled);
+            }
+            ++result.schedules_explored;
+        } else {
+            // INVARIANTS.md Soundness/Independence: enabled transitions not in
+            // this node's backtrack set are the only schedules pruned here.
+            // The initial persistent set and dynamic backtrack additions above
+            // omit an alternative solely after independent() justifies
+            // commuting it with the representative transition.
+            dpor_dfs(program, std::move(next), result, max_schedules, nodes, trace);
+        }
+
+        trace.pop_back();
+    }
+
+    nodes.pop_back();
+}
+
 void dfs(const Program& program,
          ExecutionState state,
          CheckResult& result,
@@ -304,6 +532,14 @@ ModelChecker::ModelChecker(Program program) : program_(std::move(program)) {}
 CheckResult ModelChecker::explore_naive(std::size_t max_schedules) const {
     CheckResult result;
     dfs(program_, initial_state(program_), result, max_schedules);
+    return result;
+}
+
+CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
+    CheckResult result;
+    std::vector<DporNode> nodes;
+    std::vector<ExecutedTransition> trace;
+    dpor_dfs(program_, initial_state(program_), result, max_schedules, nodes, trace);
     return result;
 }
 

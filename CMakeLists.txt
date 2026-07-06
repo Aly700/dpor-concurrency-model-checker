@@ -25,8 +25,16 @@ target_link_libraries(vector_clock_tests PRIVATE model_checker)
 add_executable(independence_tests tests/independence.cpp)
 target_link_libraries(independence_tests PRIVATE model_checker)
 
+add_executable(dpor_oracle tests/dpor_oracle.cpp)
+target_link_libraries(dpor_oracle PRIVATE model_checker)
+
+add_executable(dpor_oracle_3threads tests/dpor_oracle_3threads.cpp)
+target_link_libraries(dpor_oracle_3threads PRIVATE model_checker)
+
 include(CTest)
 add_test(NAME dpor_smoke COMMAND dpor_smoke)
 add_test(NAME dpor_phase1 COMMAND dpor_phase1)
 add_test(NAME vector_clock_tests COMMAND vector_clock_tests)
 add_test(NAME independence_tests COMMAND independence_tests)
+add_test(NAME dpor_oracle COMMAND dpor_oracle)
+add_test(NAME dpor_oracle_3threads COMMAND dpor_oracle_3threads)

@@ -51,6 +51,7 @@ class ModelChecker {
 public:
     explicit ModelChecker(Program program);
     CheckResult explore_naive(std::size_t max_schedules = 100000) const;
+    CheckResult explore_dpor(std::size_t max_schedules = 100000) const;
     CheckResult replay(const Schedule& schedule) const;
 
 private:

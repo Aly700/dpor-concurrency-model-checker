@@ -10,10 +10,14 @@ controlled concurrent program -> scheduler -> explored schedules -> HB/race/dead
 
 - `model::Program` is a tiny action IR.
 - `ModelChecker::explore_naive` is the exhaustive oracle.
+- `ModelChecker::explore_dpor` is the reduced oracle added beside the naive
+  DFS. It uses deterministic backtrack/done sets and relies exclusively on
+  `independent()` when pruning equivalent orderings.
 - `ModelChecker::replay` re-executes a deterministic schedule and rejects
   disabled or out-of-range steps with a clear error.
 - `VectorClock` is the base happens-before data structure.
-- DPOR should be added beside, not instead of, the naive oracle.
+- The cross-validation executable `dpor_oracle` checks a deterministic capped
+  family of tiny programs against the naive oracle.
 
 ## Phase 1 execution model
 
@@ -46,6 +50,19 @@ small-step semantics. Therefore, per-execution happens-before race detection
 over every explored schedule is complete for this model: if a modeled race or
 deadlock is reachable in any enabled interleaving, the naive oracle will visit a
 prefix that reports it.
+
+## DPOR Reduction
+
+DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, and done
+thread sets. Each prefix starts from a conservative persistent set and dynamic
+backtracking adds alternatives when an executed or terminal blocked transition
+is dependent with an earlier transition. If the later dependent thread was not
+enabled at the earlier point, every enabled thread at that point is added as the
+classic disabled-transition fallback.
+
+No sleep sets are currently used. Race and error detection still run through the
+same interpreter as naive exploration, and every DPOR report is expected to
+replay identically.
 
 ## Design bias
 
