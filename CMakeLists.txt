@@ -16,5 +16,17 @@ target_compile_options(model_checker PRIVATE -Wall -Wextra -Wpedantic)
 add_executable(dpor_smoke tests/smoke.cpp)
 target_link_libraries(dpor_smoke PRIVATE model_checker)
 
+add_executable(dpor_phase1 tests/phase1.cpp)
+target_link_libraries(dpor_phase1 PRIVATE model_checker)
+
+add_executable(vector_clock_tests tests/vector_clock_tests.cpp)
+target_link_libraries(vector_clock_tests PRIVATE model_checker)
+
+add_executable(independence_tests tests/independence.cpp)
+target_link_libraries(independence_tests PRIVATE model_checker)
+
 include(CTest)
 add_test(NAME dpor_smoke COMMAND dpor_smoke)
+add_test(NAME dpor_phase1 COMMAND dpor_phase1)
+add_test(NAME vector_clock_tests COMMAND vector_clock_tests)
+add_test(NAME independence_tests COMMAND independence_tests)

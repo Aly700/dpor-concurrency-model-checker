@@ -14,6 +14,8 @@ struct Action {
     ActionKind kind{ActionKind::Yield};
     std::string address;
     std::string mutex;
+
+    bool operator==(const Action&) const = default;
 };
 
 struct Program {
@@ -23,10 +25,13 @@ struct Program {
 struct ScheduleStep {
     ThreadId thread{0};
     std::uint32_t action_index{0};
+
+    bool operator==(const ScheduleStep&) const = default;
 };
 
 using Schedule = std::vector<ScheduleStep>;
 
 bool may_conflict(const Action& lhs, const Action& rhs);
+bool independent(const Action& lhs, const Action& rhs);
 
 } // namespace model
