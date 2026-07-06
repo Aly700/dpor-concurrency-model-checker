@@ -9,6 +9,7 @@
 #include <optional>
 #include <sstream>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace {
@@ -29,11 +30,40 @@ model::Action unlock(std::string mutex) {
     return model::Action{model::ActionKind::Unlock, "", std::move(mutex)};
 }
 
+model::Action join(model::ThreadId target) {
+    model::Action action;
+    action.kind = model::ActionKind::Join;
+    action.target = target;
+    return action;
+}
+
+model::Action wait(std::string condition, std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Wait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action signal(std::string condition) {
+    model::Action action;
+    action.kind = model::ActionKind::Signal;
+    action.condition = std::move(condition);
+    return action;
+}
+
+model::Action broadcast(std::string condition) {
+    model::Action action;
+    action.kind = model::ActionKind::Broadcast;
+    action.condition = std::move(condition);
+    return action;
+}
+
 model::Action yield() {
     return model::Action{model::ActionKind::Yield, "", ""};
 }
 
-const std::array<model::Action, 8> kActions{
+const std::array<model::Action, 13> kActions{
     read("x"),
     write("x"),
     write("y"),
@@ -41,6 +71,11 @@ const std::array<model::Action, 8> kActions{
     lock("n"),
     unlock("m"),
     unlock("n"),
+    wait("cv", "m"),
+    signal("cv"),
+    broadcast("cv"),
+    join(0),
+    join(1),
     yield(),
 };
 
@@ -73,6 +108,18 @@ std::string action_string(const model::Action& action) {
     case model::ActionKind::Unlock:
         out << "Unlock " << action.mutex;
         break;
+    case model::ActionKind::Join:
+        out << "Join " << action.target;
+        break;
+    case model::ActionKind::Wait:
+        out << "Wait " << action.condition << ' ' << action.mutex;
+        break;
+    case model::ActionKind::Signal:
+        out << "Signal " << action.condition;
+        break;
+    case model::ActionKind::Broadcast:
+        out << "Broadcast " << action.condition;
+        break;
     case model::ActionKind::Yield:
         out << "Yield";
         break;
@@ -90,7 +137,7 @@ void print_program(const model::Program& program) {
     }
 }
 
-std::uint64_t pow8(std::size_t exponent) {
+std::uint64_t pow_actions(std::size_t exponent) {
     std::uint64_t result = 1;
     for (std::size_t i = 0; i < exponent; ++i) {
         result *= kActions.size();
@@ -177,6 +224,18 @@ std::vector<model::Program> hand_picked_programs() {
             {lock("m"), lock("n"), unlock("n"), unlock("m")},
             {lock("n"), lock("m"), unlock("m"), unlock("n")},
         }},
+        model::Program{{
+            {lock("m"), wait("cv", "m"), unlock("m")},
+            {signal("cv")},
+        }},
+        model::Program{{
+            {write("x")},
+            {join(0), write("x")},
+        }},
+        model::Program{{
+            {lock("m"), wait("cv", "m"), read("x"), unlock("m")},
+            {lock("m"), signal("cv"), unlock("m"), write("x")},
+        }},
     };
 }
 
@@ -205,12 +264,13 @@ int main() {
     std::size_t dpor_total = 0;
 
     // Deterministically enumerates two-thread programs with 0..3 actions per
-    // thread over kActions. Each length pair is capped at 4096 programs; larger
-    // length pairs use evenly spaced encoded indexes, not randomness.
-    constexpr std::uint64_t kProgramsPerLengthPairCap = 4096;
+    // thread over kActions, including Join and Mesa condition-variable
+    // actions. Each length pair is capped at 2048 programs; larger length
+    // pairs use evenly spaced encoded indexes, not randomness.
+    constexpr std::uint64_t kProgramsPerLengthPairCap = 2048;
     for (std::size_t lhs_length = 0; lhs_length <= 3; ++lhs_length) {
         for (std::size_t rhs_length = 0; rhs_length <= 3; ++rhs_length) {
-            const auto count = pow8(lhs_length + rhs_length);
+            const auto count = pow_actions(lhs_length + rhs_length);
             const auto samples = std::min<std::uint64_t>(count, kProgramsPerLengthPairCap);
             for (std::uint64_t sample = 0; sample < samples; ++sample) {
                 const auto encoded = count == samples ? sample : (sample * count) / samples;
@@ -242,6 +302,8 @@ int main() {
     }});
 
     std::cout << "dpor_oracle: programs checked=" << programs_checked
+              << " alphabet=" << kActions.size()
+              << " cap_per_length_pair=" << kProgramsPerLengthPairCap
               << " naive schedules total=" << naive_total
               << " dpor schedules total=" << dpor_total << '\n';
     return 0;

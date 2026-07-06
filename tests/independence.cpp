@@ -19,6 +19,35 @@ model::Action lock(std::string mutex) {
     return model::Action{model::ActionKind::Lock, "", std::move(mutex)};
 }
 
+model::Action join(model::ThreadId target) {
+    model::Action action;
+    action.kind = model::ActionKind::Join;
+    action.target = target;
+    return action;
+}
+
+model::Action wait(std::string condition, std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Wait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action signal(std::string condition) {
+    model::Action action;
+    action.kind = model::ActionKind::Signal;
+    action.condition = std::move(condition);
+    return action;
+}
+
+model::Action broadcast(std::string condition) {
+    model::Action action;
+    action.kind = model::ActionKind::Broadcast;
+    action.condition = std::move(condition);
+    return action;
+}
+
 model::Action yield() {
     return model::Action{model::ActionKind::Yield, "", ""};
 }
@@ -52,11 +81,18 @@ int main() {
     assert(!model::independent(write("x"), write("x")));
     assert(!model::independent(write("x"), read("x")));
     assert(!model::independent(lock("m"), lock("m")));
+    assert(!model::independent(join(0), yield()));
+    assert(!model::independent(wait("cv", "m"), signal("cv")));
+    assert(!model::independent(wait("cv", "m"), broadcast("cv")));
+    assert(!model::independent(wait("cv0", "m"), lock("m")));
+    assert(model::independent(wait("cv0", "m"), signal("cv1")));
 
     assert_pair_commutes_when_independent(read("x"), read("x"));
     assert_pair_commutes_when_independent(read("x"), write("y"));
     assert_pair_commutes_when_independent(write("x"), lock("m"));
     assert_pair_commutes_when_independent(lock("m"), lock("n"));
+    assert_pair_commutes_when_independent(signal("cv0"), signal("cv1"));
+    assert_pair_commutes_when_independent(broadcast("cv0"), signal("cv1"));
     assert_pair_commutes_when_independent(yield(), write("x"));
 
     return 0;

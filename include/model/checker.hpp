@@ -17,10 +17,15 @@ struct RaceReport {
     bool operator==(const RaceReport&) const = default;
 };
 
+enum class BlockedOnKind { Mutex, Thread, ConditionVariable };
+
 struct BlockedThread {
     ThreadId thread{0};
     std::string mutex;
     std::optional<ThreadId> owner;
+    BlockedOnKind kind{BlockedOnKind::Mutex};
+    std::optional<ThreadId> target;
+    std::string condition;
 
     bool operator==(const BlockedThread&) const = default;
 };

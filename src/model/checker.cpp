@@ -3,6 +3,7 @@
 #include "model/vector_clock.hpp"
 
 #include <algorithm>
+#include <cassert>
 #include <cstddef>
 #include <map>
 #include <sstream>
@@ -22,11 +23,15 @@ struct AddressState {
     std::map<std::pair<ThreadId, std::uint32_t>, MemoryAccess> reads_since_last_write;
 };
 
+enum class WaitPhase { None, Waiting, Woken };
+
 struct ExecutionState {
     std::vector<std::uint32_t> pc;
     std::map<std::string, ThreadId> mutex_owner;
     std::map<std::string, VectorClock> mutex_clock;
+    std::map<std::string, std::vector<ThreadId>> condition_waiters;
     std::vector<VectorClock> thread_clock;
+    std::vector<WaitPhase> wait_phase;
     std::map<std::string, AddressState> memory;
     Schedule schedule;
 };
@@ -53,7 +58,9 @@ ExecutionState initial_state(const Program& program) {
         std::vector<std::uint32_t>(program.threads.size(), 0),
         {},
         {},
+        {},
         std::vector<VectorClock>(program.threads.size()),
+        std::vector<WaitPhase>(program.threads.size(), WaitPhase::None),
         {},
         {},
     };
@@ -76,17 +83,50 @@ const Action& next_action(const Program& program, const ExecutionState& state, T
     return program.threads.at(tid).at(state.pc.at(tid));
 }
 
+bool owns_mutex(const ExecutionState& state, ThreadId tid, const std::string& mutex) {
+    const auto owner = state.mutex_owner.find(mutex);
+    return owner != state.mutex_owner.end() && owner->second == tid;
+}
+
+bool join_target_is_invalid(const Program& program, ThreadId tid, const Action& action) {
+    return action.target >= program.threads.size() || action.target == tid;
+}
+
 bool is_enabled(const Program& program, const ExecutionState& state, ThreadId tid) {
     if (is_finished(program, state, tid)) {
         return false;
     }
 
     const Action& action = next_action(program, state, tid);
-    if (action.kind != ActionKind::Lock) {
+    switch (action.kind) {
+    case ActionKind::Lock:
+        return state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
+    case ActionKind::Join:
+        if (join_target_is_invalid(program, tid, action)) {
+            return true;
+        }
+        return is_finished(program, state, action.target);
+    case ActionKind::Wait:
+        if (state.wait_phase.at(tid) == WaitPhase::Waiting) {
+            return false;
+        }
+        if (state.wait_phase.at(tid) == WaitPhase::Woken) {
+            // INVARIANTS.md Replay/HB: a woken Wait replays as the same
+            // action index, but it remains disabled until the mutex reacquire
+            // edge can be applied exactly like Lock.
+            return state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
+        }
+        return true;
+    case ActionKind::Read:
+    case ActionKind::Write:
+    case ActionKind::Unlock:
+    case ActionKind::Signal:
+    case ActionKind::Broadcast:
+    case ActionKind::Yield:
         return true;
     }
 
-    return state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
+    return false;
 }
 
 bool any_enabled(const Program& program, const ExecutionState& state) {
@@ -101,6 +141,12 @@ bool any_enabled(const Program& program, const ExecutionState& state) {
 std::vector<ThreadId> enabled_threads(const Program& program, const ExecutionState& state) {
     std::vector<ThreadId> enabled;
     for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+        // INVARIANTS.md Replay/HB: Wait's two phases are represented in
+        // per-thread state, not by rewriting the program. A sleeping waiter is
+        // absent, and a woken waiter appears only when the mutex reacquire edge
+        // can run under the original (thread, action_index) schedule step.
+        // Join appears only when its target is finished, except invalid joins
+        // stay enabled so replay reaches the modeled error deterministically.
         if (is_enabled(program, state, tid)) {
             enabled.push_back(tid);
         }
@@ -192,22 +238,91 @@ ModelErrorReport make_unlock_error(const Action& action,
     return ModelErrorReport{endpoint, message.str(), schedule};
 }
 
+ModelErrorReport make_join_error(const Action& action, ScheduleStep endpoint, const Schedule& schedule) {
+    std::ostringstream message;
+    message << "thread " << endpoint.thread << " attempted to join ";
+    if (action.target == endpoint.thread) {
+        message << "itself";
+    } else {
+        message << "out-of-range thread " << action.target;
+    }
+    return ModelErrorReport{endpoint, message.str(), schedule};
+}
+
+ModelErrorReport make_wait_error(const Action& action,
+                                 ScheduleStep endpoint,
+                                 const Schedule& schedule,
+                                 const ExecutionState& state) {
+    std::ostringstream message;
+    message << "thread " << endpoint.thread << " attempted to wait on condition '"
+            << action.condition << "' with mutex '" << action.mutex << "'";
+    const auto owner = state.mutex_owner.find(action.mutex);
+    if (owner == state.mutex_owner.end()) {
+        message << " but the mutex is not owned";
+    } else {
+        message << " but it is owned by thread " << owner->second;
+    }
+    return ModelErrorReport{endpoint, message.str(), schedule};
+}
+
+void insert_waiter(ExecutionState& state, const std::string& condition, ThreadId tid) {
+    auto& waiters = state.condition_waiters[condition];
+    const auto position = std::lower_bound(waiters.begin(), waiters.end(), tid);
+    assert(position == waiters.end() || *position != tid);
+    waiters.insert(position, tid);
+}
+
+void wake_waiter(ExecutionState& state, ThreadId signaler, ThreadId waiter) {
+    assert(state.wait_phase.at(waiter) == WaitPhase::Waiting);
+    state.wait_phase.at(waiter) = WaitPhase::Woken;
+    state.thread_clock.at(waiter).join(state.thread_clock.at(signaler));
+}
+
+void signal_one_waiter(ExecutionState& state, const Action& action, ThreadId signaler) {
+    auto& waiters = state.condition_waiters[action.condition];
+    if (waiters.empty()) {
+        return;
+    }
+
+    const ThreadId waiter = waiters.front();
+    waiters.erase(waiters.begin());
+    wake_waiter(state, signaler, waiter);
+}
+
+void broadcast_waiters(ExecutionState& state, const Action& action, ThreadId signaler) {
+    auto& waiters = state.condition_waiters[action.condition];
+    const std::vector<ThreadId> to_wake = waiters;
+    waiters.clear();
+    for (const ThreadId waiter : to_wake) {
+        wake_waiter(state, signaler, waiter);
+    }
+}
+
 StepReport execute_enabled_step(const Program& program, ExecutionState& state, ThreadId tid) {
     const auto action_index = state.pc.at(tid);
     const ScheduleStep endpoint{tid, action_index};
     const Action& action = program.threads.at(tid).at(action_index);
 
-    ++state.pc.at(tid);
     state.schedule.push_back(endpoint);
     state.thread_clock.at(tid).tick(tid);
 
     StepReport report;
     switch (action.kind) {
     case ActionKind::Lock:
+        ++state.pc.at(tid);
         state.mutex_owner[action.mutex] = tid;
         state.thread_clock.at(tid).join(state.mutex_clock[action.mutex]);
         break;
+    case ActionKind::Join:
+        ++state.pc.at(tid);
+        if (join_target_is_invalid(program, tid, action)) {
+            report.error = make_join_error(action, endpoint, state.schedule);
+            break;
+        }
+        state.thread_clock.at(tid).join(state.thread_clock.at(action.target));
+        break;
     case ActionKind::Unlock: {
+        ++state.pc.at(tid);
         const auto owner = state.mutex_owner.find(action.mutex);
         if (owner == state.mutex_owner.end() || owner->second != tid) {
             report.error = make_unlock_error(action, endpoint, state.schedule, state);
@@ -217,17 +332,51 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
         state.mutex_owner.erase(owner);
         break;
     }
+    case ActionKind::Wait: {
+        if (state.wait_phase.at(tid) == WaitPhase::Woken) {
+            assert(state.mutex_owner.find(action.mutex) == state.mutex_owner.end());
+            state.mutex_owner[action.mutex] = tid;
+            state.thread_clock.at(tid).join(state.mutex_clock[action.mutex]);
+            state.wait_phase.at(tid) = WaitPhase::None;
+            ++state.pc.at(tid);
+            break;
+        }
+
+        assert(state.wait_phase.at(tid) == WaitPhase::None);
+        if (!owns_mutex(state, tid, action.mutex)) {
+            ++state.pc.at(tid);
+            report.error = make_wait_error(action, endpoint, state.schedule, state);
+            break;
+        }
+
+        state.mutex_clock[action.mutex] = state.thread_clock.at(tid);
+        state.mutex_owner.erase(action.mutex);
+        insert_waiter(state, action.condition, tid);
+        state.wait_phase.at(tid) = WaitPhase::Waiting;
+        break;
+    }
+    case ActionKind::Signal:
+        ++state.pc.at(tid);
+        signal_one_waiter(state, action, tid);
+        break;
+    case ActionKind::Broadcast:
+        ++state.pc.at(tid);
+        broadcast_waiters(state, action, tid);
+        break;
     case ActionKind::Read:
+        ++state.pc.at(tid);
         if (!action.address.empty()) {
             report.race = record_read(state, action, MemoryAccess{state.thread_clock.at(tid), endpoint});
         }
         break;
     case ActionKind::Write:
+        ++state.pc.at(tid);
         if (!action.address.empty()) {
             report.race = record_write(state, action, MemoryAccess{state.thread_clock.at(tid), endpoint});
         }
         break;
     case ActionKind::Yield:
+        ++state.pc.at(tid);
         break;
     }
     return report;
@@ -241,13 +390,46 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
         }
 
         const Action& action = next_action(program, state, tid);
+        // INVARIANTS.md Soundness/Replay: a terminal state with unfinished
+        // disabled threads must describe the exact blocker visible to replay.
+        // Lock and woken-Wait reacquire wait on a mutex, Join waits on its
+        // target thread to finish, and sleeping Wait waits on its condition
+        // variable without inventing a queued permit.
         if (action.kind == ActionKind::Lock) {
             const auto owner = state.mutex_owner.find(action.mutex);
-            report.blocked_threads.push_back(BlockedThread{
-                tid,
-                action.mutex,
-                owner == state.mutex_owner.end() ? std::optional<ThreadId>{} : std::optional<ThreadId>{owner->second},
-            });
+            BlockedThread blocked;
+            blocked.thread = tid;
+            blocked.kind = BlockedOnKind::Mutex;
+            blocked.mutex = action.mutex;
+            blocked.owner = owner == state.mutex_owner.end()
+                                ? std::optional<ThreadId>{}
+                                : std::optional<ThreadId>{owner->second};
+            report.blocked_threads.push_back(std::move(blocked));
+        } else if (action.kind == ActionKind::Join && !join_target_is_invalid(program, tid, action)) {
+            BlockedThread blocked;
+            blocked.thread = tid;
+            blocked.kind = BlockedOnKind::Thread;
+            blocked.target = action.target;
+            report.blocked_threads.push_back(std::move(blocked));
+        } else if (action.kind == ActionKind::Wait) {
+            if (state.wait_phase.at(tid) == WaitPhase::Waiting) {
+                BlockedThread blocked;
+                blocked.thread = tid;
+                blocked.kind = BlockedOnKind::ConditionVariable;
+                blocked.condition = action.condition;
+                blocked.mutex = action.mutex;
+                report.blocked_threads.push_back(std::move(blocked));
+            } else if (state.wait_phase.at(tid) == WaitPhase::Woken) {
+                const auto owner = state.mutex_owner.find(action.mutex);
+                BlockedThread blocked;
+                blocked.thread = tid;
+                blocked.kind = BlockedOnKind::Mutex;
+                blocked.mutex = action.mutex;
+                blocked.owner = owner == state.mutex_owner.end()
+                                    ? std::optional<ThreadId>{}
+                                    : std::optional<ThreadId>{owner->second};
+                report.blocked_threads.push_back(std::move(blocked));
+            }
         }
     }
     report.schedule = state.schedule;
@@ -360,12 +542,13 @@ void add_disabled_backtracks(const Program& program,
             next_action(program, state, tid),
             ScheduleStep{tid, state.pc.at(tid)},
         };
-        // INVARIANTS.md Soundness/Deadlock: a blocked transition absent from
-        // the executed trace may be exactly the dependent action needed to
-        // expose another deadlock, race, or error schedule. We therefore apply
-        // the same independent()-guarded backtrack rule to disabled next
-        // actions at terminal leaves; independent blocked actions remain
-        // pruned only when the Independence invariant permits commuting them.
+        // INVARIANTS.md Soundness/Deadlock: a blocked Lock, Join, sleeping
+        // Wait, or woken-Wait reacquire absent from the executed trace may be
+        // exactly the dependent action needed to expose another deadlock,
+        // race, or error schedule. We therefore apply the same
+        // independent()-guarded backtrack rule to disabled next actions at
+        // terminal leaves; independent blocked actions remain pruned only when
+        // the Independence invariant permits commuting them.
         add_backtracks_for_transition_against_prefix(nodes, trace, blocked, trace.size());
     }
 }
@@ -590,13 +773,25 @@ bool blocked_thread_less(const BlockedThread& lhs, const BlockedThread& rhs) {
     if (lhs.thread != rhs.thread) {
         return lhs.thread < rhs.thread;
     }
+    if (lhs.kind != rhs.kind) {
+        return lhs.kind < rhs.kind;
+    }
     if (lhs.mutex != rhs.mutex) {
         return lhs.mutex < rhs.mutex;
     }
     if (lhs.owner.has_value() != rhs.owner.has_value()) {
         return !lhs.owner.has_value();
     }
-    return lhs.owner.value_or(0) < rhs.owner.value_or(0);
+    if (lhs.owner.value_or(0) != rhs.owner.value_or(0)) {
+        return lhs.owner.value_or(0) < rhs.owner.value_or(0);
+    }
+    if (lhs.target.has_value() != rhs.target.has_value()) {
+        return !lhs.target.has_value();
+    }
+    if (lhs.target.value_or(0) != rhs.target.value_or(0)) {
+        return lhs.target.value_or(0) < rhs.target.value_or(0);
+    }
+    return lhs.condition < rhs.condition;
 }
 
 RaceIdentity identity_of(const RaceReport& report) {

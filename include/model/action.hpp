@@ -8,12 +8,14 @@ namespace model {
 
 using ThreadId = std::uint32_t;
 
-enum class ActionKind { Read, Write, Lock, Unlock, Yield };
+enum class ActionKind { Read, Write, Lock, Unlock, Join, Wait, Signal, Broadcast, Yield };
 
 struct Action {
     ActionKind kind{ActionKind::Yield};
     std::string address;
     std::string mutex;
+    std::string condition;
+    ThreadId target{0};
 
     bool operator==(const Action&) const = default;
 };

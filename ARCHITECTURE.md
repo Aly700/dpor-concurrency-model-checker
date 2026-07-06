@@ -31,23 +31,36 @@ The checker interprets a program as a small-step state machine:
 - `mutex_owner[mutex]` records the owning thread for held mutexes.
 - `mutex_clock[mutex]` records the vector clock stored by the last successful
   unlock of that mutex.
+- `condition_waiters[cv]` records sleeping waiters in deterministic thread-id
+  order. Signal wakes the lowest-numbered waiter; broadcast wakes all current
+  waiters. No permits are queued when the set is empty.
 - `thread_clock[tid]` records each thread's happens-before frontier.
+- `wait_phase[tid]` records whether a thread is not waiting, asleep in a
+  condition variable, or woken and waiting to reacquire its mutex.
 - `memory[address]` records the last write and the reads since that write.
 
 At each DFS state, the naive oracle enumerates exactly the enabled actions in
-ascending thread-id order. `Read`, `Write`, `Yield`, and `Unlock` are enabled;
-an invalid `Unlock` is reported as a modeled error. `Lock` is enabled only when
-its mutex is not currently owned. A state with unfinished threads and no enabled
-action is a deadlock; a state where all threads are finished is normal
-termination.
+ascending thread-id order. `Read`, `Write`, `Yield`, `Unlock`, `Signal`, and
+`Broadcast` are enabled; invalid `Unlock`, invalid `Wait`, and invalid `Join`
+steps are reported as modeled errors. `Lock` is enabled only when its mutex is
+not currently owned. `Join(target)` is enabled only when `target` has finished.
+`Wait(cv, mutex)` is one IR action with two schedule steps at the same action
+index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
+unfinished threads and no enabled action is a deadlock; the report tags each
+thread as waiting on a mutex, join target, or condition variable. A state where
+all threads are finished is normal termination.
 
 ## Happens-Before Analysis
 
 Each executed step ticks its thread's vector clock. `Unlock` stores the
 releasing thread's clock in the mutex clock. `Lock` joins the acquiring thread's
-clock with that mutex clock. Memory accesses compare their current vector clock
-against prior conflicting accesses to the same address. A race report records
-the two access endpoints and the executed prefix through the second access.
+clock with that mutex clock. `Wait` first performs the same release update as
+`Unlock`, then its woken second step performs the same acquire join as `Lock`.
+`Signal` and `Broadcast` join the signaler's clock into each woken waiter.
+`Join` joins the caller's clock with the target thread's final clock. Memory
+accesses compare their current vector clock against prior conflicting accesses
+to the same address. A race report records the two access endpoints and the
+executed prefix through the second access.
 
 The exhaustive oracle explores all enabled interleavings of the modeled
 small-step semantics. Therefore, per-execution happens-before race detection
@@ -63,6 +76,11 @@ backtracking adds alternatives when an executed or terminal blocked transition
 is dependent with an earlier transition. If the later dependent thread was not
 enabled at the earlier point, every enabled thread at that point is added as the
 classic disabled-transition fallback.
+
+Blocked terminal transitions now include blocked joins, sleeping condition
+waiters, and woken waiters waiting to reacquire their mutex. `next_action()`
+still returns the original IR action for these states, so DPOR records the same
+`(thread, action_index)` schedule representation that replay validates.
 
 No sleep sets are currently used. Race and error detection still run through the
 same interpreter as naive exploration, and every DPOR report is expected to

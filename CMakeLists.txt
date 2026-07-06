@@ -34,6 +34,12 @@ target_link_libraries(dpor_oracle_3threads PRIVATE model_checker)
 add_executable(minimize_tests tests/minimize.cpp)
 target_link_libraries(minimize_tests PRIVATE model_checker)
 
+add_executable(condvar_tests tests/condvar.cpp)
+target_link_libraries(condvar_tests PRIVATE model_checker)
+
+add_executable(hb_edge_probes tests/hb_edge_probes.cpp)
+target_link_libraries(hb_edge_probes PRIVATE model_checker)
+
 include(CTest)
 add_test(NAME dpor_smoke COMMAND dpor_smoke)
 add_test(NAME dpor_phase1 COMMAND dpor_phase1)
@@ -42,3 +48,5 @@ add_test(NAME independence_tests COMMAND independence_tests)
 add_test(NAME dpor_oracle COMMAND dpor_oracle)
 add_test(NAME dpor_oracle_3threads COMMAND dpor_oracle_3threads)
 add_test(NAME minimize_tests COMMAND minimize_tests)
+add_test(NAME condvar_tests COMMAND condvar_tests)
+add_test(NAME hb_edge_probes COMMAND hb_edge_probes)
