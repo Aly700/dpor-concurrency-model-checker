@@ -16,11 +16,15 @@ namespace {
 struct MemoryAccess {
     VectorClock clock;
     ScheduleStep endpoint;
+    bool is_atomic{false};
+    bool is_write{false};
 };
 
 struct AddressState {
     std::optional<MemoryAccess> last_write;
     std::map<std::pair<ThreadId, std::uint32_t>, MemoryAccess> reads_since_last_write;
+    std::vector<MemoryAccess> plain_accesses;
+    std::vector<MemoryAccess> atomic_accesses;
 };
 
 enum class WaitPhase { None, Waiting, Woken };
@@ -33,6 +37,7 @@ struct ExecutionState {
     std::vector<VectorClock> thread_clock;
     std::vector<WaitPhase> wait_phase;
     std::map<std::string, AddressState> memory;
+    std::map<std::string, VectorClock> atomic_location_clock;
     Schedule schedule;
 };
 
@@ -69,6 +74,7 @@ ExecutionState initial_state(const Program& program) {
         {},
         std::vector<VectorClock>(program.threads.size()),
         std::vector<WaitPhase>(program.threads.size(), WaitPhase::None),
+        {},
         {},
         {},
     };
@@ -145,6 +151,9 @@ bool is_enabled(const Program& program, const ExecutionState& state, ThreadId ti
         return true;
     case ActionKind::Read:
     case ActionKind::Write:
+    case ActionKind::AtomicLoad:
+    case ActionKind::AtomicStore:
+    case ActionKind::AtomicRmw:
     case ActionKind::Unlock:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
@@ -246,6 +255,16 @@ std::optional<RaceReport> record_read(ExecutionState& state,
     }
     address_state.reads_since_last_write.emplace(
         std::make_pair(current.endpoint.thread, current.endpoint.action_index), current);
+    if (!race.has_value()) {
+        for (const auto& atomic : address_state.atomic_accesses) {
+            if ((atomic.is_write || current.is_write) &&
+                !ordered_by_happens_before(atomic, current)) {
+                race = make_race_report(action.address, atomic, current, state.schedule);
+                break;
+            }
+        }
+    }
+    address_state.plain_accesses.push_back(current);
     return race;
 }
 
@@ -268,8 +287,35 @@ std::optional<RaceReport> record_write(ExecutionState& state,
         }
     }
 
+    if (!race.has_value()) {
+        for (const auto& atomic : address_state.atomic_accesses) {
+            if ((atomic.is_write || current.is_write) &&
+                !ordered_by_happens_before(atomic, current)) {
+                race = make_race_report(action.address, atomic, current, state.schedule);
+                break;
+            }
+        }
+    }
+
     address_state.last_write = current;
     address_state.reads_since_last_write.clear();
+    address_state.plain_accesses.push_back(current);
+    return race;
+}
+
+std::optional<RaceReport> record_atomic(ExecutionState& state,
+                                        const Action& action,
+                                        const MemoryAccess& current) {
+    auto& address_state = state.memory[action.address];
+    std::optional<RaceReport> race;
+    for (const auto& plain : address_state.plain_accesses) {
+        if ((plain.is_write || current.is_write) &&
+            !ordered_by_happens_before(plain, current)) {
+            race = make_race_report(action.address, plain, current, state.schedule);
+            break;
+        }
+    }
+    address_state.atomic_accesses.push_back(current);
     return race;
 }
 
@@ -413,16 +459,70 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
         ++state.pc.at(tid);
         broadcast_waiters(state, action, tid);
         break;
+    case ActionKind::AtomicLoad:
+        ++state.pc.at(tid);
+        if (!action.address.empty()) {
+            // Acquire load: join the thread with exactly this location's last
+            // release sequence clock. Missing this edge over-reports races
+            // after a real synchronizes-with relation; adding any extra edge
+            // can hide a real plain-data race, so the model only joins the
+            // per-address atomic clock and does not mutate it.
+            state.thread_clock.at(tid).join(state.atomic_location_clock[action.address]);
+            report.race = record_atomic(
+                state,
+                action,
+                MemoryAccess{state.thread_clock.at(tid), endpoint, true, false});
+        }
+        break;
+    case ActionKind::AtomicStore:
+        ++state.pc.at(tid);
+        if (!action.address.empty()) {
+            // Release store: replace the location clock with the storing
+            // thread's post-tick clock. It must not join the previous
+            // location clock; such an extra HB edge would fabricate ordering
+            // from an earlier other-thread store to a later load and could
+            // suppress a real plain-data race. The store itself performs no
+            // acquire join, intentionally erring toward fewer edges.
+            state.atomic_location_clock[action.address] = state.thread_clock.at(tid);
+            report.race = record_atomic(
+                state,
+                action,
+                MemoryAccess{state.thread_clock.at(tid), endpoint, true, true});
+        }
+        break;
+    case ActionKind::AtomicRmw:
+        ++state.pc.at(tid);
+        if (!action.address.empty()) {
+            // Acq_rel RMW: first acquire from the current location clock, then
+            // replace the location clock with the joined thread clock. The
+            // acquire half preserves the C++ release-sequence edge; the
+            // replace half avoids accumulating unrelated previous stores. When
+            // forced to choose, the model avoids extra HB edges because they
+            // hide races, while missing edges only over-report.
+            state.thread_clock.at(tid).join(state.atomic_location_clock[action.address]);
+            state.atomic_location_clock[action.address] = state.thread_clock.at(tid);
+            report.race = record_atomic(
+                state,
+                action,
+                MemoryAccess{state.thread_clock.at(tid), endpoint, true, true});
+        }
+        break;
     case ActionKind::Read:
         ++state.pc.at(tid);
         if (!action.address.empty()) {
-            report.race = record_read(state, action, MemoryAccess{state.thread_clock.at(tid), endpoint});
+            report.race = record_read(
+                state,
+                action,
+                MemoryAccess{state.thread_clock.at(tid), endpoint, false, false});
         }
         break;
     case ActionKind::Write:
         ++state.pc.at(tid);
         if (!action.address.empty()) {
-            report.race = record_write(state, action, MemoryAccess{state.thread_clock.at(tid), endpoint});
+            report.race = record_write(
+                state,
+                action,
+                MemoryAccess{state.thread_clock.at(tid), endpoint, false, true});
         }
         break;
     case ActionKind::Yield:

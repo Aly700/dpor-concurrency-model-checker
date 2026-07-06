@@ -31,19 +31,25 @@ The checker interprets a program as a small-step state machine:
 - `mutex_owner[mutex]` records the owning thread for held mutexes.
 - `mutex_clock[mutex]` records the vector clock stored by the last successful
   unlock of that mutex.
+- `atomic_location_clock[address]` records the per-address release sequence for
+  modeled atomic operations. The model supports acquire loads, release stores,
+  acquire-release RMWs, and SC-per-location; it does not model relaxed atomics.
 - `condition_waiters[cv]` records sleeping waiters in deterministic thread-id
   order. Signal wakes the lowest-numbered waiter; broadcast wakes all current
   waiters. No permits are queued when the set is empty.
 - `thread_clock[tid]` records each thread's happens-before frontier.
 - `wait_phase[tid]` records whether a thread is not waiting, asleep in a
   condition variable, or woken and waiting to reacquire its mutex.
-- `memory[address]` records the last write and the reads since that write.
+- `memory[address]` records the last plain write, the plain reads since that
+  write, and deterministic plain/atomic access lists used only for the mixed
+  plain/atomic race check.
 
 At each DFS state, the naive oracle enumerates exactly the enabled actions in
-ascending thread-id order. `Read`, `Write`, `Yield`, `Unlock`, `Signal`, and
-`Broadcast` are enabled; invalid `Unlock`, invalid `Wait`, and invalid `Join`
-steps are reported as modeled errors. `Lock` is enabled only when its mutex is
-not currently owned. `Join(target)` is enabled only when `target` has finished.
+ascending thread-id order. `Read`, `Write`, `AtomicLoad`, `AtomicStore`,
+`AtomicRmw`, `Yield`, `Unlock`, `Signal`, and `Broadcast` are enabled; invalid
+`Unlock`, invalid `Wait`, and invalid `Join` steps are reported as modeled
+errors. `Lock` is enabled only when its mutex is not currently owned.
+`Join(target)` is enabled only when `target` has finished.
 `Wait(cv, mutex)` is one IR action with two schedule steps at the same action
 index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
 unfinished threads and no enabled action is a deadlock; the report tags each
@@ -57,10 +63,22 @@ releasing thread's clock in the mutex clock. `Lock` joins the acquiring thread's
 clock with that mutex clock. `Wait` first performs the same release update as
 `Unlock`, then its woken second step performs the same acquire join as `Lock`.
 `Signal` and `Broadcast` join the signaler's clock into each woken waiter.
-`Join` joins the caller's clock with the target thread's final clock. Memory
-accesses compare their current vector clock against prior conflicting accesses
-to the same address. A race report records the two access endpoints and the
-executed prefix through the second access.
+`Join` joins the caller's clock with the target thread's final clock.
+`AtomicStore(address)` replaces the address's atomic location clock with the
+storing thread's post-tick clock and does not acquire from the old clock.
+`AtomicLoad(address)` joins the loading thread with that location clock and
+does not mutate it. `AtomicRmw(address)` joins the current location clock into
+the executing thread, then replaces the location clock with the joined thread
+clock. Store and RMW replacement is deliberate: joining old location clocks
+would fabricate happens-before edges and can hide real plain-data races.
+
+Memory accesses compare their current vector clock against prior conflicting
+accesses to the same address. Plain/plain races use the existing last-write and
+reads-since-last-write metadata. Atomic/atomic accesses never race. Mixed
+plain/atomic accesses race when unordered by happens-before and at least one
+side is write-like: plain write, atomic store, or atomic RMW. A race report
+records the two access endpoints and the executed prefix through the second
+access.
 
 The exhaustive oracle explores all enabled interleavings of the modeled
 small-step semantics. Therefore, per-execution happens-before race detection
@@ -94,6 +112,13 @@ fallback before being pruned.
 
 Race and error detection still run through the same interpreter as naive
 exploration, and every DPOR report is expected to replay identically.
+
+Atomics do not add blocking or phase changes. `effective_next_action()` passes
+them through unchanged, and sleep-set inheritance plus happens-before-aware
+backtracking rely only on the updated `independent()` and `may_conflict()`
+clauses. Two same-address atomic loads are independent; same-address pairs
+involving atomic store or RMW are dependent; and same-address mixed
+plain/atomic pairs are dependent.
 
 ## Design bias
 

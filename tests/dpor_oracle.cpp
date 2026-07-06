@@ -22,6 +22,27 @@ model::Action write(std::string address) {
     return model::Action{model::ActionKind::Write, std::move(address), ""};
 }
 
+model::Action atomic_load(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::AtomicLoad;
+    action.address = std::move(address);
+    return action;
+}
+
+model::Action atomic_store(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::AtomicStore;
+    action.address = std::move(address);
+    return action;
+}
+
+model::Action atomic_rmw(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::AtomicRmw;
+    action.address = std::move(address);
+    return action;
+}
+
 model::Action lock(std::string mutex) {
     return model::Action{model::ActionKind::Lock, "", std::move(mutex)};
 }
@@ -63,10 +84,13 @@ model::Action yield() {
     return model::Action{model::ActionKind::Yield, "", ""};
 }
 
-const std::array<model::Action, 13> kActions{
+const std::array<model::Action, 16> kActions{
     read("x"),
     write("x"),
     write("y"),
+    atomic_load("f"),
+    atomic_store("f"),
+    atomic_rmw("f"),
     lock("m"),
     lock("n"),
     unlock("m"),
@@ -101,6 +125,15 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::Write:
         out << "Write " << action.address;
+        break;
+    case model::ActionKind::AtomicLoad:
+        out << "AtomicLoad " << action.address;
+        break;
+    case model::ActionKind::AtomicStore:
+        out << "AtomicStore " << action.address;
+        break;
+    case model::ActionKind::AtomicRmw:
+        out << "AtomicRmw " << action.address;
         break;
     case model::ActionKind::Lock:
         out << "Lock " << action.mutex;
@@ -272,9 +305,10 @@ int main() {
     std::size_t dpor_total = 0;
 
     // Deterministically enumerates two-thread programs with 0..3 actions per
-    // thread over kActions, including Join and Mesa condition-variable
-    // actions. Each length pair is capped at 2048 programs; larger length
-    // pairs use evenly spaced encoded indexes, not randomness.
+    // thread over kActions, including atomic acquire/release/RMW operations,
+    // Join, and Mesa condition-variable actions. Each length pair is capped
+    // at 2048 programs; larger length pairs use evenly spaced encoded indexes,
+    // not randomness.
     constexpr std::uint64_t kProgramsPerLengthPairCap = 2048;
     for (std::size_t lhs_length = 0; lhs_length <= 3; ++lhs_length) {
         for (std::size_t rhs_length = 0; rhs_length <= 3; ++rhs_length) {

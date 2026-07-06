@@ -1,7 +1,8 @@
 // Independent 3-thread adversarial sweep: deterministically sample programs
-// with 3 threads x 2 actions over memory, mutex, Join, and Mesa
-// condition-variable actions. The full 10^6 family is capped with evenly spaced
-// encoded indexes, not randomness. Each sampled program asserts naive/DPOR
+// with 3 threads x 2 actions over memory, atomic acquire/release/RMW, mutex,
+// Join, and Mesa condition-variable actions. The full 13^6 family is capped
+// at 65536 evenly spaced encoded indexes, not randomness. Each sampled program
+// asserts naive/DPOR
 // verdict equality, schedule dominance, and replay identity of every DPOR
 // report. This targets the disabled-transition backtrack fallback, which
 // 2-thread sweeps exercise only weakly.
@@ -29,6 +30,27 @@ Action read(std::string address) {
 Action write(std::string address) {
     Action action;
     action.kind = ActionKind::Write;
+    action.address = std::move(address);
+    return action;
+}
+
+Action atomic_load(std::string address) {
+    Action action;
+    action.kind = ActionKind::AtomicLoad;
+    action.address = std::move(address);
+    return action;
+}
+
+Action atomic_store(std::string address) {
+    Action action;
+    action.kind = ActionKind::AtomicStore;
+    action.address = std::move(address);
+    return action;
+}
+
+Action atomic_rmw(std::string address) {
+    Action action;
+    action.kind = ActionKind::AtomicRmw;
     action.address = std::move(address);
     return action;
 }
@@ -128,6 +150,9 @@ int main() {
     const std::vector<Action> alphabet = {
         read("x"),
         write("x"),
+        atomic_load("f"),
+        atomic_store("f"),
+        atomic_rmw("f"),
         lock("m"),
         unlock("m"),
         wait("cv", "m"),

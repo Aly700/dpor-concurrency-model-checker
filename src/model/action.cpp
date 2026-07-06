@@ -3,8 +3,24 @@
 namespace model {
 namespace {
 
-bool is_memory_action(const Action& action) {
+bool is_plain_memory_action(const Action& action) {
     return action.kind == ActionKind::Read || action.kind == ActionKind::Write;
+}
+
+bool is_atomic_action(const Action& action) {
+    return action.kind == ActionKind::AtomicLoad ||
+           action.kind == ActionKind::AtomicStore ||
+           action.kind == ActionKind::AtomicRmw;
+}
+
+bool is_memory_action(const Action& action) {
+    return is_plain_memory_action(action) || is_atomic_action(action);
+}
+
+bool is_write_like(const Action& action) {
+    return action.kind == ActionKind::Write ||
+           action.kind == ActionKind::AtomicStore ||
+           action.kind == ActionKind::AtomicRmw;
 }
 
 bool is_mutex_action(const Action& action) {
@@ -28,17 +44,45 @@ bool may_conflict(const Action& lhs, const Action& rhs) {
     if (lhs.address.empty() || rhs.address.empty() || lhs.address != rhs.address) {
         return false;
     }
-    return lhs.kind == ActionKind::Write || rhs.kind == ActionKind::Write;
+    if (is_atomic_action(lhs) && is_atomic_action(rhs)) {
+        return false;
+    }
+    return is_write_like(lhs) || is_write_like(rhs);
 }
 
 bool independent(const Action& lhs, const Action& rhs) {
-    // Conflicting memory operations on the same modeled address are dependent:
-    // swapping them can change the observed value, race endpoint ordering, and
-    // resulting read/write metadata. Non-conflicting memory operations commute
-    // because they touch disjoint addresses or are both reads, and they do not
-    // affect enabledness.
-    if (may_conflict(lhs, rhs)) {
-        return false;
+    if (is_memory_action(lhs) && is_memory_action(rhs) &&
+        !lhs.address.empty() && lhs.address == rhs.address) {
+        if (is_atomic_action(lhs) && is_atomic_action(rhs)) {
+            if (lhs.kind == ActionKind::AtomicLoad && rhs.kind == ActionKind::AtomicLoad) {
+                // Two acquire loads of one atomic location are independent:
+                // neither mutates the per-location clock, and each only joins
+                // that same clock into its own thread. Running them in either
+                // order leaves modeled state and enabledness unchanged.
+                return true;
+            }
+
+            // Atomic Store and RMW pairs on one location are dependent even
+            // though atomic-vs-atomic never reports a data race. Their order
+            // changes the location clock, which can change downstream HB and
+            // mixed plain/atomic race verdicts. Extra independence here would
+            // skip a schedule class, so we keep the edge.
+            return false;
+        }
+
+        if (is_atomic_action(lhs) || is_atomic_action(rhs)) {
+            // Any mixed plain/atomic access to one address is dependent. The
+            // order determines whether the plain access is HB-ordered with the
+            // atomic acquire/release edge before the mixed-race check runs.
+            return false;
+        }
+
+        if (may_conflict(lhs, rhs)) {
+            // Conflicting plain memory operations on the same modeled address
+            // are dependent as before: swapping them can change the observed
+            // value, race endpoint ordering, and read/write metadata.
+            return false;
+        }
     }
 
     if (lhs.kind == ActionKind::Join || rhs.kind == ActionKind::Join) {
@@ -66,11 +110,12 @@ bool independent(const Action& lhs, const Action& rhs) {
     }
 
     // Remaining pairs commute for this IR when both transitions are enabled:
-    // non-conflicting memory accesses update disjoint or read-only memory
-    // metadata; mutex and Wait operations on distinct mutexes touch disjoint
-    // ownership and synchronization clocks; Signal/Broadcast on different
-    // condition variables do not queue permits and mutate disjoint wait sets;
-    // Yield has no modeled shared-state or enabledness effect.
+    // non-conflicting memory accesses update disjoint or read-only metadata;
+    // atomic accesses on different addresses touch disjoint location clocks;
+    // mutex and Wait operations on distinct mutexes touch disjoint ownership
+    // and synchronization clocks; Signal/Broadcast on different condition
+    // variables do not queue permits and mutate disjoint wait sets; Yield has
+    // no modeled shared-state or enabledness effect.
     return true;
 }
 

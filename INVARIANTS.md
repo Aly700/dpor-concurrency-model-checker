@@ -15,6 +15,16 @@
 ## Happens-before
 
 - Release/acquire edges must update vector clocks consistently.
+- Atomic operations model acquire loads, release stores, acquire-release RMW,
+  and SC-per-location only; no relaxed orderings exist in this IR.
+- `AtomicStore(address)` must replace that address's atomic location clock with
+  the storing thread's post-tick clock and must not acquire or join the prior
+  location clock. Extra happens-before edges can hide real races.
+- `AtomicLoad(address)` must join the loading thread with that address's atomic
+  location clock and must not mutate the location clock.
+- `AtomicRmw(address)` must join the thread with the location clock and then
+  replace the location clock with the joined thread clock, preserving the
+  modeled release sequence without accumulating unrelated stores.
 - A successful `Join(target)` must join the caller with the target thread's
   final vector clock before any post-join action can execute.
 - `Wait(cv, mutex)` must release `mutex` with the same clock update as
@@ -24,6 +34,9 @@
   signaling thread to every waiter they wake. They must not queue permits when
   no waiter exists.
 - Conflicting memory accesses unordered by happens-before are races.
+- Atomic/atomic accesses are never races. Mixed plain/atomic same-address
+  accesses are races when unordered by happens-before and at least one side is
+  write-like: plain write, atomic store, or atomic RMW.
 - Deadlock detection must distinguish a true cycle from a voluntarily finished
   thread, and must identify whether each unfinished disabled thread is waiting
   on a mutex, a join target, or a condition variable.
