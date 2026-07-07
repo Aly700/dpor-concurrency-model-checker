@@ -41,6 +41,9 @@ The checker interprets a program as a small-step state machine:
   order. Signal wakes the lowest-numbered waiter; broadcast wakes all current
   waiters. No permits are queued when the set is empty.
 - `thread_clock[tid]` records each thread's happens-before frontier.
+- `started[tid]` records whether a static thread body is alive in the current
+  execution. Threads targeted by valid `Spawn` actions start disabled and
+  become schedulable only after a successful spawn.
 - `wait_phase[tid]` records whether a thread is not waiting, asleep in a
   condition variable, or woken and waiting to reacquire its mutex.
 - `memory[address]` records the last plain write, the plain reads since that
@@ -48,16 +51,18 @@ The checker interprets a program as a small-step state machine:
   plain/atomic race check.
 
 At each DFS state, the naive oracle enumerates exactly the enabled actions in
-ascending thread-id order. `Read`, `Write`, `AtomicLoad`, `AtomicStore`,
-`AtomicRmw`, `Yield`, `Unlock`, `Signal`, and `Broadcast` are enabled; invalid
-`Unlock`, invalid `Wait`, and invalid `Join` steps are reported as modeled
-errors. `Lock` is enabled only when its mutex is not currently owned.
-`Join(target)` is enabled only when `target` has finished.
+ascending thread-id order. Not-started threads are disabled. `Read`, `Write`,
+`AtomicLoad`, `AtomicStore`, `AtomicRmw`, `Yield`, `Unlock`, `Spawn`, `Signal`,
+and `Broadcast` are enabled for started unfinished threads; invalid `Unlock`,
+invalid `Wait`, invalid `Spawn`, and invalid `Join` steps are reported as
+modeled errors. `Lock` is enabled only when its mutex is not currently owned.
+`Join(target)` is enabled only when `target` has started and finished.
 `Wait(cv, mutex)` is one IR action with two schedule steps at the same action
 index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
-unfinished threads and no enabled action is a deadlock; the report tags each
-thread as waiting on a mutex, join target, or condition variable. A state where
-all threads are finished is normal termination.
+started unfinished threads and no enabled action is a deadlock; the report
+tags each started blocked thread as waiting on a mutex, join target, or
+condition variable. A state where all started threads are finished is normal
+termination, even if some static thread bodies were never spawned.
 
 ## Happens-Before Analysis
 
@@ -66,6 +71,9 @@ releasing thread's clock in the mutex clock. `Lock` joins the acquiring thread's
 clock with that mutex clock. `Wait` first performs the same release update as
 `Unlock`, then its woken second step performs the same acquire join as `Lock`.
 `Signal` and `Broadcast` join the signaler's clock into each woken waiter.
+`Spawn(target)` marks the target started and joins the target thread's clock
+with the spawner's post-tick clock, so pre-spawn actions happen-before all
+target actions.
 `Join` joins the caller's clock with the target thread's final clock.
 `AtomicStore(address)` replaces the address's atomic location clock with the
 storing thread's post-tick clock and does not acquire from the old clock.
@@ -101,9 +109,9 @@ Dynamic backtracking follows the Flanagan-Godefroid last-point rule for enabled
 transitions: it adds the later thread only at the last earlier dependent
 transition that is not happens-before ordered before it. Each trace entry stores
 the executing thread's post-step vector clock for this check. If the later
-effective transition was not enabled at the candidate prefix, DPOR keeps the
-classic disabled-transition fallback and adds every enabled thread at a repair
-point.
+effective transition was not enabled at a dependent candidate prefix, DPOR uses
+a conservative disabled-transition fallback and adds every enabled thread at
+every such repair point.
 
 Godefroid sleep sets prune alternatives whose trace class has already been
 represented. A child inherits slept threads only while their current effective
@@ -123,16 +131,32 @@ clauses. Two same-address atomic loads are independent; same-address pairs
 involving atomic store or RMW are dependent; and same-address mixed
 plain/atomic pairs are dependent.
 
+Spawn adds dynamic enabledness. Not-started threads are absent from enabled
+sets and sleep sets, and replay rejects target-thread steps before the
+corresponding spawn. At terminal leaves, a not-started thread with a non-empty
+body contributes its first action as a disabled transition so DPOR can repair
+prefixes where a spawn could have enabled it. `independent()` treats every pair
+involving `Spawn` as dependent because the action-only predicate cannot know
+whether the other action belongs to the target.
+
+The trace records which `Spawn` transitions actually started a thread. Disabled
+repair for a later target-thread transition does not move before that
+successful spawn enabler, while modeled-error spawn attempts are ignored as
+enablers. Disabled-transition repair also clears sleep entries at repair nodes;
+otherwise a dynamically added backtrack can be skipped solely because it was
+previously slept.
+
 ## Verification Gates
 
 The DPOR implementation is checked against three deterministic gates. The
-2-thread oracle sweep enumerates small programs by length pair and compares
-naive vs. DPOR verdicts, schedule dominance, and report replay identity. The
-3-thread oracle sweep uses an evenly strided deterministic sample of the larger
-3-thread action space, plus hand-picked disabled-transition cases, to exercise
-join and condition-variable enabledness. The seeded differential fuzz gate
-generates 3000 fixed-seed programs across 2-5 threads, 1-6 actions per thread,
-plain and atomic memory, mutexes, condition variables, joins, yields, and
+2-thread oracle sweep enumerates small programs by length pair over a 17-action
+alphabet and compares naive vs. DPOR verdicts, schedule dominance, and report
+replay identity. The 3-thread oracle sweep uses an evenly strided deterministic
+sample of the larger 15-action, 6-slot space, plus hand-picked
+disabled-transition cases, to exercise spawn, join, and condition-variable
+enabledness. The seeded differential fuzz gate generates 3000 fixed-seed
+programs across 2-5 threads, 1-6 actions per thread, plain and atomic memory,
+mutexes, condition variables, joins, yields, spawn-shaped programs, and
 modeled-error cases; capped explorations are counted but excluded from verdict
 equality because truncation can legitimately hide a later endpoint.
 

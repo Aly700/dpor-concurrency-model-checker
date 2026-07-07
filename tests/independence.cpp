@@ -26,6 +26,13 @@ model::Action join(model::ThreadId target) {
     return action;
 }
 
+model::Action spawn(model::ThreadId target) {
+    model::Action action;
+    action.kind = model::ActionKind::Spawn;
+    action.target = target;
+    return action;
+}
+
 model::Action wait(std::string condition, std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Wait;
@@ -82,6 +89,7 @@ int main() {
     assert(!model::independent(write("x"), read("x")));
     assert(!model::independent(lock("m"), lock("m")));
     assert(!model::independent(join(0), yield()));
+    assert(!model::independent(spawn(1), yield()));
     assert(!model::independent(wait("cv", "m"), signal("cv")));
     assert(!model::independent(wait("cv", "m"), broadcast("cv")));
     assert(!model::independent(wait("cv0", "m"), lock("m")));

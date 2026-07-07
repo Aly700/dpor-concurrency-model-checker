@@ -58,6 +58,13 @@ model::Action join(model::ThreadId target) {
     return action;
 }
 
+model::Action spawn(model::ThreadId target) {
+    model::Action action;
+    action.kind = model::ActionKind::Spawn;
+    action.target = target;
+    return action;
+}
+
 model::Action wait(std::string condition, std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Wait;
@@ -84,7 +91,7 @@ model::Action yield() {
     return model::Action{model::ActionKind::Yield, "", ""};
 }
 
-const std::array<model::Action, 16> kActions{
+const std::array<model::Action, 17> kActions{
     read("x"),
     write("x"),
     write("y"),
@@ -98,6 +105,7 @@ const std::array<model::Action, 16> kActions{
     wait("cv", "m"),
     signal("cv"),
     broadcast("cv"),
+    spawn(1),
     join(0),
     join(1),
     yield(),
@@ -140,6 +148,9 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::Unlock:
         out << "Unlock " << action.mutex;
+        break;
+    case model::ActionKind::Spawn:
+        out << "Spawn " << action.target;
         break;
     case model::ActionKind::Join:
         out << "Join " << action.target;
@@ -274,6 +285,14 @@ std::vector<model::Program> hand_picked_programs() {
             {join(0), write("x")},
         }},
         model::Program{{
+            {write("x"), spawn(1), join(1)},
+            {write("x")},
+        }},
+        model::Program{{
+            {spawn(1), write("x")},
+            {write("x")},
+        }},
+        model::Program{{
             {lock("m"), wait("cv", "m"), read("x"), unlock("m")},
             {lock("m"), signal("cv"), unlock("m"), write("x")},
         }},
@@ -306,7 +325,7 @@ int main() {
 
     // Deterministically enumerates two-thread programs with 0..3 actions per
     // thread over kActions, including atomic acquire/release/RMW operations,
-    // Join, and Mesa condition-variable actions. Each length pair is capped
+    // Spawn, Join, and Mesa condition-variable actions. Each length pair is capped
     // at 2048 programs; larger length pairs use evenly spaced encoded indexes,
     // not randomness.
     constexpr std::uint64_t kProgramsPerLengthPairCap = 2048;

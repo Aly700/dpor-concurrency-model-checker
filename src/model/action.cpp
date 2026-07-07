@@ -94,6 +94,14 @@ bool independent(const Action& lhs, const Action& rhs) {
         return false;
     }
 
+    if (lhs.kind == ActionKind::Spawn || rhs.kind == ActionKind::Spawn) {
+        // Spawn creates a start/enabledness edge and copies the spawner's
+        // happens-before frontier into the target. The public action-only
+        // predicate cannot know which target owns the other action, so every
+        // Spawn pair is conservatively dependent.
+        return false;
+    }
+
     if (is_condition_action(lhs) && is_condition_action(rhs) && lhs.condition == rhs.condition) {
         // Operations on one condition variable are dependent: Wait mutates the
         // ordered wait set, Signal wakes the lowest-numbered waiter, and

@@ -32,6 +32,7 @@ enum class Choice {
     Wait,
     Signal,
     Broadcast,
+    Spawn,
     Join,
     Yield
 };
@@ -126,6 +127,13 @@ model::Action broadcast(std::string condition) {
 model::Action join(model::ThreadId target) {
     model::Action action;
     action.kind = model::ActionKind::Join;
+    action.target = target;
+    return action;
+}
+
+model::Action spawn(model::ThreadId target) {
+    model::Action action;
+    action.kind = model::ActionKind::Spawn;
     action.target = target;
     return action;
 }
@@ -230,6 +238,7 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         {Choice::AtomicMemory, 10},
         {Choice::Signal, 14},
         {Choice::Broadcast, 10},
+        {Choice::Spawn, 10},
         {Choice::Join, 14},
         {Choice::Yield, 4},
     };
@@ -268,6 +277,8 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         return signal(random_condition(rng, condition_count));
     case Choice::Broadcast:
         return broadcast(random_condition(rng, condition_count));
+    case Choice::Spawn:
+        return spawn(random_other_thread(rng, tid, thread_count));
     case Choice::Join:
         return join(random_other_thread(rng, tid, thread_count));
     case Choice::Yield:
@@ -291,6 +302,7 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         {Choice::Wait, 18},
         {Choice::Signal, 8},
         {Choice::Broadcast, 6},
+        {Choice::Spawn, 12},
         {Choice::Join, 14},
         {Choice::Yield, 4},
     };
@@ -310,6 +322,10 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         return signal(random_condition(rng, condition_count));
     case Choice::Broadcast:
         return broadcast(random_condition(rng, condition_count));
+    case Choice::Spawn:
+        return bounded(rng, 4) == 0
+            ? spawn(tid)
+            : spawn(static_cast<model::ThreadId>(bounded(rng, thread_count)));
     case Choice::Join:
         return bounded(rng, 3) == 0
             ? join(tid)
@@ -453,6 +469,23 @@ void assert_round_trips(std::uint64_t seed,
                         std::size_t program_index,
                         GenerationMode mode,
                         const model::Program& program) {
+    std::vector<std::size_t> spawn_targets(program.threads.size(), 0);
+    for (std::size_t tid_index = 0; tid_index < program.threads.size(); ++tid_index) {
+        const auto tid = static_cast<model::ThreadId>(tid_index);
+        for (const model::Action& action : program.threads.at(tid)) {
+            if (action.kind != model::ActionKind::Spawn) {
+                continue;
+            }
+            if (action.target >= program.threads.size() || action.target == tid) {
+                return;
+            }
+            ++spawn_targets.at(action.target);
+            if (spawn_targets.at(action.target) > 1) {
+                return;
+            }
+        }
+    }
+
     const std::string rendered = cli::render_program(program);
     const model::Program parsed = cli::parse_program_text(rendered);
     if (parsed.threads != program.threads) {

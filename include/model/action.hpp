@@ -16,6 +16,7 @@ enum class ActionKind {
     AtomicRmw,
     Lock,
     Unlock,
+    Spawn,
     Join,
     Wait,
     Signal,

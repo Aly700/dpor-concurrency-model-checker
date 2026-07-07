@@ -25,6 +25,9 @@
 - `AtomicRmw(address)` must join the thread with the location clock and then
   replace the location clock with the joined thread clock, preserving the
   modeled release sequence without accumulating unrelated stores.
+- A successful `Spawn(target)` must mark a previously not-started target as
+  started and join the target thread's vector clock with the spawner's
+  post-tick vector clock before any target action can execute.
 - A successful `Join(target)` must join the caller with the target thread's
   final vector clock before any post-join action can execute.
 - `Wait(cv, mutex)` must release `mutex` with the same clock update as
@@ -40,3 +43,9 @@
 - Deadlock detection must distinguish a true cycle from a voluntarily finished
   thread, and must identify whether each unfinished disabled thread is waiting
   on a mutex, a join target, or a condition variable.
+- Thread completion is started-aware: a not-started static thread body is not
+  finished for `Join` enabledness, even if the body is empty, but unstarted
+  and unjoined bodies do not by themselves make clean termination a deadlock.
+- A terminal state with no enabled actions is a deadlock when any started
+  thread is unfinished, including a thread blocked on `Join(target)` where
+  `target` has not started and no remaining enabled spawn can start it.

@@ -16,7 +16,7 @@ exactly.
 | Atomics | `atomic_load`, `atomic_store`, `atomic_rmw` | Acquire/release/acq-rel, SC-per-location; atomic-atomic never races, mixed plain/atomic does |
 | Mutexes | `lock`, `unlock` | Blocking; release/acquire vector-clock edges; non-owner unlock is a modeled error |
 | Condition variables | `wait`, `signal`, `broadcast` | Mesa semantics, two-phase wait (release+sleep, then reacquire); no permit queuing, so lost wakeups deadlock |
-| Threads | `join`, `yield` | Join blocks until the target finishes and inherits its clock |
+| Threads | `spawn`, `join`, `yield` | Static thread bodies with dynamic start; spawn starts a target and creates a happens-before edge, join blocks until a started target finishes and inherits its clock |
 
 Two explorers share one execution semantics:
 
@@ -82,7 +82,7 @@ thread:
 ```
 
 More in `examples/`: data race, AB-BA deadlock, lost wakeup, atomic message
-passing, clean locked counter, unlock error.
+passing, spawn+join pipeline, clean locked counter, unlock error.
 
 ## Verification gates
 
@@ -91,19 +91,19 @@ DPOR is never trusted on faith. Three differential gates assert that
 verdicts, that DPOR never explores more schedules, and that every DPOR
 report replays to an identical report:
 
-1. **Exhaustive 2-thread sweep** — every program over a 16-action alphabet
+1. **Exhaustive 2-thread sweep** — every program over a 17-action alphabet
    (capped per length pair; ~21k programs).
-2. **Strided 3-thread sweep** — 65,540 programs evenly sampled from the full
-   13-action, 6-slot space.
+2. **Strided 3-thread sweep** — 65,542 programs evenly sampled from the full
+   15-action, 6-slot space.
 3. **Seeded differential fuzz** — 3,000 random 2–5-thread programs per run,
-   including deliberately malformed ones; failures print the seed and the
-   program in `.dpor` syntax for by-hand reproduction.
+   including spawn-shaped and deliberately malformed ones; failures print the
+   seed and the program in `.dpor` syntax for by-hand reproduction.
 
 All gates are deterministic and run in CI on Linux and macOS.
 
 ## Design records
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
-soundness-relevant decision in `adr/` (0001 architecture crux through 0008
-CLI contract), including the exact vector-clock edge for each
-synchronization kind and why each DPOR pruning step cannot lose a bug class.
+soundness-relevant decision in `adr/` (0001 architecture crux through 0010
+spawn), including the exact vector-clock edge for each synchronization kind
+and why each DPOR pruning step cannot lose a bug class.

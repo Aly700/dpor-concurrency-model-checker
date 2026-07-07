@@ -31,6 +31,7 @@ enum class WaitPhase { None, Waiting, Woken };
 
 struct ExecutionState {
     std::vector<std::uint32_t> pc;
+    std::vector<bool> started;
     std::map<std::string, ThreadId> mutex_owner;
     std::map<std::string, VectorClock> mutex_clock;
     std::map<std::string, std::vector<ThreadId>> condition_waiters;
@@ -44,6 +45,7 @@ struct ExecutionState {
 struct StepReport {
     std::optional<RaceReport> race;
     std::optional<ModelErrorReport> error;
+    std::optional<ThreadId> spawned_thread;
 };
 
 struct EnabledTransition {
@@ -64,11 +66,27 @@ struct ExecutedTransition {
     Action effective_action;
     ScheduleStep endpoint;
     VectorClock clock;
+    std::optional<ThreadId> spawned_thread;
 };
+
+std::vector<bool> initially_started_threads(const Program& program) {
+    std::vector<bool> started(program.threads.size(), true);
+    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+        for (const Action& action : program.threads.at(tid)) {
+            if (action.kind == ActionKind::Spawn &&
+                action.target < program.threads.size() &&
+                action.target != tid) {
+                started.at(action.target) = false;
+            }
+        }
+    }
+    return started;
+}
 
 ExecutionState initial_state(const Program& program) {
     return ExecutionState{
         std::vector<std::uint32_t>(program.threads.size(), 0),
+        initially_started_threads(program),
         {},
         {},
         {},
@@ -80,13 +98,17 @@ ExecutionState initial_state(const Program& program) {
     };
 }
 
+bool has_next_action(const Program& program, const ExecutionState& state, ThreadId tid) {
+    return state.pc.at(tid) < program.threads.at(tid).size();
+}
+
 bool is_finished(const Program& program, const ExecutionState& state, ThreadId tid) {
-    return state.pc.at(tid) >= program.threads.at(tid).size();
+    return state.started.at(tid) && !has_next_action(program, state, tid);
 }
 
 bool all_finished(const Program& program, const ExecutionState& state) {
     for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
-        if (!is_finished(program, state, tid)) {
+        if (state.started.at(tid) && !is_finished(program, state, tid)) {
             return false;
         }
     }
@@ -124,7 +146,14 @@ bool join_target_is_invalid(const Program& program, ThreadId tid, const Action& 
     return action.target >= program.threads.size() || action.target == tid;
 }
 
+bool spawn_target_is_invalid(const Program& program, ThreadId tid, const Action& action) {
+    return action.target >= program.threads.size() || action.target == tid;
+}
+
 bool is_enabled(const Program& program, const ExecutionState& state, ThreadId tid) {
+    if (!state.started.at(tid)) {
+        return false;
+    }
     if (is_finished(program, state, tid)) {
         return false;
     }
@@ -154,6 +183,7 @@ bool is_enabled(const Program& program, const ExecutionState& state, ThreadId ti
     case ActionKind::AtomicLoad:
     case ActionKind::AtomicStore:
     case ActionKind::AtomicRmw:
+    case ActionKind::Spawn:
     case ActionKind::Unlock:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
@@ -214,6 +244,13 @@ void insert_thread(std::vector<ThreadId>& threads, ThreadId tid) {
     const auto position = std::lower_bound(threads.begin(), threads.end(), tid);
     if (position == threads.end() || *position != tid) {
         threads.insert(position, tid);
+    }
+}
+
+void remove_thread(std::vector<ThreadId>& threads, ThreadId tid) {
+    const auto position = std::lower_bound(threads.begin(), threads.end(), tid);
+    if (position != threads.end() && *position == tid) {
+        threads.erase(position);
     }
 }
 
@@ -345,6 +382,35 @@ ModelErrorReport make_join_error(const Action& action, ScheduleStep endpoint, co
     return ModelErrorReport{endpoint, message.str(), schedule};
 }
 
+ModelErrorReport make_spawn_error(const Program& program,
+                                  const Action& action,
+                                  ScheduleStep endpoint,
+                                  const Schedule& schedule,
+                                  const ExecutionState& state) {
+    std::ostringstream message;
+    message << "thread " << endpoint.thread << " attempted to spawn ";
+    if (action.target == endpoint.thread) {
+        message << "itself";
+    } else if (action.target >= program.threads.size()) {
+        message << "out-of-range thread " << action.target;
+    } else {
+        message << "already started thread " << action.target;
+        std::size_t spawn_count = 0;
+        for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+            for (const Action& candidate : program.threads.at(tid)) {
+                if (candidate.kind == ActionKind::Spawn && candidate.target == action.target) {
+                    ++spawn_count;
+                }
+            }
+        }
+        if (spawn_count > 1) {
+            message << " (target has " << spawn_count << " Spawn actions)";
+        }
+    }
+    (void)state;
+    return ModelErrorReport{endpoint, message.str(), schedule};
+}
+
 ModelErrorReport make_wait_error(const Action& action,
                                  ScheduleStep endpoint,
                                  const Schedule& schedule,
@@ -416,6 +482,16 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
             break;
         }
         state.thread_clock.at(tid).join(state.thread_clock.at(action.target));
+        break;
+    case ActionKind::Spawn:
+        ++state.pc.at(tid);
+        if (spawn_target_is_invalid(program, tid, action) || state.started.at(action.target)) {
+            report.error = make_spawn_error(program, action, endpoint, state.schedule, state);
+            break;
+        }
+        state.started.at(action.target) = true;
+        state.thread_clock.at(action.target).join(state.thread_clock.at(tid));
+        report.spawned_thread = action.target;
         break;
     case ActionKind::Unlock: {
         ++state.pc.at(tid);
@@ -535,7 +611,7 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
 DeadlockReport make_deadlock_report(const Program& program, const ExecutionState& state) {
     DeadlockReport report;
     for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
-        if (is_finished(program, state, tid)) {
+        if (!state.started.at(tid) || is_finished(program, state, tid)) {
             continue;
         }
 
@@ -645,7 +721,16 @@ void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
                                                   const std::vector<ExecutedTransition>& trace,
                                                   const ExecutedTransition& current,
                                                   std::size_t prefix_size) {
-    std::optional<std::size_t> earliest_disabled_dependent;
+    std::vector<std::size_t> disabled_dependent_prefixes;
+    std::optional<std::size_t> spawn_enabler_index;
+    for (std::size_t index = 0; index < prefix_size; ++index) {
+        const ExecutedTransition& previous = trace.at(index);
+        if (previous.spawned_thread.has_value() &&
+            *previous.spawned_thread == current.thread) {
+            spawn_enabler_index = index;
+        }
+    }
+
     for (std::size_t index = prefix_size; index > 0; --index) {
         const std::size_t previous_index = index - 1;
         const ExecutedTransition& previous = trace.at(previous_index);
@@ -666,15 +751,26 @@ void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
 
         DporNode& backtrack_point = nodes.at(previous_index);
         if (!transition_enabled_at_node(backtrack_point, current)) {
+            if (spawn_enabler_index.has_value() && previous_index <= *spawn_enabler_index) {
+                // Spawn(t) is the enabler for all later transitions in t. If
+                // t's transition is disabled at or before that spawn prefix,
+                // repairing there adds no useful alternative because t is not
+                // started yet. Keep the disabled repair after the spawn,
+                // where t's first action can run before the dependent
+                // transition that blocked this later action.
+                continue;
+            }
             // Disabled-transition fallback is about reaching the later
             // effective transition at all, not just reversing two already
             // enabled transitions. A thread may be enabled here with an
             // earlier action, or a Wait may be enabled in the opposite phase;
-            // in both cases an HB edge observed in this trace can disappear
-            // after those prerequisites run before the earlier transition.
-            // Keep the earliest dependent repair point so lock-order,
-            // Join-enabledness, and cv wakeup bugs are not pruned.
-            earliest_disabled_dependent = previous_index;
+            // in both cases an HB edge observed in this trace can disappear.
+            // Add conservative repairs for every dependent disabled prefix:
+            // earlier conservative dependencies such as Spawn or Join may be
+            // real but still too early to make the later action reachable,
+            // while the later prefix is the one that lets the action's own
+            // prerequisites run before the dependent transition.
+            disabled_dependent_prefixes.push_back(previous_index);
             continue;
         }
 
@@ -699,16 +795,18 @@ void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
         // avoids the old conservative "every dependent prefix" explosion
         // without weakening INVARIANTS.md Soundness.
         insert_thread(backtrack_point.backtrack, current.thread);
+        remove_thread(backtrack_point.sleep, current.thread);
         return;
     }
 
-    if (earliest_disabled_dependent.has_value()) {
-        DporNode& backtrack_point = nodes.at(*earliest_disabled_dependent);
+    for (const std::size_t disabled_prefix : disabled_dependent_prefixes) {
+        DporNode& backtrack_point = nodes.at(disabled_prefix);
         // INVARIANTS.md Soundness, highest-risk disabled-transition fallback:
         // the later effective transition could not be scheduled at this
         // earlier point, so add every enabled thread. This preserves deadlock
         // and pre-error detection by exploring whichever enabled transition
         // may make the dependent transition reachable before the earlier one.
+        backtrack_point.sleep.clear();
         for (const ThreadId enabled : backtrack_point.enabled) {
             insert_thread(backtrack_point.backtrack, enabled);
         }
@@ -732,12 +830,16 @@ void add_disabled_backtracks(const Program& program,
         if (is_finished(program, state, tid) || is_enabled(program, state, tid)) {
             continue;
         }
+        if (!has_next_action(program, state, tid)) {
+            continue;
+        }
 
         const ExecutedTransition blocked{
             tid,
             effective_next_action(program, state, tid),
             ScheduleStep{tid, state.pc.at(tid)},
             state.thread_clock.at(tid),
+            std::nullopt,
         };
         // INVARIANTS.md Soundness/Deadlock: a blocked Lock, Join, sleeping
         // Wait, or woken-Wait reacquire absent from the executed trace may be
@@ -812,10 +914,11 @@ void dpor_dfs(const Program& program,
         if (!all_finished(program, state)) {
             // A sleep-blocked prefix is equivalent to an explored execution
             // only for the enabled transitions it would run. Disabled Lock,
-            // Join, and Wait-reacquire transitions can still be the evidence
-            // that an earlier enabledness repair is needed, especially before
-            // a slept modeled-error endpoint. Apply the terminal disabled
-            // fallback before pruning the slept representative.
+            // Join, not-started Spawn targets, and Wait-reacquire transitions
+            // can still be the evidence that an earlier enabledness repair is
+            // needed, especially before a slept modeled-error endpoint. Apply
+            // the terminal disabled fallback before pruning the slept
+            // representative.
             add_disabled_backtracks(program, state, nodes, trace);
         }
         nodes.pop_back();
@@ -850,6 +953,7 @@ void dpor_dfs(const Program& program,
             effective_action,
             ScheduleStep{*next_tid, action_index},
             next.thread_clock.at(*next_tid),
+            step_report.spawned_thread,
         };
         trace.push_back(transition);
         add_backtracks_for_transition(nodes, trace);

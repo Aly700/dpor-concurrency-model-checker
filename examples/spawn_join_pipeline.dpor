@@ -1,0 +1,7 @@
+thread:
+  write x
+  spawn 1
+  join 1
+  write y
+thread:
+  write x

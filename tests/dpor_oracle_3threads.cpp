@@ -1,6 +1,6 @@
 // Independent 3-thread adversarial sweep: deterministically sample programs
 // with 3 threads x 2 actions over memory, atomic acquire/release/RMW, mutex,
-// Join, and Mesa condition-variable actions. The full 13^6 family is capped
+// Spawn, Join, and Mesa condition-variable actions. The full alphabet^6 family is capped
 // at 65536 evenly spaced encoded indexes, not randomness. Each sampled program
 // asserts naive/DPOR
 // verdict equality, schedule dominance, and replay identity of every DPOR
@@ -72,6 +72,13 @@ Action unlock(std::string mutex) {
 Action join(ThreadId target) {
     Action action;
     action.kind = ActionKind::Join;
+    action.target = target;
+    return action;
+}
+
+Action spawn(ThreadId target) {
+    Action action;
+    action.kind = ActionKind::Spawn;
     action.target = target;
     return action;
 }
@@ -158,6 +165,8 @@ int main() {
         wait("cv", "m"),
         signal("cv"),
         broadcast("cv"),
+        spawn(1),
+        spawn(2),
         join(0),
         join(1),
         join(2),
@@ -200,6 +209,16 @@ int main() {
             {write("x")},
             {join(0), write("x")},
             {write("y"), join(1)},
+        }},
+        Program{{
+            {spawn(1), join(1)},
+            {write("x")},
+            {write("x")},
+        }},
+        Program{{
+            {write("x"), spawn(1)},
+            {write("x")},
+            {join(1)},
         }},
         Program{{
             {lock("m"), wait("cv", "m"), read("x")},

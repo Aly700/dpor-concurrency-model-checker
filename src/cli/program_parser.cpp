@@ -11,6 +11,12 @@
 namespace cli {
 namespace {
 
+struct SpawnReference {
+    std::size_t line{0};
+    model::ThreadId source{0};
+    model::ThreadId target{0};
+};
+
 std::string trim(const std::string& input) {
     const std::size_t first = input.find_first_not_of(" \t\r\n");
     if (first == std::string::npos) {
@@ -108,6 +114,13 @@ model::Action join_action(model::ThreadId target) {
     return action;
 }
 
+model::Action spawn_action(model::ThreadId target) {
+    model::Action action;
+    action.kind = model::ActionKind::Spawn;
+    action.target = target;
+    return action;
+}
+
 model::Action yield_action() {
     model::Action action;
     action.kind = model::ActionKind::Yield;
@@ -160,6 +173,10 @@ model::Action parse_action(const std::vector<std::string>& words, std::size_t li
         require_arity(words, 2, line, keyword);
         return join_action(parse_u32_token(words[1], line, "join target"));
     }
+    if (keyword == "spawn") {
+        require_arity(words, 2, line, keyword);
+        return spawn_action(parse_u32_token(words[1], line, "spawn target"));
+    }
     if (keyword == "yield") {
         require_arity(words, 1, line, keyword);
         return yield_action();
@@ -179,6 +196,7 @@ std::ifstream open_input_file(const std::string& path, const std::string& kind) 
 model::Program parse_program_stream(std::istream& input) {
     model::Program program;
     std::vector<std::pair<std::size_t, model::ThreadId>> joins;
+    std::vector<SpawnReference> spawns;
     std::size_t current_thread = std::numeric_limits<std::size_t>::max();
 
     std::string line_text;
@@ -211,6 +229,12 @@ model::Program parse_program_stream(std::istream& input) {
         model::Action action = parse_action(words, line);
         if (action.kind == model::ActionKind::Join) {
             joins.emplace_back(line, action.target);
+        } else if (action.kind == model::ActionKind::Spawn) {
+            spawns.push_back(SpawnReference{
+                line,
+                static_cast<model::ThreadId>(current_thread),
+                action.target,
+            });
         }
         program.threads.at(current_thread).push_back(std::move(action));
     }
@@ -225,6 +249,25 @@ model::Program parse_program_stream(std::istream& input) {
             message << "join target " << target << " is not declared";
             throw ParseError(join_line, message.str());
         }
+    }
+    std::vector<std::size_t> first_spawn_line(program.threads.size(), 0);
+    for (const SpawnReference& spawn : spawns) {
+        if (spawn.target >= program.threads.size()) {
+            std::ostringstream message;
+            message << "spawn target " << spawn.target << " is not declared";
+            throw ParseError(spawn.line, message.str());
+        }
+        if (spawn.target == spawn.source) {
+            std::ostringstream message;
+            message << "spawn target " << spawn.target << " is self";
+            throw ParseError(spawn.line, message.str());
+        }
+        if (first_spawn_line.at(spawn.target) != 0) {
+            std::ostringstream message;
+            message << "spawn target " << spawn.target << " is targeted by more than one spawn";
+            throw ParseError(spawn.line, message.str());
+        }
+        first_spawn_line.at(spawn.target) = spawn.line;
     }
 
     return program;
@@ -262,6 +305,9 @@ std::string action_text(const model::Action& action) {
         break;
     case model::ActionKind::Unlock:
         output << "unlock " << action.mutex;
+        break;
+    case model::ActionKind::Spawn:
+        output << "spawn " << action.target;
         break;
     case model::ActionKind::Join:
         output << "join " << action.target;
