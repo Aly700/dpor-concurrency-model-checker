@@ -1,0 +1,35 @@
+# Algorithm: Peterson's two-thread mutual exclusion.
+# Property: the plain critical-section counter touch has no data race.
+# Expected verdict: clean up to bound.
+# Note: no-op CAS on turn is used as an equality test because .dpor has no
+# register-to-register or register-to-immediate comparison instruction.
+thread:
+  set r7 1
+  atomic_store flag0 1
+  atomic_store turn 1
+p0_spin:
+  atomic_load flag1 -> r0
+  bnz r0 p0_check_turn
+  bnz r7 p0_enter
+p0_check_turn:
+  cas turn 1 1 -> r1
+  bnz r1 p0_spin
+p0_enter:
+  read counter -> r2
+  write counter 1
+  atomic_store flag0 0
+thread:
+  set r7 1
+  atomic_store flag1 1
+  atomic_store turn 0
+p1_spin:
+  atomic_load flag0 -> r0
+  bnz r0 p1_check_turn
+  bnz r7 p1_enter
+p1_check_turn:
+  cas turn 0 0 -> r1
+  bnz r1 p1_spin
+p1_enter:
+  read counter -> r2
+  write counter 2
+  atomic_store flag1 0

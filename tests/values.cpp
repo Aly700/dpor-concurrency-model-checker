@@ -239,6 +239,32 @@ void spin_loop_reports_bound_exceeded_but_completing_schedules_are_clean() {
     assert(dpor.bound_exceeded_executions > 0);
 }
 
+void capped_exploration_is_flagged_and_complete_exploration_is_not() {
+    // Protects the CLI honesty contract: a verdict produced by truncated
+    // exploration must carry exploration_capped so it is never read as a
+    // verified clean.
+    model::Program program;
+    program.threads = {{
+                          {model::Action{model::ActionKind::Yield}},
+                          {model::Action{model::ActionKind::Yield}},
+                      },
+                      {
+                          {model::Action{model::ActionKind::Yield}},
+                          {model::Action{model::ActionKind::Yield}},
+                      }};
+    const model::ModelChecker checker(program);
+
+    const auto complete = checker.explore_naive();
+    assert(complete.schedules_explored == 6);
+    assert(!complete.exploration_capped);
+    assert(!checker.explore_dpor().exploration_capped);
+
+    const auto capped = checker.explore_naive(3);
+    assert(capped.schedules_explored == 3);
+    assert(capped.exploration_capped);
+    assert(checker.explore_dpor(1).exploration_capped);
+}
+
 } // namespace
 
 int main() {
@@ -248,5 +274,6 @@ int main() {
     fetch_add_returns_old_value_and_two_joined_increments_sum_to_two();
     assertion_failure_is_minimized_and_replayable();
     spin_loop_reports_bound_exceeded_but_completing_schedules_are_clean();
+    capped_exploration_is_flagged_and_complete_exploration_is_not();
     return 0;
 }

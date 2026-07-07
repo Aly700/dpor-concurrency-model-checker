@@ -57,6 +57,11 @@ struct AssertionFailureReport {
 struct CheckResult {
     std::size_t schedules_explored{0};
     std::size_t bound_exceeded_executions{0};
+    // True when exploration stopped at the max_schedules cap: the verdict may
+    // be incomplete because unexplored schedules remain (or the space finished
+    // exactly at the cap, which cannot be distinguished cheaply — the flag
+    // errs toward reporting possible incompleteness, never toward hiding it).
+    bool exploration_capped{false};
     std::optional<RaceReport> first_race;
     std::optional<DeadlockReport> first_deadlock;
     std::optional<ModelErrorReport> first_error;

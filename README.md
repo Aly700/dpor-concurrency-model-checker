@@ -117,10 +117,21 @@ cas f EXPECTED NEW -> rN
 `dpor check` accepts `--step-bound N` to set the per-thread step bound. Because
 backward branches can encode spin loops, a clean verdict is sound only relative
 to that bound. If any execution hits the bound, the CLI prints
-`verdict: clean up to bound` and `bound_exceeded_executions: N`.
+`verdict: clean up to bound` and `bound_exceeded_executions: N`. Independently,
+if exploration stops at the schedule cap (`--max-schedules`), the report says
+`exploration_capped: true` — a capped verdict is not a verified one.
 
 More in `examples/`: data race, AB-BA deadlock, lost wakeup, atomic message
 passing, spawn+join pipeline, clean locked counter, unlock error.
+
+## Classic algorithms
+
+`examples/classic/` contains a checked gallery of classic mutual-exclusion and
+lock-free patterns: Peterson, Dekker, a bounded two-thread Bakery
+simplification, a Treiber push skeleton, and a failed-CAS handoff. Each model is
+paired with a deliberately broken variant and documented in
+[`examples/classic/README.md`](examples/classic/README.md), including the exact
+bounded verdict and any `.dpor` modeling limitation.
 
 ## Verification gates
 

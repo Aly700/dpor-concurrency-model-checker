@@ -1,0 +1,39 @@
+# Algorithm: Treiber stack push CAS-retry skeleton.
+# Property: both one-shot pushes update the modeled top bitset and success count.
+# Expected verdict: clean.
+# Note: top is a bitset of pushed node ids: 0 empty, 1 node0, 2 node1, 3 both.
+thread:
+  set r7 1
+push0_retry:
+  atomic_load top -> r0
+  bnz r0 push0_seen_node
+  cas top 0 1 -> r1
+  bnz r1 push0_success
+  bnz r7 push0_retry
+push0_seen_node:
+  cas top r0 3 -> r1
+  bnz r1 push0_success
+  bnz r7 push0_retry
+push0_success:
+  atomic_rmw success_count 1 -> r2
+thread:
+  set r7 1
+push1_retry:
+  atomic_load top -> r0
+  bnz r0 push1_seen_node
+  cas top 0 2 -> r1
+  bnz r1 push1_success
+  bnz r7 push1_retry
+push1_seen_node:
+  cas top r0 3 -> r1
+  bnz r1 push1_success
+  bnz r7 push1_retry
+push1_success:
+  atomic_rmw success_count 1 -> r2
+thread:
+  join 0
+  join 1
+  cas top 3 3 -> r0
+  assert r0
+  cas success_count 2 2 -> r1
+  assert r1

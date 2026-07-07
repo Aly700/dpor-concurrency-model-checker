@@ -1,0 +1,13 @@
+# Algorithm: failed-CAS acquire handoff.
+# Property: the reader's plain payload read is ordered by a failed CAS that
+# observes the writer's release store.
+# Expected verdict: clean up to bound.
+thread:
+  write payload 1
+  atomic_store ready 1
+thread:
+  set r7 1
+reader_wait:
+  cas ready 0 0 -> r0
+  bnz r0 reader_wait
+  read payload -> r1

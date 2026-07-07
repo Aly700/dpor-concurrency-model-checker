@@ -154,6 +154,11 @@ void print_report(std::ostream& output, const model::Program& program, const mod
     if (result.bound_exceeded_executions > 0) {
         output << "bound_exceeded_executions: " << result.bound_exceeded_executions << '\n';
     }
+    if (result.exploration_capped) {
+        // A capped exploration is not a verified verdict: unexplored
+        // schedules may hold a bug. Never let a clean line stand alone here.
+        output << "exploration_capped: true (schedule cap reached; verdict may be incomplete)\n";
+    }
     if (!has_bug(result)) {
         return;
     }

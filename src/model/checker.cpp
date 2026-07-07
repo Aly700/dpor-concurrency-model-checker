@@ -1935,6 +1935,7 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound)
 CheckResult ModelChecker::explore_naive(std::size_t max_schedules) const {
     CheckResult result;
     dfs(program_, initial_state(program_), result, max_schedules, step_bound_);
+    result.exploration_capped = result.schedules_explored >= max_schedules;
     minimize_result_reports(program_, result, step_bound_);
     return result;
 }
@@ -1944,6 +1945,7 @@ CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
     std::vector<DporNode> nodes;
     std::vector<ExecutedTransition> trace;
     dpor_dfs(program_, initial_state(program_), result, max_schedules, step_bound_, nodes, trace, {});
+    result.exploration_capped = result.schedules_explored >= max_schedules;
     minimize_result_reports(program_, result, step_bound_);
     return result;
 }

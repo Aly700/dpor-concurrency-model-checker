@@ -72,6 +72,10 @@ target_link_libraries(spawn_tests PRIVATE dpor_cli_lib)
 add_executable(cli_tests tests/cli.cpp)
 target_compile_options(cli_tests PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(classic_gallery_tests tests/classic_gallery.cpp)
+target_link_libraries(classic_gallery_tests PRIVATE dpor_cli_lib)
+target_compile_options(classic_gallery_tests PRIVATE -Wall -Wextra -Wpedantic)
+
 add_executable(dpor_fuzz_differential
     tests/fuzz_differential.cpp
 )
@@ -92,4 +96,5 @@ add_test(NAME atomics_tests COMMAND atomics_tests)
 add_test(NAME values_tests COMMAND values_tests)
 add_test(NAME spawn_tests COMMAND spawn_tests)
 add_test(NAME cli_tests COMMAND cli_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})
+add_test(NAME classic_gallery_tests COMMAND classic_gallery_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})
 add_test(NAME dpor_fuzz_differential COMMAND dpor_fuzz_differential)

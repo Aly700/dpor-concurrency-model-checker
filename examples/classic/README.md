@@ -1,0 +1,38 @@
+# Classic Algorithms Gallery
+
+Each file is a `.dpor` model of a classic concurrency algorithm plus a paired
+broken variant. The checker is used as-is: surprising verdicts should be
+treated as findings, not as a reason to adjust core semantics.
+
+| Algorithm | Property checked | Expected verdict | Broken variant demonstrates |
+|---|---|---|---|
+| Peterson counter (`peterson_counter.dpor`) | Plain critical-section counter touch is race-free | Clean up to bound | `peterson_counter_broken_wrong_flag.dpor` reads an unused flag, so both threads enter and the counter races |
+| Peterson inside assertion (`peterson_inside_assert.dpor`) | Plain `inside_free` is nonzero on entry | Clean up to bound | `peterson_inside_assert_broken_wrong_flag.dpor` races on `inside_free` before every violating schedule necessarily reaches the assertion |
+| Dekker counter (`dekker_counter.dpor`) | Plain critical-section counter touch is race-free | Clean up to bound | `dekker_counter_broken_drop_turn_wait.dpor` enters immediately after the courtesy flag reset instead of waiting for turn |
+| Lamport bakery, bounded two-thread simplification (`bakery_bounded_counter.dpor`) | Plain critical-section counter touch is race-free | Clean up to bound | `bakery_bounded_counter_broken_no_choosing_wait.dpor` uses a bounded one-check witness that observes `number[j] == 0` while the other thread is still choosing |
+| Treiber push skeleton (`treiber_push.dpor`) | Two CAS-retry pushes leave both node bits in `top` and increment `success_count` twice | Clean | `treiber_push_broken_load_store.dpor` loses an update when load+store replaces CAS |
+| Failed-CAS handoff (`failed_cas_handoff.dpor`) | A failed CAS acquire orders a later plain payload read after the writer's release store | Clean up to bound | `failed_cas_handoff_broken_no_retry.dpor` reads payload after a successful pre-publication CAS |
+
+## Modeling Notes
+
+- `.dpor` has `set`, `bnz`, `assert`, loads/stores, fetch-add RMW, and CAS, but
+  no general arithmetic, no `max()`, no branch-on-zero, and no register-to-
+  register comparison. The Peterson and Dekker models use no-op CAS
+  (`cas turn X X -> rN`) as an atomic equality test for `turn`.
+- The counter examples use a plain read plus a literal plain write as the
+  critical-section footprint. That is the race-sensitive part of an increment,
+  but it is not a faithful arithmetic increment because plain register addition
+  is not available in the IR.
+- The Bakery file is not the full unbounded Lamport bakery algorithm. The full
+  algorithm needs `number[i] = 1 + max(number[])` and lexicographic ticket
+  comparison. This gallery model is a two-thread bounded-ticket version: an
+  atomic fetch-add dispenser creates tickets 1 and 2, and the thread with ticket
+  2 waits for the other `number[]` cell to clear. The `choosing[]` phase is kept
+  because skipping it still exposes the intended bug.
+- Clean spin-loop examples are expected to report `clean up to bound`: a
+  scheduler can keep selecting a spinning thread while the other thread is the
+  only one that can let it finish. That verdict is a bounded proof, not an
+  unbounded termination claim.
+- The Treiber model does not allocate nodes or follow next pointers. It models
+  `top` as a bitset of node ids and separately counts successful pushes with an
+  atomic fetch-add.

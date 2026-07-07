@@ -1,0 +1,32 @@
+# Algorithm: broken Treiber push skeleton.
+# Property: the reader asserts both one-shot pushes changed the modeled top.
+# Expected verdict: assertion.
+# Bug: load+store replaces CAS, so two pushes that both read the empty top lose
+# one node id.
+thread:
+  set r7 1
+  atomic_load top -> r0
+  bnz r0 push0_seen_node
+  atomic_store top 1
+  bnz r7 push0_success
+push0_seen_node:
+  atomic_store top 3
+push0_success:
+  atomic_rmw success_count 1 -> r2
+thread:
+  set r7 1
+  atomic_load top -> r0
+  bnz r0 push1_seen_node
+  atomic_store top 2
+  bnz r7 push1_success
+push1_seen_node:
+  atomic_store top 3
+push1_success:
+  atomic_rmw success_count 1 -> r2
+thread:
+  join 0
+  join 1
+  cas top 3 3 -> r0
+  assert r0
+  cas success_count 2 2 -> r1
+  assert r1

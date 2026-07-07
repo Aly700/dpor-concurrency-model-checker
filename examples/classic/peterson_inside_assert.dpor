@@ -1,0 +1,44 @@
+# Algorithm: Peterson's two-thread mutual exclusion.
+# Property: a plain inside_free cell is asserted nonzero on entry.
+# Expected verdict: clean up to bound.
+# Note: thread 0 only initializes inside_free and starts the two contenders.
+thread:
+  write inside_free 1
+  spawn 1
+  spawn 2
+  join 1
+  join 2
+thread:
+  set r7 1
+  atomic_store flag0 1
+  atomic_store turn 1
+p0_spin:
+  atomic_load flag1 -> r0
+  bnz r0 p0_check_turn
+  bnz r7 p0_enter
+p0_check_turn:
+  cas turn 1 1 -> r1
+  bnz r1 p0_spin
+p0_enter:
+  read inside_free -> r2
+  assert r2
+  write inside_free 0
+  write inside_free 1
+  atomic_store flag0 0
+thread:
+  set r7 1
+  atomic_store flag1 1
+  atomic_store turn 0
+p1_spin:
+  atomic_load flag0 -> r0
+  bnz r0 p1_check_turn
+  bnz r7 p1_enter
+p1_check_turn:
+  cas turn 0 0 -> r1
+  bnz r1 p1_spin
+p1_enter:
+  read inside_free -> r2
+  assert r2
+  write inside_free 0
+  write inside_free 1
+  atomic_store flag1 0

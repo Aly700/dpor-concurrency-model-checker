@@ -1,0 +1,51 @@
+# Algorithm: Lamport bakery, simplified to two threads with bounded tickets.
+# Property: the plain critical-section counter touch has no data race.
+# Expected verdict: clean up to bound.
+# Note: the ticket is issued by atomic_rmw next_ticket because .dpor has no
+# max(), addition on registers, or register-to-register comparison.
+thread:
+  set r7 1
+  atomic_store choosing0 1
+  atomic_rmw next_ticket 1 -> r2
+  bnz r2 p0_ticket_two
+  atomic_store number0 1
+  bnz r7 p0_chosen
+p0_ticket_two:
+  atomic_store number0 2
+p0_chosen:
+  atomic_store choosing0 0
+p0_wait_choose:
+  atomic_load choosing1 -> r0
+  bnz r0 p0_wait_choose
+  bnz r2 p0_wait_number
+  bnz r7 p0_enter
+p0_wait_number:
+  atomic_load number1 -> r1
+  bnz r1 p0_wait_number
+p0_enter:
+  read counter -> r3
+  write counter 1
+  atomic_store number0 0
+thread:
+  set r7 1
+  atomic_store choosing1 1
+  atomic_rmw next_ticket 1 -> r2
+  bnz r2 p1_ticket_two
+  atomic_store number1 1
+  bnz r7 p1_chosen
+p1_ticket_two:
+  atomic_store number1 2
+p1_chosen:
+  atomic_store choosing1 0
+p1_wait_choose:
+  atomic_load choosing0 -> r0
+  bnz r0 p1_wait_choose
+  bnz r2 p1_wait_number
+  bnz r7 p1_enter
+p1_wait_number:
+  atomic_load number0 -> r1
+  bnz r1 p1_wait_number
+p1_enter:
+  read counter -> r3
+  write counter 2
+  atomic_store number1 0

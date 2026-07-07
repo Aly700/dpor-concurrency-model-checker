@@ -1,0 +1,11 @@
+# Algorithm: broken failed-CAS handoff.
+# Property: the plain payload read exposes a missing acquire handoff.
+# Expected verdict: race.
+# Bug: the reader performs only one CAS and then reads payload even if the CAS
+# succeeded before the writer published ready.
+thread:
+  write payload 1
+  atomic_store ready 1
+thread:
+  cas ready 0 0 -> r0
+  read payload -> r1
