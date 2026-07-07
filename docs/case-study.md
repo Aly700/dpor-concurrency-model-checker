@@ -108,8 +108,38 @@ during development.
 - Twelve ADRs, 13 deterministic test suites, three differential gates, CI
   on two platforms.
 
+## The second campaign: data, real algorithms, and an instrument
+
+A follow-on campaign took the checker from fixed-control-flow toys to real
+algorithms, in three moves:
+
+1. **Data in the IR** — thread-local registers, valued memory, branches,
+   CAS (with the acquire-only-failure clock edge trap-tested in both
+   directions), first-class assertion failures, and per-thread step bounds
+   so spin loops verify as `clean up to bound`, never a false plain clean.
+2. **The classic gallery** — Peterson, Dekker, a bounded bakery, and a
+   Treiber-style CAS-retry push, each paired with a deliberately broken
+   variant. The checker found every planted bug and produced zero wrong
+   verdicts. Building the gallery also exposed a reporting gap (a verdict
+   printed after exploration hit the schedule cap looked verified when it
+   was not) — fixed as `exploration_capped`.
+3. **The optimality meter** — a fourth gate that brute-force counts
+   Mazurkiewicz classes on 7,162 small programs and compares DPOR's
+   exploration against the theoretical minimum. Result: **redundancy ratio
+   1.067, with 93.4% of programs already explored optimally** — and, for
+   free, a continuous re-proof of the theory: all 26,922 schedules agreed
+   with their class representative's verdict.
+
+The meter also settled an open question by measurement: wakeup trees (the
+deferred optimal-DPOR upgrade) would buy at most 6.7% at metered scales,
+in exactly the code region where both historical bugs lived. The attempt
+stays closed — now by instrument, not estimate.
+
+## Takeaway
+
 The takeaway this project argues for: **in this domain, review confidence
 is not evidence.** Both bugs above were reviewed and rated sound. The
 mechanism that actually protected soundness was structural — an oracle
-that never went away, and gates wide enough that new semantics kept
-re-testing old pruning.
+that never went away, gates wide enough that new semantics kept re-testing
+old pruning, and finally an instrument that measures the pruner against
+the theoretical optimum on every CI run.
