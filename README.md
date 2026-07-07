@@ -104,6 +104,11 @@ All gates are deterministic and run in CI on Linux and macOS.
 ## Design records
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
-soundness-relevant decision in `adr/` (0001 architecture crux through 0010
-spawn), including the exact vector-clock edge for each synchronization kind
-and why each DPOR pruning step cannot lose a bug class.
+soundness-relevant decision in `adr/` (0001 architecture crux through 0012
+source-DPOR deferral), including the exact vector-clock edge for each
+synchronization kind and why each DPOR pruning step cannot lose a bug class.
+
+**[docs/case-study.md](docs/case-study.md)** tells the verification story:
+how the differential gates caught two real DPOR soundness bugs that had
+survived review, and why two attempted improvements were deferred with
+measurements instead of shipped.
