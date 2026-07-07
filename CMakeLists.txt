@@ -48,6 +48,9 @@ target_link_libraries(independence_tests PRIVATE model_checker)
 add_executable(dpor_oracle tests/dpor_oracle.cpp)
 target_link_libraries(dpor_oracle PRIVATE model_checker)
 
+add_executable(dpor_optimality tests/dpor_optimality.cpp)
+target_link_libraries(dpor_optimality PRIVATE model_checker)
+
 add_executable(dpor_oracle_3threads tests/dpor_oracle_3threads.cpp)
 target_link_libraries(dpor_oracle_3threads PRIVATE model_checker)
 
@@ -88,6 +91,7 @@ add_test(NAME dpor_phase1 COMMAND dpor_phase1)
 add_test(NAME vector_clock_tests COMMAND vector_clock_tests)
 add_test(NAME independence_tests COMMAND independence_tests)
 add_test(NAME dpor_oracle COMMAND dpor_oracle)
+add_test(NAME dpor_optimality COMMAND dpor_optimality)
 add_test(NAME dpor_oracle_3threads COMMAND dpor_oracle_3threads)
 add_test(NAME minimize_tests COMMAND minimize_tests)
 add_test(NAME condvar_tests COMMAND condvar_tests)

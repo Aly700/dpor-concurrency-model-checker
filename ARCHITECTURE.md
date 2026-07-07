@@ -189,20 +189,27 @@ because it was previously slept.
 
 ## Verification Gates
 
-The DPOR implementation is checked against three deterministic gates. The
+The DPOR implementation is checked against four deterministic gates. The
 2-thread oracle sweep enumerates small programs by length pair over a 17-action
 alphabet and compares naive vs. DPOR race/deadlock/error/assertion existence,
 the bound-hit boolean, schedule dominance, and report replay identity. The
-3-thread oracle sweep uses an evenly strided deterministic
-sample of the larger 15-action, 6-slot space, plus hand-picked
-disabled-transition cases, to exercise spawn, join, and condition-variable
-enabledness. The seeded differential fuzz gate generates 3000 fixed-seed
-programs across 2-5 threads, 1-6 actions per thread, plain and atomic memory,
-mutexes, condition variables, joins, yields, spawn-shaped programs, and
-modeled-error cases, plus a value-mode lane with registers, branches, CAS,
-fetch-add, assertions, and deliberate bound hits; capped explorations are
-counted but excluded from verdict equality because truncation can legitimately
-hide a later endpoint.
+3-thread oracle sweep uses an evenly strided deterministic sample of the larger
+15-action, 6-slot space, plus hand-picked disabled-transition cases, to
+exercise spawn, join, and condition-variable enabledness. The seeded
+differential fuzz gate generates 3000 fixed-seed programs across 2-5 threads,
+1-6 actions per thread, plain and atomic memory, mutexes, condition variables,
+joins, yields, spawn-shaped programs, and modeled-error cases, plus a
+value-mode lane with registers, branches, CAS, fetch-add, assertions, and
+deliberate bound hits; capped explorations are counted but excluded from
+verdict equality because truncation can legitimately hide a later endpoint.
+
+The optimality meter is the fourth gate. It collects all naive maximal
+schedules for small non-error/non-assertion programs, replays them into
+phase-aware effective traces, canonicalizes each Mazurkiewicz trace class by
+the lexicographically minimal topological order of the checker's DPOR
+dependence DAG, and asserts `class_count <= dpor <= naive`. It also checks that
+every schedule in a canonical class replays to the same public verdict kind,
+which re-validates the independence relation behind the pruning argument.
 
 ## Design bias
 

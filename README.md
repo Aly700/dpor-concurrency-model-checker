@@ -135,11 +135,11 @@ bounded verdict and any `.dpor` modeling limitation.
 
 ## Verification gates
 
-DPOR is never trusted on faith. Three differential gates assert that
+DPOR is never trusted on faith. Four deterministic gates assert that
 `explore_dpor` and the exhaustive oracle agree on race/deadlock/error/assertion
 existence and on whether any execution hit the step bound, that DPOR never
-explores more schedules, and that every DPOR report replays to an identical
-report:
+explores more schedules, that every DPOR report replays to an identical report,
+and how far DPOR is from one schedule per Mazurkiewicz class:
 
 1. **Exhaustive 2-thread sweep** — every program over a 17-action alphabet
    (capped per length pair; ~21k programs).
@@ -149,6 +149,11 @@ report:
    including spawn-shaped, value/branch/CAS/assertion programs, step-bound
    programs, and deliberately malformed ones; failures print the seed and the
    program in `.dpor` syntax for by-hand reproduction.
+4. **Optimality meter** — collects naive schedules for small non-error,
+   non-assertion programs, canonicalizes phase-aware Mazurkiewicz trace
+   classes using the same transition predicate DPOR prunes with, asserts
+   `classes <= dpor <= naive`, and prints the aggregate DPOR/classes
+   redundancy ratio.
 
 All gates are deterministic and run in CI on Linux and macOS.
 

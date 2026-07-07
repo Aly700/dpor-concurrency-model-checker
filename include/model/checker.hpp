@@ -68,6 +68,13 @@ struct CheckResult {
     std::optional<AssertionFailureReport> first_assertion;
 };
 
+struct EffectiveScheduleStep {
+    ScheduleStep endpoint;
+    Action effective_action;
+
+    bool operator==(const EffectiveScheduleStep&) const = default;
+};
+
 class ModelChecker {
 public:
     static constexpr std::size_t kDefaultStepBound = 2000;
@@ -76,6 +83,16 @@ public:
     CheckResult explore_naive(std::size_t max_schedules = 100000) const;
     CheckResult explore_dpor(std::size_t max_schedules = 100000) const;
     CheckResult replay(const Schedule& schedule) const;
+
+    // Verification-meter helpers. These are read-only observations of the
+    // existing interpreter and DPOR transition predicate; they do not alter
+    // exploration state or schedule choice.
+    std::vector<Schedule> collect_naive_schedules(std::size_t max_schedules = 100000) const;
+    std::vector<EffectiveScheduleStep> replay_effective_trace(const Schedule& schedule) const;
+    bool dpor_transitions_independent(ThreadId lhs_thread,
+                                      const Action& lhs,
+                                      ThreadId rhs_thread,
+                                      const Action& rhs) const;
 
     // Bug identity for minimization:
     // - race: same modeled address and same unordered pair of

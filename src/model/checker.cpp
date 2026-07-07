@@ -1579,6 +1579,50 @@ void dfs(const Program& program,
     }
 }
 
+void collect_naive_schedules_dfs(const Program& program,
+                                 ExecutionState state,
+                                 std::vector<Schedule>& schedules,
+                                 std::size_t max_schedules,
+                                 std::size_t step_bound) {
+    if (schedules.size() >= max_schedules) {
+        return;
+    }
+
+    bool explored_child = false;
+    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+        if (!is_enabled(program, state, tid)) {
+            continue;
+        }
+
+        explored_child = true;
+        if (step_bound_reached(state, tid, step_bound)) {
+            Schedule bounded = state.schedule;
+            bounded.push_back(ScheduleStep{tid, state.pc.at(tid)});
+            schedules.push_back(std::move(bounded));
+            if (schedules.size() >= max_schedules) {
+                return;
+            }
+            continue;
+        }
+
+        ExecutionState next = state;
+        const StepReport step_report = execute_enabled_step(program, next, tid);
+        if (step_report.error.has_value() || step_report.assertion.has_value()) {
+            schedules.push_back(next.schedule);
+        } else {
+            collect_naive_schedules_dfs(program, std::move(next), schedules, max_schedules, step_bound);
+        }
+
+        if (schedules.size() >= max_schedules) {
+            return;
+        }
+    }
+
+    if (!explored_child) {
+        schedules.push_back(std::move(state.schedule));
+    }
+}
+
 std::invalid_argument invalid_schedule(std::size_t index, const std::string& reason) {
     std::ostringstream message;
     message << "invalid replay schedule at step " << index << ": " << reason;
@@ -1650,6 +1694,38 @@ CheckResult replay_schedule(const Program& program, const Schedule& schedule, st
     }
 
     return result;
+}
+
+std::vector<EffectiveScheduleStep> replay_effective_trace(const Program& program,
+                                                          const Schedule& schedule,
+                                                          std::size_t step_bound) {
+    std::vector<EffectiveScheduleStep> trace;
+    ExecutionState state = initial_state(program);
+
+    for (std::size_t i = 0; i < schedule.size(); ++i) {
+        validate_replay_step(program, state, schedule[i], i);
+        if (step_bound_reached(state, schedule[i].thread, step_bound)) {
+            if (i + 1 < schedule.size()) {
+                throw invalid_schedule(i + 1, "schedule continues after a step-bound outcome");
+            }
+            return trace;
+        }
+
+        trace.push_back(EffectiveScheduleStep{
+            schedule[i],
+            effective_next_action(program, state, schedule[i].thread),
+        });
+
+        const StepReport step_report = execute_enabled_step(program, state, schedule[i].thread);
+        if (step_report.error.has_value() || step_report.assertion.has_value()) {
+            if (i + 1 < schedule.size()) {
+                throw invalid_schedule(i + 1, "schedule continues after a terminal execution report");
+            }
+            return trace;
+        }
+    }
+
+    return trace;
 }
 
 bool schedule_step_less(const ScheduleStep& lhs, const ScheduleStep& rhs) {
@@ -1952,6 +2028,23 @@ CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
 
 CheckResult ModelChecker::replay(const Schedule& schedule) const {
     return replay_schedule(program_, schedule, step_bound_);
+}
+
+std::vector<Schedule> ModelChecker::collect_naive_schedules(std::size_t max_schedules) const {
+    std::vector<Schedule> schedules;
+    collect_naive_schedules_dfs(program_, initial_state(program_), schedules, max_schedules, step_bound_);
+    return schedules;
+}
+
+std::vector<EffectiveScheduleStep> ModelChecker::replay_effective_trace(const Schedule& schedule) const {
+    return model::replay_effective_trace(program_, schedule, step_bound_);
+}
+
+bool ModelChecker::dpor_transitions_independent(ThreadId lhs_thread,
+                                                const Action& lhs,
+                                                ThreadId rhs_thread,
+                                                const Action& rhs) const {
+    return transitions_independent(program_, lhs_thread, lhs, rhs_thread, rhs);
 }
 
 Schedule ModelChecker::minimize_schedule(const Schedule& schedule) const {
