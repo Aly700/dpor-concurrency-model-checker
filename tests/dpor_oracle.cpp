@@ -129,6 +129,18 @@ model::Program two_thread_program(std::uint64_t encoded, std::size_t lhs_length,
 std::string action_string(const model::Action& action) {
     std::ostringstream out;
     switch (action.kind) {
+    case model::ActionKind::Set:
+        out << "Set";
+        break;
+    case model::ActionKind::Label:
+        out << "Label " << action.label;
+        break;
+    case model::ActionKind::BranchNonzero:
+        out << "BranchNonzero";
+        break;
+    case model::ActionKind::Assert:
+        out << "Assert";
+        break;
     case model::ActionKind::Read:
         out << "Read " << action.address;
         break;
@@ -143,6 +155,9 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::AtomicRmw:
         out << "AtomicRmw " << action.address;
+        break;
+    case model::ActionKind::CompareExchange:
+        out << "CompareExchange " << action.address;
         break;
     case model::ActionKind::Lock:
         out << "Lock " << action.mutex;
@@ -170,6 +185,10 @@ std::string action_string(const model::Action& action) {
         break;
     }
     return out.str();
+}
+
+bool bound_hit(const model::CheckResult& result) {
+    return result.bound_exceeded_executions > 0;
 }
 
 void print_program(const model::Program& program) {
@@ -208,6 +227,12 @@ void assert_replays_dpor_report(const model::ModelChecker& checker, const model:
         assert(replay.first_error.has_value());
         assert(*replay.first_error == *dpor.first_error);
     }
+
+    if (dpor.first_assertion.has_value()) {
+        const auto replay = checker.replay(dpor.first_assertion->schedule);
+        assert(replay.first_assertion.has_value());
+        assert(*replay.first_assertion == *dpor.first_assertion);
+    }
 }
 
 void cross_validate_program(const model::Program& program,
@@ -221,22 +246,30 @@ void cross_validate_program(const model::Program& program,
     if (dpor.first_race.has_value() != naive.first_race.has_value() ||
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
+        dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "oracle mismatch\n";
         print_program(program);
         std::cerr << "  naive schedules=" << naive.schedules_explored
                   << " race=" << naive.first_race.has_value()
                   << " deadlock=" << naive.first_deadlock.has_value()
-                  << " error=" << naive.first_error.has_value() << '\n';
+                  << " error=" << naive.first_error.has_value()
+                  << " assertion=" << naive.first_assertion.has_value()
+                  << " bound=" << bound_hit(naive) << '\n';
         std::cerr << "  dpor schedules=" << dpor.schedules_explored
                   << " race=" << dpor.first_race.has_value()
                   << " deadlock=" << dpor.first_deadlock.has_value()
-                  << " error=" << dpor.first_error.has_value() << '\n';
+                  << " error=" << dpor.first_error.has_value()
+                  << " assertion=" << dpor.first_assertion.has_value()
+                  << " bound=" << bound_hit(dpor) << '\n';
     }
 
     assert(dpor.first_race.has_value() == naive.first_race.has_value());
     assert(dpor.first_deadlock.has_value() == naive.first_deadlock.has_value());
     assert(dpor.first_error.has_value() == naive.first_error.has_value());
+    assert(dpor.first_assertion.has_value() == naive.first_assertion.has_value());
+    assert(bound_hit(dpor) == bound_hit(naive));
     assert(dpor.schedules_explored <= naive.schedules_explored);
     assert_replays_dpor_report(checker, dpor);
 
@@ -274,7 +307,9 @@ void assert_dpor_schedules_at_most(const model::Program& program, std::size_t up
     if (dpor.schedules_explored >= naive.schedules_explored ||
         dpor.first_race.has_value() != naive.first_race.has_value() ||
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
-        dpor.first_error.has_value() != naive.first_error.has_value()) {
+        dpor.first_error.has_value() != naive.first_error.has_value() ||
+        dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        bound_hit(dpor) != bound_hit(naive)) {
         std::cerr << "DPOR upper-bound fixture changed verdict or lost reduction\n";
         print_program(program);
         std::abort();
@@ -284,6 +319,8 @@ void assert_dpor_schedules_at_most(const model::Program& program, std::size_t up
     assert(dpor.first_race.has_value() == naive.first_race.has_value());
     assert(dpor.first_deadlock.has_value() == naive.first_deadlock.has_value());
     assert(dpor.first_error.has_value() == naive.first_error.has_value());
+    assert(dpor.first_assertion.has_value() == naive.first_assertion.has_value());
+    assert(bound_hit(dpor) == bound_hit(naive));
     assert_replays_dpor_report(checker, dpor);
 }
 

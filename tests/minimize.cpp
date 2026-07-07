@@ -31,6 +31,13 @@ model::Action yield() {
     return model::Action{model::ActionKind::Yield, "", ""};
 }
 
+model::Action assert_nonzero(model::RegisterId reg) {
+    model::Action action;
+    action.kind = model::ActionKind::Assert;
+    action.source_register = reg;
+    return action;
+}
+
 bool same_race_identity(const model::RaceReport& lhs, const model::RaceReport& rhs) {
     if (lhs.address != rhs.address) {
         return false;
@@ -62,6 +69,11 @@ bool same_deadlock_identity(const model::DeadlockReport& lhs, const model::Deadl
 
 bool same_error_identity(const model::ModelErrorReport& lhs, const model::ModelErrorReport& rhs) {
     return lhs.endpoint == rhs.endpoint;
+}
+
+bool same_assertion_identity(const model::AssertionFailureReport& lhs,
+                             const model::AssertionFailureReport& rhs) {
+    return lhs.endpoint == rhs.endpoint && lhs.reg == rhs.reg && lhs.value == rhs.value;
 }
 
 void assert_fixed_point(const model::ModelChecker& checker, const model::Schedule& schedule) {
@@ -135,6 +147,27 @@ void minimizes_padded_modeled_error_schedule() {
     const auto replay = checker.replay(minimized);
     assert(replay.first_error.has_value());
     assert(same_error_identity(*raw.first_error, *replay.first_error));
+    assert_fixed_point(checker, minimized);
+}
+
+void minimizes_padded_assertion_schedule() {
+    const model::Program program{{
+        {yield(), write("z")},
+        {yield(), assert_nonzero(0)},
+    }};
+    const model::Schedule padded = {
+        {0, 0}, {0, 1}, {1, 0}, {1, 1},
+    };
+
+    const model::ModelChecker checker(program);
+    const auto raw = checker.replay(padded);
+    assert(raw.first_assertion.has_value());
+
+    const auto minimized = checker.minimize_schedule(padded);
+    assert(minimized.size() < padded.size());
+    const auto replay = checker.replay(minimized);
+    assert(replay.first_assertion.has_value());
+    assert(same_assertion_identity(*raw.first_assertion, *replay.first_assertion));
     assert_fixed_point(checker, minimized);
 }
 
@@ -226,6 +259,15 @@ void assert_minimized_dpor_report_schedules_preserve_identity() {
                     assert(same_error_identity(*dpor.first_error, *replay.first_error));
                     assert_fixed_point(checker, minimized);
                 }
+
+                if (dpor.first_assertion.has_value()) {
+                    const auto minimized = checker.minimize_schedule(dpor.first_assertion->schedule);
+                    assert(minimized.size() <= dpor.first_assertion->schedule.size());
+                    const auto replay = checker.replay(minimized);
+                    assert(replay.first_assertion.has_value());
+                    assert(same_assertion_identity(*dpor.first_assertion, *replay.first_assertion));
+                    assert_fixed_point(checker, minimized);
+                }
             }
         }
     }
@@ -237,6 +279,7 @@ int main() {
     minimizes_padded_race_schedule_and_explore_reports_it_minimized();
     preserves_padded_deadlock_identity_as_a_fixed_point();
     minimizes_padded_modeled_error_schedule();
+    minimizes_padded_assertion_schedule();
     leaves_non_buggy_schedules_unchanged();
     assert_minimized_dpor_report_schedules_preserve_identity();
     return 0;

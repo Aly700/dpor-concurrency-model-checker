@@ -24,6 +24,7 @@ struct CheckCommand {
     std::string program_path;
     Explorer explorer{Explorer::Dpor};
     std::size_t max_schedules{100000};
+    std::size_t step_bound{model::ModelChecker::kDefaultStepBound};
 };
 
 struct ReplayCommand {
@@ -64,7 +65,7 @@ Explorer parse_explorer(const std::string& value) {
 
 CheckCommand parse_check_command(int argc, char** argv) {
     if (argc < 3) {
-        throw UsageError("usage: dpor check <program.dpor> [--explorer naive|dpor] [--max-schedules N]");
+        throw UsageError("usage: dpor check <program.dpor> [--explorer naive|dpor] [--max-schedules N] [--step-bound N]");
     }
 
     CheckCommand command;
@@ -83,6 +84,12 @@ CheckCommand parse_check_command(int argc, char** argv) {
                 throw UsageError("missing max schedules");
             }
             command.max_schedules = parse_size_token(argv[index + 1], "max schedules");
+            index += 2;
+        } else if (flag == "--step-bound") {
+            if (index + 1 >= argc) {
+                throw UsageError("missing step bound");
+            }
+            command.step_bound = parse_size_token(argv[index + 1], "step bound");
             index += 2;
         } else {
             throw UsageError("unknown option");
@@ -103,7 +110,7 @@ ReplayCommand parse_replay_command(int argc, char** argv) {
 
 int run_check(const CheckCommand& command) {
     const model::Program program = cli::parse_program_file(command.program_path);
-    const model::ModelChecker checker(program);
+    const model::ModelChecker checker(program, command.step_bound);
     const model::CheckResult result = command.explorer == Explorer::Naive
         ? checker.explore_naive(command.max_schedules)
         : checker.explore_dpor(command.max_schedules);

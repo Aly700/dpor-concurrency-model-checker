@@ -15,7 +15,10 @@ const model::Schedule& bug_schedule(const model::CheckResult& result) {
     if (result.first_deadlock.has_value()) {
         return result.first_deadlock->schedule;
     }
-    return result.first_error->schedule;
+    if (result.first_error.has_value()) {
+        return result.first_error->schedule;
+    }
+    return result.first_assertion->schedule;
 }
 
 bool is_selected_error_endpoint(const model::CheckResult& result,
@@ -74,6 +77,13 @@ void print_bug_details(std::ostream& output, const model::CheckResult& result) {
         output << "error:\n";
         output << "  endpoint: " << endpoint_text(result.first_error->endpoint) << '\n';
         output << "  message: " << result.first_error->message << '\n';
+        return;
+    }
+    if (result.first_assertion.has_value()) {
+        output << "assertion:\n";
+        output << "  endpoint: " << endpoint_text(result.first_assertion->endpoint) << '\n';
+        output << "  register: r" << static_cast<unsigned>(result.first_assertion->reg) << '\n';
+        output << "  value: " << result.first_assertion->value << '\n';
     }
 }
 
@@ -122,18 +132,28 @@ std::string verdict_of(const model::CheckResult& result) {
     if (result.first_error.has_value()) {
         return "error";
     }
+    if (result.first_assertion.has_value()) {
+        return "assertion";
+    }
+    if (result.bound_exceeded_executions > 0) {
+        return "clean up to bound";
+    }
     return "clean";
 }
 
 bool has_bug(const model::CheckResult& result) {
     return result.first_race.has_value() ||
            result.first_deadlock.has_value() ||
-           result.first_error.has_value();
+           result.first_error.has_value() ||
+           result.first_assertion.has_value();
 }
 
 void print_report(std::ostream& output, const model::Program& program, const model::CheckResult& result) {
     output << "verdict: " << verdict_of(result) << '\n';
     output << "schedules_explored: " << result.schedules_explored << '\n';
+    if (result.bound_exceeded_executions > 0) {
+        output << "bound_exceeded_executions: " << result.bound_exceeded_executions << '\n';
+    }
     if (!has_bug(result)) {
         return;
     }

@@ -8,7 +8,9 @@
 
 ## Current scaffold
 
-- `model::Program` is a tiny action IR.
+- `model::Program` is a tiny action IR with int64 values, eight
+  thread-local registers per thread, label/branch control flow, and shared
+  plain/atomic value cells.
 - `dpor` is a deterministic CLI consumer that parses `.dpor` text programs,
   runs check or replay through the public `ModelChecker` API, and renders
   stable reports plus replayable schedule blocks.
@@ -17,12 +19,13 @@
   DFS. It uses deterministic backtrack/done sets, the public action-level
   `independent()` predicate, and a checker-local transition refinement for
   enabled valid `Join` operations.
-- `ModelChecker::replay` re-executes a deterministic schedule and rejects
-  disabled or out-of-range steps with a clear error.
+- `ModelChecker::replay` re-executes a deterministic schedule under the same
+  step bound and rejects disabled, out-of-range, or post-terminal steps with a
+  clear error.
 - `ModelChecker::minimize_schedule` greedily deletes per-thread tail steps only
-  when replay proves the same race, deadlock, or modeled-error identity still
-  reproduces; public exploration reports are normalized through it before
-  return.
+  when replay proves the same race, deadlock, modeled-error, or assertion
+  identity still reproduces; public exploration reports are normalized through
+  it before return.
 - `VectorClock` is the base happens-before data structure.
 - The cross-validation executable `dpor_oracle` checks a deterministic capped
   family of tiny programs against the naive oracle.
@@ -31,7 +34,11 @@
 
 The checker interprets a program as a small-step state machine:
 
-- `pc[tid]` is the next action for each modeled thread.
+- `pc[tid]` is the next executable action for each modeled thread, normalized
+  past label pseudo-actions.
+- `registers[tid][0..7]` are thread-local int64 registers initialized to zero.
+- `thread_steps[tid]` counts scheduled steps for the per-thread execution
+  bound.
 - `mutex_owner[mutex]` records the owning thread for held mutexes.
 - `mutex_clock[mutex]` records the vector clock stored by the last successful
   unlock of that mutex.
@@ -50,11 +57,14 @@ The checker interprets a program as a small-step state machine:
 - `memory[address]` records the last plain write, the plain reads since that
   write, and deterministic plain/atomic access lists used only for the mixed
   plain/atomic race check.
+- `memory_values[address]` records the current int64 value for both plain and
+  atomic accesses in the shared address namespace.
 
 At each DFS state, the naive oracle enumerates exactly the enabled actions in
 ascending thread-id order. Not-started threads are disabled. `Read`, `Write`,
-`AtomicLoad`, `AtomicStore`, `AtomicRmw`, `Yield`, `Unlock`, `Spawn`, `Signal`,
-and `Broadcast` are enabled for started unfinished threads; invalid `Unlock`,
+`AtomicLoad`, `AtomicStore`, `AtomicRmw`, `CompareExchange`, `Set`,
+`BranchNonzero`, `Assert`, `Yield`, `Unlock`, `Spawn`, `Signal`, and
+`Broadcast` are enabled for started unfinished threads; invalid `Unlock`,
 invalid `Wait`, invalid `Spawn`, and invalid `Join` steps are reported as
 modeled errors. `Lock` is enabled only when its mutex is not currently owned.
 `Join(target)` is enabled only when `target` has started and finished.
@@ -63,7 +73,10 @@ index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
 started unfinished threads and no enabled action is a deadlock; the report
 tags each started blocked thread as waiting on a mutex, join target, or
 condition variable. A state where all started threads are finished is normal
-termination, even if some static thread bodies were never spawned.
+termination, even if some static thread bodies were never spawned. If an
+enabled choice names a thread that has already executed its per-thread step
+bound, that execution terminates with a bound outcome and increments
+`bound_exceeded_executions`.
 
 ## Happens-Before Analysis
 
@@ -83,14 +96,24 @@ does not mutate it. `AtomicRmw(address)` joins the current location clock into
 the executing thread, then replaces the location clock with the joined thread
 clock. Store and RMW replacement is deliberate: joining old location clocks
 would fabricate happens-before edges and can hide real plain-data races.
+Successful `CompareExchange(address)` uses the same acquire-release
+join-then-replace path as `AtomicRmw`. Failed compare-exchange is acquire load
+only and must not replace the location clock.
+
+Values ride on top of these clock rules. Plain reads and atomic loads copy the
+current schedule-order cell value into a destination register when one is
+present. Plain writes and atomic stores update the cell from an immediate or
+register operand. Atomic RMW returns the old value and adds its operand. CAS
+stores on success and writes `1` or `0` to its result register.
 
 Memory accesses compare their current vector clock against prior conflicting
 accesses to the same address. Plain/plain races use the existing last-write and
 reads-since-last-write metadata. Atomic/atomic accesses never race. Mixed
 plain/atomic accesses race when unordered by happens-before and at least one
-side is write-like: plain write, atomic store, or atomic RMW. A race report
-records the two access endpoints and the executed prefix through the second
-access.
+side is write-like: plain write, atomic store, successful CAS, or atomic RMW.
+A race report records the two access endpoints and the executed prefix through
+the second access. Assertion reports record the assertion endpoint, register,
+observed value, and executed prefix.
 
 The exhaustive oracle explores all enabled interleavings of the modeled
 small-step semantics. Therefore, per-execution happens-before race detection
@@ -132,8 +155,11 @@ later alternatives. Modeled-error endpoints still clear pruning at that node and
 add every enabled sibling, and sleep-blocked prefixes still apply the disabled
 fallback before being pruned.
 
-Race and error detection still run through the same interpreter as naive
-exploration, and every DPOR report is expected to replay identically.
+Race, error, and assertion detection still run through the same interpreter as
+naive exploration, and every DPOR report is expected to replay identically.
+Bound outcomes also run through that interpreter. Bound counts may differ
+between naive and DPOR, so the gates compare only whether any execution hit the
+bound.
 
 Atomics do not add blocking or phase changes. `effective_next_action()` passes
 them through unchanged, and sleep-set inheritance plus happens-before-aware
@@ -141,6 +167,10 @@ backtracking rely only on the updated `independent()` and `may_conflict()`
 clauses. Two same-address atomic loads are independent; same-address pairs
 involving atomic store or RMW are dependent; and same-address mixed
 plain/atomic pairs are dependent.
+CAS is dependent as an atomic RMW at the action level regardless of runtime
+success. Register-only actions are independent of every other thread's
+transition because they touch no shared state and do not affect cross-thread
+enabledness; same-thread transitions are still never commuted.
 
 Spawn adds dynamic enabledness. Not-started threads are absent from enabled
 sets and sleep sets, and replay rejects target-thread steps before the
@@ -161,15 +191,18 @@ because it was previously slept.
 
 The DPOR implementation is checked against three deterministic gates. The
 2-thread oracle sweep enumerates small programs by length pair over a 17-action
-alphabet and compares naive vs. DPOR verdicts, schedule dominance, and report
-replay identity. The 3-thread oracle sweep uses an evenly strided deterministic
+alphabet and compares naive vs. DPOR race/deadlock/error/assertion existence,
+the bound-hit boolean, schedule dominance, and report replay identity. The
+3-thread oracle sweep uses an evenly strided deterministic
 sample of the larger 15-action, 6-slot space, plus hand-picked
 disabled-transition cases, to exercise spawn, join, and condition-variable
 enabledness. The seeded differential fuzz gate generates 3000 fixed-seed
 programs across 2-5 threads, 1-6 actions per thread, plain and atomic memory,
 mutexes, condition variables, joins, yields, spawn-shaped programs, and
-modeled-error cases; capped explorations are counted but excluded from verdict
-equality because truncation can legitimately hide a later endpoint.
+modeled-error cases, plus a value-mode lane with registers, branches, CAS,
+fetch-add, assertions, and deliberate bound hits; capped explorations are
+counted but excluded from verdict equality because truncation can legitimately
+hide a later endpoint.
 
 ## Design bias
 

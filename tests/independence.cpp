@@ -59,6 +59,24 @@ model::Action yield() {
     return model::Action{model::ActionKind::Yield, "", ""};
 }
 
+model::Action set(model::RegisterId reg, model::Value value) {
+    model::Action action;
+    action.kind = model::ActionKind::Set;
+    action.destination = reg;
+    model::ValueOperand operand;
+    operand.kind = model::ValueOperandKind::Immediate;
+    operand.immediate = value;
+    action.value = operand;
+    return action;
+}
+
+model::Action assert_nonzero(model::RegisterId reg) {
+    model::Action action;
+    action.kind = model::ActionKind::Assert;
+    action.source_register = reg;
+    return action;
+}
+
 void assert_pair_commutes_when_independent(const model::Action& lhs, const model::Action& rhs) {
     assert(model::independent(lhs, rhs));
 
@@ -94,6 +112,8 @@ int main() {
     assert(!model::independent(wait("cv", "m"), broadcast("cv")));
     assert(!model::independent(wait("cv0", "m"), lock("m")));
     assert(model::independent(wait("cv0", "m"), signal("cv1")));
+    assert(model::independent(set(0, 1), write("x")));
+    assert(model::independent(assert_nonzero(0), spawn(1)));
 
     assert_pair_commutes_when_independent(read("x"), read("x"));
     assert_pair_commutes_when_independent(read("x"), write("y"));

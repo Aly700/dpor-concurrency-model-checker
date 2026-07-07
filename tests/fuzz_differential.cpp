@@ -22,7 +22,7 @@ std::string render_program(const model::Program& program);
 
 namespace {
 
-enum class GenerationMode { MostlyWellFormed, Adversarial };
+enum class GenerationMode { MostlyWellFormed, Adversarial, Value };
 
 enum class Choice {
     PlainMemory,
@@ -49,6 +49,8 @@ struct FuzzStats {
     std::size_t race{0};
     std::size_t deadlock{0};
     std::size_t error{0};
+    std::size_t assertion{0};
+    std::size_t bound_hit{0};
     std::size_t naive_schedules{0};
     std::size_t dpor_schedules{0};
 };
@@ -144,6 +146,87 @@ model::Action yield() {
     return action;
 }
 
+model::ValueOperand imm(model::Value value) {
+    model::ValueOperand operand;
+    operand.kind = model::ValueOperandKind::Immediate;
+    operand.immediate = value;
+    return operand;
+}
+
+model::Action set(model::RegisterId reg, model::Value value) {
+    model::Action action;
+    action.kind = model::ActionKind::Set;
+    action.destination = reg;
+    action.value = imm(value);
+    return action;
+}
+
+model::Action label(std::string name) {
+    model::Action action;
+    action.kind = model::ActionKind::Label;
+    action.label = std::move(name);
+    return action;
+}
+
+model::Action bnz(model::RegisterId reg, std::string target) {
+    model::Action action;
+    action.kind = model::ActionKind::BranchNonzero;
+    action.source_register = reg;
+    action.label = std::move(target);
+    return action;
+}
+
+model::Action assert_nonzero(model::RegisterId reg) {
+    model::Action action;
+    action.kind = model::ActionKind::Assert;
+    action.source_register = reg;
+    return action;
+}
+
+model::Action read_to(std::string address, model::RegisterId destination) {
+    model::Action action = read(std::move(address));
+    action.destination = destination;
+    return action;
+}
+
+model::Action write_value(std::string address, model::ValueOperand value) {
+    model::Action action = write(std::move(address));
+    action.value = value;
+    return action;
+}
+
+model::Action atomic_load_to(std::string address, model::RegisterId destination) {
+    model::Action action = atomic_load(std::move(address));
+    action.destination = destination;
+    return action;
+}
+
+model::Action atomic_store_value(std::string address, model::ValueOperand value) {
+    model::Action action = atomic_store(std::move(address));
+    action.value = value;
+    return action;
+}
+
+model::Action atomic_rmw_value(std::string address, model::ValueOperand value, model::RegisterId destination) {
+    model::Action action = atomic_rmw(std::move(address));
+    action.value = value;
+    action.destination = destination;
+    return action;
+}
+
+model::Action cas(std::string address,
+                  model::ValueOperand expected,
+                  model::ValueOperand desired,
+                  model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::CompareExchange;
+    action.address = std::move(address);
+    action.expected = expected;
+    action.value = desired;
+    action.destination = destination;
+    return action;
+}
+
 std::size_t bounded(std::mt19937_64& rng, std::size_t limit) {
     assert(limit > 0);
     return std::uniform_int_distribution<std::size_t>(0, limit - 1)(rng);
@@ -153,6 +236,18 @@ std::string hex_seed(std::uint64_t seed) {
     std::ostringstream output;
     output << "0x" << std::hex << seed;
     return output.str();
+}
+
+const char* mode_name(GenerationMode mode) {
+    switch (mode) {
+    case GenerationMode::MostlyWellFormed:
+        return "mostly-well-formed";
+    case GenerationMode::Adversarial:
+        return "adversarial";
+    case GenerationMode::Value:
+        return "value";
+    }
+    return "unknown";
 }
 
 Choice choose(std::mt19937_64& rng, const std::vector<WeightedChoice>& choices) {
@@ -337,6 +432,57 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
     return yield();
 }
 
+model::Program generate_value_program(std::mt19937_64& rng) {
+    switch (bounded(rng, 6)) {
+    case 0: {
+        const bool failing_assertion = bounded(rng, 4) == 0;
+        return model::Program{{
+            {
+                set(0, 1),
+                set(1, static_cast<model::Value>(bounded(rng, 4) + 1)),
+                failing_assertion ? assert_nonzero(7) : assert_nonzero(0),
+            },
+            {set(2, 1), bnz(2, "done"), assert_nonzero(7), label("done"), assert_nonzero(2)},
+        }};
+    }
+    case 1:
+        return model::Program{{
+            {atomic_rmw_value("f", imm(1), 0)},
+            {atomic_rmw_value("f", imm(1), 0)},
+            {join(0), join(1), cas("f", imm(2), imm(2), 1), assert_nonzero(1)},
+        }};
+    case 2:
+        return model::Program{{
+            {atomic_store_value("f", imm(1))},
+            {write_value("x", imm(1)), cas("f", imm(0), imm(2), 0)},
+            {atomic_load_to("f", 1), write_value("x", imm(2))},
+        }};
+    case 3:
+        return model::Program{{
+            {write_value("x", imm(1)), cas("f", imm(0), imm(1), 0), assert_nonzero(0)},
+            {atomic_load_to("f", 1), read_to("x", 2)},
+        }};
+    case 4:
+        return model::Program{{
+            {
+                set(1, 1),
+                label("spin"),
+                atomic_load_to("f", 0),
+                bnz(0, "done"),
+                bnz(1, "spin"),
+                label("done"),
+                assert_nonzero(1),
+            },
+            {atomic_store_value("f", imm(1))},
+        }};
+    default:
+        return model::Program{{
+            {set(1, 1), label("spin"), bnz(1, "spin")},
+            {yield()},
+        }};
+    }
+}
+
 std::size_t generated_thread_count(std::mt19937_64& rng) {
     constexpr std::size_t kThreadCounts[] = {
         2, 2, 2, 2, 2, 2, 2, 2,
@@ -373,6 +519,10 @@ std::size_t generated_action_count(std::mt19937_64& rng, std::size_t thread_coun
 }
 
 model::Program generate_program(std::mt19937_64& rng, GenerationMode mode) {
+    if (mode == GenerationMode::Value) {
+        return generate_value_program(rng);
+    }
+
     const std::size_t thread_count = generated_thread_count(rng);
     const std::size_t condition_count = bounded(rng, 2) + 1;
 
@@ -402,6 +552,10 @@ bool hit_cap(const model::CheckResult& result, std::size_t cap) {
     return result.schedules_explored >= cap;
 }
 
+bool hit_step_bound(const model::CheckResult& result) {
+    return result.bound_exceeded_executions > 0;
+}
+
 void print_failure(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
@@ -412,17 +566,19 @@ void print_failure(std::uint64_t seed,
     std::cerr << "differential fuzz failure: " << reason << '\n';
     std::cerr << "seed: " << hex_seed(seed) << '\n';
     std::cerr << "program_index: " << program_index << '\n';
-    std::cerr << "mode: "
-              << (mode == GenerationMode::MostlyWellFormed ? "mostly-well-formed" : "adversarial")
-              << '\n';
+    std::cerr << "mode: " << mode_name(mode) << '\n';
     std::cerr << "naive schedules=" << naive.schedules_explored
               << " race=" << naive.first_race.has_value()
               << " deadlock=" << naive.first_deadlock.has_value()
-              << " error=" << naive.first_error.has_value() << '\n';
+              << " error=" << naive.first_error.has_value()
+              << " assertion=" << naive.first_assertion.has_value()
+              << " bound=" << hit_step_bound(naive) << '\n';
     std::cerr << "dpor schedules=" << dpor.schedules_explored
               << " race=" << dpor.first_race.has_value()
               << " deadlock=" << dpor.first_deadlock.has_value()
-              << " error=" << dpor.first_error.has_value() << '\n';
+              << " error=" << dpor.first_error.has_value()
+              << " assertion=" << dpor.first_assertion.has_value()
+              << " bound=" << hit_step_bound(dpor) << '\n';
     std::cerr << "program.dpor:\n" << cli::render_program(program);
 }
 
@@ -461,6 +617,13 @@ void assert_replays_dpor_report(std::uint64_t seed,
         const auto replayed = checker.replay(dpor.first_error->schedule);
         if (!replayed.first_error.has_value() || *replayed.first_error != *dpor.first_error) {
             fail_program(seed, program_index, mode, program, naive, dpor, "error replay changed report");
+        }
+    }
+    if (dpor.first_assertion.has_value()) {
+        const auto replayed = checker.replay(dpor.first_assertion->schedule);
+        if (!replayed.first_assertion.has_value() ||
+            *replayed.first_assertion != *dpor.first_assertion) {
+            fail_program(seed, program_index, mode, program, naive, dpor, "assertion replay changed report");
         }
     }
 }
@@ -503,7 +666,8 @@ void check_program(std::uint64_t seed,
                    const model::Program& program,
                    FuzzStats& stats) {
     constexpr std::size_t kMaxSchedules = 20000;
-    const model::ModelChecker checker(program);
+    constexpr std::size_t kStepBound = 40;
+    const model::ModelChecker checker(program, kStepBound);
     const model::CheckResult naive = checker.explore_naive(kMaxSchedules);
     const model::CheckResult dpor = checker.explore_dpor(kMaxSchedules);
 
@@ -522,7 +686,9 @@ void check_program(std::uint64_t seed,
 
     if (dpor.first_race.has_value() != naive.first_race.has_value() ||
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
-        dpor.first_error.has_value() != naive.first_error.has_value()) {
+        dpor.first_error.has_value() != naive.first_error.has_value() ||
+        dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        hit_step_bound(dpor) != hit_step_bound(naive)) {
         fail_program(seed, program_index, mode, program, naive, dpor, "verdict mismatch");
     }
 
@@ -541,6 +707,12 @@ void check_program(std::uint64_t seed,
     }
     if (naive.first_error.has_value()) {
         ++stats.error;
+    }
+    if (naive.first_assertion.has_value()) {
+        ++stats.assertion;
+    }
+    if (hit_step_bound(naive)) {
+        ++stats.bound_hit;
     }
 }
 
@@ -572,17 +744,20 @@ int main(int argc, char** argv) {
         }
     }
 
-    // Mode mix: 7 of every 8 generated programs are mostly well-formed
-    // (balanced per-thread locks, waits under held mutexes, valid non-self
-    // joins); 1 of every 8 is adversarial to hit modeled-error paths.
+    // Mode mix: deterministic mostly-well-formed coverage, adversarial
+    // modeled-error coverage, and a value lane for registers, branches,
+    // CAS/fetch-add, assertions, and deliberate step-bound hits.
     constexpr std::size_t kProgramsPerSeed = 750;
     FuzzStats stats;
     for (const std::uint64_t seed : seeds) {
         std::mt19937_64 rng(seed);
         for (std::size_t index = 0; index < kProgramsPerSeed; ++index) {
-            const GenerationMode mode = index % 8 == 7
-                ? GenerationMode::Adversarial
-                : GenerationMode::MostlyWellFormed;
+            GenerationMode mode = GenerationMode::MostlyWellFormed;
+            if (index % 10 == 9) {
+                mode = GenerationMode::Adversarial;
+            } else if (index % 5 == 4) {
+                mode = GenerationMode::Value;
+            }
             check_program(seed, index, mode, generate_program(rng, mode), stats);
         }
     }
@@ -593,6 +768,8 @@ int main(int argc, char** argv) {
               << " races=" << stats.race
               << " deadlocks=" << stats.deadlock
               << " errors=" << stats.error
+              << " assertions=" << stats.assertion
+              << " bound_hits=" << stats.bound_hit
               << " naive_schedules=" << stats.naive_schedules
               << " dpor_schedules=" << stats.dpor_schedules << '\n';
 

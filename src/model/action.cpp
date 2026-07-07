@@ -10,7 +10,8 @@ bool is_plain_memory_action(const Action& action) {
 bool is_atomic_action(const Action& action) {
     return action.kind == ActionKind::AtomicLoad ||
            action.kind == ActionKind::AtomicStore ||
-           action.kind == ActionKind::AtomicRmw;
+           action.kind == ActionKind::AtomicRmw ||
+           action.kind == ActionKind::CompareExchange;
 }
 
 bool is_memory_action(const Action& action) {
@@ -20,7 +21,8 @@ bool is_memory_action(const Action& action) {
 bool is_write_like(const Action& action) {
     return action.kind == ActionKind::Write ||
            action.kind == ActionKind::AtomicStore ||
-           action.kind == ActionKind::AtomicRmw;
+           action.kind == ActionKind::AtomicRmw ||
+           action.kind == ActionKind::CompareExchange;
 }
 
 bool is_mutex_action(const Action& action) {
@@ -33,6 +35,13 @@ bool is_condition_action(const Action& action) {
     return action.kind == ActionKind::Wait ||
            action.kind == ActionKind::Signal ||
            action.kind == ActionKind::Broadcast;
+}
+
+bool is_thread_local_action(const Action& action) {
+    return action.kind == ActionKind::Set ||
+           action.kind == ActionKind::BranchNonzero ||
+           action.kind == ActionKind::Assert ||
+           action.kind == ActionKind::Label;
 }
 
 } // namespace
@@ -51,6 +60,14 @@ bool may_conflict(const Action& lhs, const Action& rhs) {
 }
 
 bool independent(const Action& lhs, const Action& rhs) {
+    if (is_thread_local_action(lhs) || is_thread_local_action(rhs)) {
+        // Register-only operations touch no shared modeled state and do not
+        // change another thread's enabledness. Branches can change only their
+        // own thread's pc, and same-thread transitions are rejected before the
+        // public action predicate is used by DPOR.
+        return true;
+    }
+
     if (is_memory_action(lhs) && is_memory_action(rhs) &&
         !lhs.address.empty() && lhs.address == rhs.address) {
         if (is_atomic_action(lhs) && is_atomic_action(rhs)) {

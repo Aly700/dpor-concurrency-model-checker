@@ -45,16 +45,29 @@ struct ModelErrorReport {
     bool operator==(const ModelErrorReport&) const = default;
 };
 
+struct AssertionFailureReport {
+    ScheduleStep endpoint;
+    RegisterId reg{0};
+    Value value{0};
+    Schedule schedule;
+
+    bool operator==(const AssertionFailureReport&) const = default;
+};
+
 struct CheckResult {
     std::size_t schedules_explored{0};
+    std::size_t bound_exceeded_executions{0};
     std::optional<RaceReport> first_race;
     std::optional<DeadlockReport> first_deadlock;
     std::optional<ModelErrorReport> first_error;
+    std::optional<AssertionFailureReport> first_assertion;
 };
 
 class ModelChecker {
 public:
-    explicit ModelChecker(Program program);
+    static constexpr std::size_t kDefaultStepBound = 2000;
+
+    explicit ModelChecker(Program program, std::size_t step_bound = kDefaultStepBound);
     CheckResult explore_naive(std::size_t max_schedules = 100000) const;
     CheckResult explore_dpor(std::size_t max_schedules = 100000) const;
     CheckResult replay(const Schedule& schedule) const;
@@ -80,6 +93,7 @@ public:
 
 private:
     Program program_;
+    std::size_t step_bound_{kDefaultStepBound};
 };
 
 } // namespace model

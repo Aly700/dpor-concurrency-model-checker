@@ -284,6 +284,61 @@ void assert_explorer_flags_work_and_agree(const std::filesystem::path& binary,
     assert(first_line(dpor.stdout_text) == first_line(defaulted.stdout_text));
 }
 
+void assert_assertion_reports_round_trip(const std::filesystem::path& binary,
+                                         const std::filesystem::path& work_dir) {
+    const auto program_path = work_dir / "cli_assertion.dpor";
+    write_file(program_path, "thread:\n  assert r0\n");
+
+    const auto check = run_command(
+        binary,
+        {"check", program_path.string(), "--explorer", "dpor"},
+        work_dir / "cli_assertion.out",
+        work_dir / "cli_assertion.err");
+    assert(check.exit_code == 1);
+    assert(check.stderr_text.empty());
+    assert(first_line(check.stdout_text) == "verdict: assertion");
+    assert(check.stdout_text.find("assertion:") != std::string::npos);
+    assert(check.stdout_text.find("register: r0") != std::string::npos);
+    assert(check.stdout_text.find("value: 0") != std::string::npos);
+
+    const auto schedule_path = work_dir / "cli_assertion.schedule";
+    write_file(schedule_path, schedule_block(check.stdout_text));
+    const auto replay = run_command(
+        binary,
+        {"replay", program_path.string(), "--schedule", schedule_path.string()},
+        work_dir / "cli_assertion_replay.out",
+        work_dir / "cli_assertion_replay.err");
+    assert(replay.exit_code == 1);
+    assert(replay.stderr_text.empty());
+    assert(details_for_round_trip(replay.stdout_text) == details_for_round_trip(check.stdout_text));
+}
+
+void assert_step_bound_reports_clean_up_to_bound(const std::filesystem::path& binary,
+                                                 const std::filesystem::path& work_dir) {
+    const auto program_path = work_dir / "cli_spin_bound.dpor";
+    write_file(program_path,
+               "thread:\n"
+               "  set r1 1\n"
+               "spin:\n"
+               "  atomic_load f -> r0\n"
+               "  bnz r0 done\n"
+               "  bnz r1 spin\n"
+               "done:\n"
+               "  assert r1\n"
+               "thread:\n"
+               "  atomic_store f 1\n");
+
+    const auto check = run_command(
+        binary,
+        {"check", program_path.string(), "--explorer", "dpor", "--step-bound", "5"},
+        work_dir / "cli_spin_bound.out",
+        work_dir / "cli_spin_bound.err");
+    assert(check.exit_code == 0);
+    assert(check.stderr_text.empty());
+    assert(first_line(check.stdout_text) == "verdict: clean up to bound");
+    assert(check.stdout_text.find("bound_exceeded_executions: ") != std::string::npos);
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -300,5 +355,7 @@ int main(int argc, char** argv) {
     assert_parse_error_has_line_number(binary, source_dir, work_dir);
     assert_invalid_schedule_exits_two(binary, source_dir, work_dir);
     assert_explorer_flags_work_and_agree(binary, source_dir, work_dir);
+    assert_assertion_reports_round_trip(binary, work_dir);
+    assert_step_bound_reports_clean_up_to_bound(binary, work_dir);
     return 0;
 }

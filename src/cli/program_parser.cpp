@@ -1,9 +1,11 @@
 #include "program_parser.hpp"
 
 #include <cstdint>
+#include <exception>
 #include <fstream>
 #include <istream>
 #include <limits>
+#include <map>
 #include <sstream>
 #include <utility>
 #include <vector>
@@ -15,6 +17,12 @@ struct SpawnReference {
     std::size_t line{0};
     model::ThreadId source{0};
     model::ThreadId target{0};
+};
+
+struct BranchReference {
+    std::size_t line{0};
+    model::ThreadId source{0};
+    std::string label;
 };
 
 std::string trim(const std::string& input) {
@@ -63,6 +71,57 @@ std::uint32_t parse_u32_token(const std::string& token,
     return static_cast<std::uint32_t>(value);
 }
 
+model::Value parse_i64_token(const std::string& token,
+                             std::size_t line,
+                             const std::string& description) {
+    try {
+        std::size_t parsed = 0;
+        const long long value = std::stoll(token, &parsed, 10);
+        if (parsed != token.size()) {
+            throw ParseError(line, "invalid " + description + " '" + token + "'");
+        }
+        return static_cast<model::Value>(value);
+    } catch (const std::invalid_argument&) {
+        throw ParseError(line, "invalid " + description + " '" + token + "'");
+    } catch (const std::out_of_range&) {
+        throw ParseError(line, description + " is too large");
+    }
+}
+
+model::RegisterId parse_register_token(const std::string& token,
+                                        std::size_t line,
+                                        const std::string& description) {
+    if (token.size() != 2 || token[0] != 'r' || token[1] < '0' || token[1] > '9') {
+        throw ParseError(line, "invalid " + description + " '" + token + "'");
+    }
+    const auto reg = static_cast<model::RegisterId>(token[1] - '0');
+    if (reg >= model::kRegisterCount) {
+        throw ParseError(line, description + " is out of range");
+    }
+    return reg;
+}
+
+model::ValueOperand immediate_operand(model::Value value) {
+    model::ValueOperand operand;
+    operand.kind = model::ValueOperandKind::Immediate;
+    operand.immediate = value;
+    return operand;
+}
+
+model::ValueOperand register_operand(model::RegisterId reg) {
+    model::ValueOperand operand;
+    operand.kind = model::ValueOperandKind::Register;
+    operand.reg = reg;
+    return operand;
+}
+
+model::ValueOperand parse_value_operand(const std::string& token, std::size_t line) {
+    if (!token.empty() && token.front() == 'r') {
+        return register_operand(parse_register_token(token, line, "register operand"));
+    }
+    return immediate_operand(parse_i64_token(token, line, "integer operand"));
+}
+
 void require_arity(const std::vector<std::string>& words,
                    std::size_t expected,
                    std::size_t line,
@@ -82,6 +141,42 @@ model::Action memory_action(model::ActionKind kind, const std::string& address) 
     model::Action action;
     action.kind = kind;
     action.address = address;
+    return action;
+}
+
+model::Action memory_read_action(model::ActionKind kind,
+                                 const std::string& address,
+                                 std::optional<model::RegisterId> destination) {
+    model::Action action = memory_action(kind, address);
+    action.destination = destination;
+    return action;
+}
+
+model::Action memory_write_action(model::ActionKind kind,
+                                  const std::string& address,
+                                  std::optional<model::ValueOperand> value) {
+    model::Action action = memory_action(kind, address);
+    action.value = value;
+    return action;
+}
+
+model::Action atomic_rmw_action(const std::string& address,
+                                std::optional<model::ValueOperand> value,
+                                std::optional<model::RegisterId> destination) {
+    model::Action action = memory_action(model::ActionKind::AtomicRmw, address);
+    action.value = value;
+    action.destination = destination;
+    return action;
+}
+
+model::Action cas_action(const std::string& address,
+                         model::ValueOperand expected,
+                         model::ValueOperand desired,
+                         model::RegisterId destination) {
+    model::Action action = memory_action(model::ActionKind::CompareExchange, address);
+    action.expected = expected;
+    action.value = desired;
+    action.destination = destination;
     return action;
 }
 
@@ -127,27 +222,131 @@ model::Action yield_action() {
     return action;
 }
 
+model::Action set_action(model::RegisterId destination, model::Value value) {
+    model::Action action;
+    action.kind = model::ActionKind::Set;
+    action.destination = destination;
+    action.value = immediate_operand(value);
+    return action;
+}
+
+model::Action branch_action(model::RegisterId source, std::string label) {
+    model::Action action;
+    action.kind = model::ActionKind::BranchNonzero;
+    action.source_register = source;
+    action.label = std::move(label);
+    return action;
+}
+
+model::Action assert_action(model::RegisterId source) {
+    model::Action action;
+    action.kind = model::ActionKind::Assert;
+    action.source_register = source;
+    return action;
+}
+
+model::Action label_action(std::string label) {
+    model::Action action;
+    action.kind = model::ActionKind::Label;
+    action.label = std::move(label);
+    return action;
+}
+
+bool is_line_label(const std::vector<std::string>& words) {
+    return words.size() == 1 &&
+           words.front().size() > 1 &&
+           words.front().back() == ':';
+}
+
+std::string line_label_name(const std::string& token) {
+    return token.substr(0, token.size() - 1);
+}
+
 model::Action parse_action(const std::vector<std::string>& words, std::size_t line) {
     const std::string& keyword = words.front();
-    if (keyword == "read") {
+    if (is_line_label(words)) {
+        return label_action(line_label_name(keyword));
+    }
+    if (keyword == "set") {
+        require_arity(words, 3, line, keyword);
+        return set_action(parse_register_token(words[1], line, "destination register"),
+                          parse_i64_token(words[2], line, "set immediate"));
+    }
+    if (keyword == "label") {
         require_arity(words, 2, line, keyword);
-        return memory_action(model::ActionKind::Read, words[1]);
+        return label_action(words[1]);
+    }
+    if (keyword == "bnz") {
+        require_arity(words, 3, line, keyword);
+        return branch_action(parse_register_token(words[1], line, "branch register"), words[2]);
+    }
+    if (keyword == "assert") {
+        require_arity(words, 2, line, keyword);
+        return assert_action(parse_register_token(words[1], line, "assert register"));
+    }
+    if (keyword == "read") {
+        if (words.size() == 2) {
+            return memory_read_action(model::ActionKind::Read, words[1], std::nullopt);
+        }
+        if (words.size() == 4 && words[2] == "->") {
+            return memory_read_action(
+                model::ActionKind::Read,
+                words[1],
+                parse_register_token(words[3], line, "destination register"));
+        }
+        throw ParseError(line, "keyword 'read' expects address or address -> register");
     }
     if (keyword == "write") {
-        require_arity(words, 2, line, keyword);
-        return memory_action(model::ActionKind::Write, words[1]);
+        if (words.size() == 2) {
+            return memory_write_action(model::ActionKind::Write, words[1], std::nullopt);
+        }
+        if (words.size() == 3) {
+            return memory_write_action(model::ActionKind::Write, words[1], parse_value_operand(words[2], line));
+        }
+        throw ParseError(line, "keyword 'write' expects address or address value");
     }
     if (keyword == "atomic_load") {
-        require_arity(words, 2, line, keyword);
-        return memory_action(model::ActionKind::AtomicLoad, words[1]);
+        if (words.size() == 2) {
+            return memory_read_action(model::ActionKind::AtomicLoad, words[1], std::nullopt);
+        }
+        if (words.size() == 4 && words[2] == "->") {
+            return memory_read_action(
+                model::ActionKind::AtomicLoad,
+                words[1],
+                parse_register_token(words[3], line, "destination register"));
+        }
+        throw ParseError(line, "keyword 'atomic_load' expects address or address -> register");
     }
     if (keyword == "atomic_store") {
-        require_arity(words, 2, line, keyword);
-        return memory_action(model::ActionKind::AtomicStore, words[1]);
+        if (words.size() == 2) {
+            return memory_write_action(model::ActionKind::AtomicStore, words[1], std::nullopt);
+        }
+        if (words.size() == 3) {
+            return memory_write_action(model::ActionKind::AtomicStore, words[1], parse_value_operand(words[2], line));
+        }
+        throw ParseError(line, "keyword 'atomic_store' expects address or address value");
     }
     if (keyword == "atomic_rmw") {
-        require_arity(words, 2, line, keyword);
-        return memory_action(model::ActionKind::AtomicRmw, words[1]);
+        if (words.size() == 2) {
+            return atomic_rmw_action(words[1], std::nullopt, std::nullopt);
+        }
+        if (words.size() == 5 && words[3] == "->") {
+            return atomic_rmw_action(
+                words[1],
+                parse_value_operand(words[2], line),
+                parse_register_token(words[4], line, "destination register"));
+        }
+        throw ParseError(line, "keyword 'atomic_rmw' expects address or address value -> register");
+    }
+    if (keyword == "cas") {
+        require_arity(words, 6, line, keyword);
+        if (words[4] != "->") {
+            throw ParseError(line, "keyword 'cas' expects address expected desired -> register");
+        }
+        return cas_action(words[1],
+                          parse_value_operand(words[2], line),
+                          parse_value_operand(words[3], line),
+                          parse_register_token(words[5], line, "destination register"));
     }
     if (keyword == "lock") {
         require_arity(words, 2, line, keyword);
@@ -197,6 +396,8 @@ model::Program parse_program_stream(std::istream& input) {
     model::Program program;
     std::vector<std::pair<std::size_t, model::ThreadId>> joins;
     std::vector<SpawnReference> spawns;
+    std::vector<BranchReference> branches;
+    std::vector<std::map<std::string, std::size_t>> labels;
     std::size_t current_thread = std::numeric_limits<std::size_t>::max();
 
     std::string line_text;
@@ -218,6 +419,7 @@ model::Program parse_program_stream(std::istream& input) {
                 throw ParseError(line, "thread declaration takes no operands");
             }
             program.threads.emplace_back();
+            labels.emplace_back();
             current_thread = program.threads.size() - 1;
             continue;
         }
@@ -235,6 +437,18 @@ model::Program parse_program_stream(std::istream& input) {
                 static_cast<model::ThreadId>(current_thread),
                 action.target,
             });
+        } else if (action.kind == model::ActionKind::Label) {
+            auto& thread_labels = labels.at(current_thread);
+            if (thread_labels.find(action.label) != thread_labels.end()) {
+                throw ParseError(line, "label '" + action.label + "' is already declared in this thread");
+            }
+            thread_labels.emplace(action.label, line);
+        } else if (action.kind == model::ActionKind::BranchNonzero) {
+            branches.push_back(BranchReference{
+                line,
+                static_cast<model::ThreadId>(current_thread),
+                action.label,
+            });
         }
         program.threads.at(current_thread).push_back(std::move(action));
     }
@@ -248,6 +462,11 @@ model::Program parse_program_stream(std::istream& input) {
             std::ostringstream message;
             message << "join target " << target << " is not declared";
             throw ParseError(join_line, message.str());
+        }
+    }
+    for (const BranchReference& branch : branches) {
+        if (labels.at(branch.source).find(branch.label) == labels.at(branch.source).end()) {
+            throw ParseError(branch.line, "branch target label '" + branch.label + "' is not declared in this thread");
         }
     }
     std::vector<std::size_t> first_spawn_line(program.threads.size(), 0);
@@ -273,6 +492,22 @@ model::Program parse_program_stream(std::istream& input) {
     return program;
 }
 
+std::string register_text(model::RegisterId reg) {
+    std::ostringstream output;
+    output << 'r' << static_cast<unsigned>(reg);
+    return output.str();
+}
+
+std::string operand_text(const model::ValueOperand& operand) {
+    std::ostringstream output;
+    if (operand.kind == model::ValueOperandKind::Register) {
+        output << register_text(operand.reg);
+    } else {
+        output << operand.immediate;
+    }
+    return output.str();
+}
+
 } // namespace
 
 ParseError::ParseError(std::size_t line, const std::string& message)
@@ -285,20 +520,56 @@ std::size_t ParseError::line() const {
 std::string action_text(const model::Action& action) {
     std::ostringstream output;
     switch (action.kind) {
+    case model::ActionKind::Set:
+        output << "set " << register_text(action.destination.value_or(0)) << ' '
+               << operand_text(action.value.value_or(immediate_operand(0)));
+        break;
+    case model::ActionKind::Label:
+        output << "label " << action.label;
+        break;
+    case model::ActionKind::BranchNonzero:
+        output << "bnz " << register_text(action.source_register.value_or(0)) << ' '
+               << action.label;
+        break;
+    case model::ActionKind::Assert:
+        output << "assert " << register_text(action.source_register.value_or(0));
+        break;
     case model::ActionKind::Read:
         output << "read " << action.address;
+        if (action.destination.has_value()) {
+            output << " -> " << register_text(*action.destination);
+        }
         break;
     case model::ActionKind::Write:
         output << "write " << action.address;
+        if (action.value.has_value()) {
+            output << ' ' << operand_text(*action.value);
+        }
         break;
     case model::ActionKind::AtomicLoad:
         output << "atomic_load " << action.address;
+        if (action.destination.has_value()) {
+            output << " -> " << register_text(*action.destination);
+        }
         break;
     case model::ActionKind::AtomicStore:
         output << "atomic_store " << action.address;
+        if (action.value.has_value()) {
+            output << ' ' << operand_text(*action.value);
+        }
         break;
     case model::ActionKind::AtomicRmw:
         output << "atomic_rmw " << action.address;
+        if (action.value.has_value() && action.destination.has_value()) {
+            output << ' ' << operand_text(*action.value)
+                   << " -> " << register_text(*action.destination);
+        }
+        break;
+    case model::ActionKind::CompareExchange:
+        output << "cas " << action.address << ' '
+               << operand_text(action.expected.value_or(immediate_operand(0))) << ' '
+               << operand_text(action.value.value_or(immediate_operand(0))) << " -> "
+               << register_text(action.destination.value_or(0));
         break;
     case model::ActionKind::Lock:
         output << "lock " << action.mutex;

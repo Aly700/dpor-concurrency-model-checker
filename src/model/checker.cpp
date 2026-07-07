@@ -3,9 +3,13 @@
 #include "model/vector_clock.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
+#include <limits>
 #include <map>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -36,8 +40,11 @@ struct ExecutionState {
     std::map<std::string, VectorClock> mutex_clock;
     std::map<std::string, std::vector<ThreadId>> condition_waiters;
     std::vector<VectorClock> thread_clock;
+    std::vector<std::array<Value, kRegisterCount>> registers;
+    std::vector<std::size_t> thread_steps;
     std::vector<WaitPhase> wait_phase;
     std::map<std::string, AddressState> memory;
+    std::map<std::string, Value> memory_values;
     std::map<std::string, VectorClock> atomic_location_clock;
     Schedule schedule;
 };
@@ -45,6 +52,7 @@ struct ExecutionState {
 struct StepReport {
     std::optional<RaceReport> race;
     std::optional<ModelErrorReport> error;
+    std::optional<AssertionFailureReport> assertion;
     std::optional<ThreadId> spawned_thread;
 };
 
@@ -87,19 +95,49 @@ std::vector<bool> initially_started_threads(const Program& program) {
     return started;
 }
 
+std::vector<std::array<Value, kRegisterCount>> initial_registers(std::size_t thread_count) {
+    std::vector<std::array<Value, kRegisterCount>> registers(thread_count);
+    for (auto& thread_registers : registers) {
+        thread_registers.fill(0);
+    }
+    return registers;
+}
+
+bool is_label_action(const Program& program, ThreadId tid, std::uint32_t pc) {
+    return pc < program.threads.at(tid).size() &&
+           program.threads.at(tid).at(pc).kind == ActionKind::Label;
+}
+
+void normalize_pc(const Program& program, ExecutionState& state, ThreadId tid) {
+    while (is_label_action(program, tid, state.pc.at(tid))) {
+        ++state.pc.at(tid);
+    }
+}
+
+void normalize_all_pcs(const Program& program, ExecutionState& state) {
+    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+        normalize_pc(program, state, tid);
+    }
+}
+
 ExecutionState initial_state(const Program& program) {
-    return ExecutionState{
+    ExecutionState state{
         std::vector<std::uint32_t>(program.threads.size(), 0),
         initially_started_threads(program),
         {},
         {},
         {},
         std::vector<VectorClock>(program.threads.size()),
+        initial_registers(program.threads.size()),
+        std::vector<std::size_t>(program.threads.size(), 0),
         std::vector<WaitPhase>(program.threads.size(), WaitPhase::None),
         {},
         {},
         {},
+        {},
     };
+    normalize_all_pcs(program, state);
+    return state;
 }
 
 bool has_next_action(const Program& program, const ExecutionState& state, ThreadId tid) {
@@ -120,7 +158,67 @@ bool all_finished(const Program& program, const ExecutionState& state) {
 }
 
 const Action& next_action(const Program& program, const ExecutionState& state, ThreadId tid) {
-    return program.threads.at(tid).at(state.pc.at(tid));
+    const Action& action = program.threads.at(tid).at(state.pc.at(tid));
+    assert(action.kind != ActionKind::Label);
+    return action;
+}
+
+bool valid_register(RegisterId reg) {
+    return reg < kRegisterCount;
+}
+
+Value read_register(const ExecutionState& state, ThreadId tid, RegisterId reg) {
+    if (!valid_register(reg)) {
+        throw std::logic_error("register id out of range");
+    }
+    return state.registers.at(tid).at(reg);
+}
+
+void write_register(ExecutionState& state, ThreadId tid, std::optional<RegisterId> reg, Value value) {
+    if (!reg.has_value()) {
+        return;
+    }
+    if (!valid_register(*reg)) {
+        throw std::logic_error("register id out of range");
+    }
+    state.registers.at(tid).at(*reg) = value;
+}
+
+Value evaluate_operand(const ExecutionState& state, ThreadId tid, const ValueOperand& operand) {
+    if (operand.kind == ValueOperandKind::Register) {
+        return read_register(state, tid, operand.reg);
+    }
+    return operand.immediate;
+}
+
+Value evaluate_operand_or(const ExecutionState& state,
+                          ThreadId tid,
+                          const std::optional<ValueOperand>& operand,
+                          Value default_value) {
+    if (!operand.has_value()) {
+        return default_value;
+    }
+    return evaluate_operand(state, tid, *operand);
+}
+
+std::optional<std::uint32_t> resolve_label(const Program& program, ThreadId tid, const std::string& label) {
+    for (std::uint32_t index = 0; index < program.threads.at(tid).size(); ++index) {
+        const Action& candidate = program.threads.at(tid).at(index);
+        if (candidate.kind == ActionKind::Label && candidate.label == label) {
+            return index;
+        }
+    }
+    return std::nullopt;
+}
+
+void advance_pc(const Program& program, ExecutionState& state, ThreadId tid) {
+    ++state.pc.at(tid);
+    normalize_pc(program, state, tid);
+}
+
+void set_pc(const Program& program, ExecutionState& state, ThreadId tid, std::uint32_t pc) {
+    state.pc.at(tid) = pc;
+    normalize_pc(program, state, tid);
 }
 
 Action effective_next_action(const Program& program, const ExecutionState& state, ThreadId tid) {
@@ -164,6 +262,8 @@ bool is_enabled(const Program& program, const ExecutionState& state, ThreadId ti
 
     const Action& action = next_action(program, state, tid);
     switch (action.kind) {
+    case ActionKind::Label:
+        return false;
     case ActionKind::Lock:
         return state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
     case ActionKind::Join:
@@ -184,9 +284,13 @@ bool is_enabled(const Program& program, const ExecutionState& state, ThreadId ti
         return true;
     case ActionKind::Read:
     case ActionKind::Write:
+    case ActionKind::Set:
+    case ActionKind::BranchNonzero:
+    case ActionKind::Assert:
     case ActionKind::AtomicLoad:
     case ActionKind::AtomicStore:
     case ActionKind::AtomicRmw:
+    case ActionKind::CompareExchange:
     case ActionKind::Spawn:
     case ActionKind::Unlock:
     case ActionKind::Signal:
@@ -274,7 +378,9 @@ bool is_finished_at_node(const Program& program, const DporNode& node, ThreadId 
 }
 
 const Action& next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
-    return program.threads.at(tid).at(node.pc.at(tid));
+    const Action& action = program.threads.at(tid).at(node.pc.at(tid));
+    assert(action.kind != ActionKind::Label);
+    return action;
 }
 
 Action effective_next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
@@ -727,6 +833,20 @@ ModelErrorReport make_wait_error(const Action& action,
     return ModelErrorReport{endpoint, message.str(), schedule};
 }
 
+ModelErrorReport make_branch_error(const Action& action, ScheduleStep endpoint, const Schedule& schedule) {
+    std::ostringstream message;
+    message << "thread " << endpoint.thread << " branched to unknown label '" << action.label << "'";
+    return ModelErrorReport{endpoint, message.str(), schedule};
+}
+
+AssertionFailureReport make_assertion_failure(const Action& action,
+                                              ScheduleStep endpoint,
+                                              const Schedule& schedule,
+                                              const ExecutionState& state) {
+    const RegisterId reg = action.source_register.value_or(0);
+    return AssertionFailureReport{endpoint, reg, read_register(state, endpoint.thread, reg), schedule};
+}
+
 void insert_waiter(ExecutionState& state, const std::string& condition, ThreadId tid) {
     auto& waiters = state.condition_waiters[condition];
     const auto position = std::lower_bound(waiters.begin(), waiters.end(), tid);
@@ -766,17 +886,51 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
     const Action& action = program.threads.at(tid).at(action_index);
 
     state.schedule.push_back(endpoint);
+    ++state.thread_steps.at(tid);
     state.thread_clock.at(tid).tick(tid);
 
     StepReport report;
     switch (action.kind) {
+    case ActionKind::Label:
+        assert(false && "label actions are normalized out before execution");
+        break;
+    case ActionKind::Set:
+        write_register(state,
+                       tid,
+                       action.destination,
+                       evaluate_operand_or(state, tid, action.value, 0));
+        advance_pc(program, state, tid);
+        break;
+    case ActionKind::BranchNonzero: {
+        const RegisterId reg = action.source_register.value_or(0);
+        if (read_register(state, tid, reg) != 0) {
+            const auto target = resolve_label(program, tid, action.label);
+            if (!target.has_value()) {
+                advance_pc(program, state, tid);
+                report.error = make_branch_error(action, endpoint, state.schedule);
+                break;
+            }
+            set_pc(program, state, tid, *target);
+        } else {
+            advance_pc(program, state, tid);
+        }
+        break;
+    }
+    case ActionKind::Assert:
+        if (read_register(state, tid, action.source_register.value_or(0)) == 0) {
+            advance_pc(program, state, tid);
+            report.assertion = make_assertion_failure(action, endpoint, state.schedule, state);
+            break;
+        }
+        advance_pc(program, state, tid);
+        break;
     case ActionKind::Lock:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         state.mutex_owner[action.mutex] = tid;
         state.thread_clock.at(tid).join(state.mutex_clock[action.mutex]);
         break;
     case ActionKind::Join:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         if (join_target_is_invalid(program, tid, action)) {
             report.error = make_join_error(action, endpoint, state.schedule);
             break;
@@ -784,17 +938,18 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
         state.thread_clock.at(tid).join(state.thread_clock.at(action.target));
         break;
     case ActionKind::Spawn:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         if (spawn_target_is_invalid(program, tid, action) || state.started.at(action.target)) {
             report.error = make_spawn_error(program, action, endpoint, state.schedule, state);
             break;
         }
         state.started.at(action.target) = true;
+        normalize_pc(program, state, action.target);
         state.thread_clock.at(action.target).join(state.thread_clock.at(tid));
         report.spawned_thread = action.target;
         break;
     case ActionKind::Unlock: {
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         const auto owner = state.mutex_owner.find(action.mutex);
         if (owner == state.mutex_owner.end() || owner->second != tid) {
             report.error = make_unlock_error(action, endpoint, state.schedule, state);
@@ -810,13 +965,13 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
             state.mutex_owner[action.mutex] = tid;
             state.thread_clock.at(tid).join(state.mutex_clock[action.mutex]);
             state.wait_phase.at(tid) = WaitPhase::None;
-            ++state.pc.at(tid);
+            advance_pc(program, state, tid);
             break;
         }
 
         assert(state.wait_phase.at(tid) == WaitPhase::None);
         if (!owns_mutex(state, tid, action.mutex)) {
-            ++state.pc.at(tid);
+            advance_pc(program, state, tid);
             report.error = make_wait_error(action, endpoint, state.schedule, state);
             break;
         }
@@ -828,22 +983,24 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
         break;
     }
     case ActionKind::Signal:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         signal_one_waiter(state, action, tid);
         break;
     case ActionKind::Broadcast:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         broadcast_waiters(state, action, tid);
         break;
     case ActionKind::AtomicLoad:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         if (!action.address.empty()) {
             // Acquire load: join the thread with exactly this location's last
             // release sequence clock. Missing this edge over-reports races
             // after a real synchronizes-with relation; adding any extra edge
             // can hide a real plain-data race, so the model only joins the
             // per-address atomic clock and does not mutate it.
+            const Value loaded = state.memory_values[action.address];
             state.thread_clock.at(tid).join(state.atomic_location_clock[action.address]);
+            write_register(state, tid, action.destination, loaded);
             report.race = record_atomic(
                 state,
                 action,
@@ -851,7 +1008,7 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
         }
         break;
     case ActionKind::AtomicStore:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         if (!action.address.empty()) {
             // Release store: replace the location clock with the storing
             // thread's post-tick clock. It must not join the previous
@@ -859,6 +1016,7 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
             // from an earlier other-thread store to a later load and could
             // suppress a real plain-data race. The store itself performs no
             // acquire join, intentionally erring toward fewer edges.
+            state.memory_values[action.address] = evaluate_operand_or(state, tid, action.value, 0);
             state.atomic_location_clock[action.address] = state.thread_clock.at(tid);
             report.race = record_atomic(
                 state,
@@ -867,7 +1025,7 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
         }
         break;
     case ActionKind::AtomicRmw:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         if (!action.address.empty()) {
             // Acq_rel RMW: first acquire from the current location clock, then
             // replace the location clock with the joined thread clock. The
@@ -875,7 +1033,11 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
             // replace half avoids accumulating unrelated previous stores. When
             // forced to choose, the model avoids extra HB edges because they
             // hide races, while missing edges only over-report.
+            const Value old_value = state.memory_values[action.address];
+            const Value addend = evaluate_operand_or(state, tid, action.value, 1);
             state.thread_clock.at(tid).join(state.atomic_location_clock[action.address]);
+            write_register(state, tid, action.destination, old_value);
+            state.memory_values[action.address] = old_value + addend;
             state.atomic_location_clock[action.address] = state.thread_clock.at(tid);
             report.race = record_atomic(
                 state,
@@ -883,9 +1045,32 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
                 MemoryAccess{state.thread_clock.at(tid), endpoint, true, true});
         }
         break;
-    case ActionKind::Read:
-        ++state.pc.at(tid);
+    case ActionKind::CompareExchange:
+        advance_pc(program, state, tid);
         if (!action.address.empty()) {
+            const Value old_value = state.memory_values[action.address];
+            const Value expected = evaluate_operand_or(state, tid, action.expected, 0);
+            const Value desired = evaluate_operand_or(state, tid, action.value, 0);
+            const bool success = old_value == expected;
+            // CAS failure is acquire-only: it joins from the current location
+            // clock but must not replace it. Replacing on failure would publish
+            // this thread's prior plain accesses and can hide real races.
+            state.thread_clock.at(tid).join(state.atomic_location_clock[action.address]);
+            write_register(state, tid, action.destination, success ? 1 : 0);
+            if (success) {
+                state.memory_values[action.address] = desired;
+                state.atomic_location_clock[action.address] = state.thread_clock.at(tid);
+            }
+            report.race = record_atomic(
+                state,
+                action,
+                MemoryAccess{state.thread_clock.at(tid), endpoint, true, success});
+        }
+        break;
+    case ActionKind::Read:
+        advance_pc(program, state, tid);
+        if (!action.address.empty()) {
+            write_register(state, tid, action.destination, state.memory_values[action.address]);
             report.race = record_read(
                 state,
                 action,
@@ -893,8 +1078,9 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
         }
         break;
     case ActionKind::Write:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         if (!action.address.empty()) {
+            state.memory_values[action.address] = evaluate_operand_or(state, tid, action.value, 0);
             report.race = record_write(
                 state,
                 action,
@@ -902,7 +1088,7 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
         }
         break;
     case ActionKind::Yield:
-        ++state.pc.at(tid);
+        advance_pc(program, state, tid);
         break;
     }
     return report;
@@ -965,6 +1151,9 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
 void record_step_report(CheckResult& result, const StepReport& report) {
     if (report.error.has_value() && !result.first_error.has_value()) {
         result.first_error = report.error;
+    }
+    if (report.assertion.has_value() && !result.first_assertion.has_value()) {
+        result.first_assertion = report.assertion;
     }
     if (report.race.has_value() && !result.first_race.has_value()) {
         result.first_race = report.race;
@@ -1197,10 +1386,20 @@ std::vector<ThreadId> inherited_sleep_set(const Program& program,
     return inherited;
 }
 
+bool step_bound_reached(const ExecutionState& state, ThreadId tid, std::size_t step_bound) {
+    return state.thread_steps.at(tid) >= step_bound;
+}
+
+void record_bound_exceeded(CheckResult& result) {
+    ++result.schedules_explored;
+    ++result.bound_exceeded_executions;
+}
+
 void dpor_dfs(const Program& program,
               ExecutionState state,
               CheckResult& result,
               std::size_t max_schedules,
+              std::size_t step_bound,
               std::vector<DporNode>& nodes,
               std::vector<ExecutedTransition>& trace,
               std::vector<ThreadId> sleep_set) {
@@ -1267,6 +1466,16 @@ void dpor_dfs(const Program& program,
             continue;
         }
 
+        if (step_bound_reached(state, *next_tid, step_bound)) {
+            nodes.at(depth).sleep.clear();
+            for (const ThreadId enabled : nodes.at(depth).enabled) {
+                insert_thread(nodes.at(depth).backtrack, enabled);
+            }
+            record_bound_exceeded(result);
+            insert_thread(nodes.at(depth).sleep, *next_tid);
+            continue;
+        }
+
         const auto action_index = state.pc.at(*next_tid);
         const Action effective_action = effective_next_action(program, state, *next_tid);
 
@@ -1283,14 +1492,15 @@ void dpor_dfs(const Program& program,
         add_backtracks_for_transition(program, nodes, trace);
         record_step_report(result, step_report);
 
-        if (step_report.error.has_value()) {
+        if (step_report.error.has_value() || step_report.assertion.has_value()) {
             add_disabled_backtracks(program, state, nodes, trace);
             // INVARIANTS.md Soundness: a modeled error terminates this
-            // schedule, so even independent enabled siblings cannot be
-            // represented by running them after the error. Do not prune at
-            // this node after an error endpoint; add every enabled sibling so
-            // races, deadlocks, or other errors reachable before this error
-            // still have a representative schedule.
+            // schedule, and assertion failure does the same. Even independent
+            // enabled siblings cannot be represented by running them after the
+            // terminal endpoint. Do not prune at this node after such an
+            // endpoint; add every enabled sibling so races, deadlocks, other
+            // errors, or assertions reachable before it still have a
+            // representative schedule.
             nodes.at(depth).sleep.clear();
             for (const ThreadId enabled : nodes.at(depth).enabled) {
                 insert_thread(nodes.at(depth).backtrack, enabled);
@@ -1308,6 +1518,7 @@ void dpor_dfs(const Program& program,
                      std::move(next),
                      result,
                      max_schedules,
+                     step_bound,
                      nodes,
                      trace,
                      std::move(child_sleep));
@@ -1323,7 +1534,8 @@ void dpor_dfs(const Program& program,
 void dfs(const Program& program,
          ExecutionState state,
          CheckResult& result,
-         std::size_t max_schedules) {
+         std::size_t max_schedules,
+         std::size_t step_bound) {
     if (result.schedules_explored >= max_schedules) {
         return;
     }
@@ -1335,13 +1547,21 @@ void dfs(const Program& program,
         }
 
         explored_child = true;
+        if (step_bound_reached(state, tid, step_bound)) {
+            record_bound_exceeded(result);
+            if (result.schedules_explored >= max_schedules) {
+                return;
+            }
+            continue;
+        }
+
         ExecutionState next = state;
         const StepReport step_report = execute_enabled_step(program, next, tid);
         record_step_report(result, step_report);
-        if (step_report.error.has_value()) {
+        if (step_report.error.has_value() || step_report.assertion.has_value()) {
             ++result.schedules_explored;
         } else {
-            dfs(program, std::move(next), result, max_schedules);
+            dfs(program, std::move(next), result, max_schedules, step_bound);
         }
 
         if (result.schedules_explored >= max_schedules) {
@@ -1398,17 +1618,24 @@ void validate_replay_step(const Program& program,
     }
 }
 
-CheckResult replay_schedule(const Program& program, const Schedule& schedule) {
+CheckResult replay_schedule(const Program& program, const Schedule& schedule, std::size_t step_bound) {
     CheckResult result;
     ExecutionState state = initial_state(program);
 
     for (std::size_t i = 0; i < schedule.size(); ++i) {
         validate_replay_step(program, state, schedule[i], i);
+        if (step_bound_reached(state, schedule[i].thread, step_bound)) {
+            if (i + 1 < schedule.size()) {
+                throw invalid_schedule(i + 1, "schedule continues after a step-bound outcome");
+            }
+            record_bound_exceeded(result);
+            return result;
+        }
         const StepReport step_report = execute_enabled_step(program, state, schedule[i].thread);
         record_step_report(result, step_report);
-        if (step_report.error.has_value()) {
+        if (step_report.error.has_value() || step_report.assertion.has_value()) {
             if (i + 1 < schedule.size()) {
-                throw invalid_schedule(i + 1, "schedule continues after a modeled execution error");
+                throw invalid_schedule(i + 1, "schedule continues after a terminal execution report");
             }
             ++result.schedules_explored;
             return result;
@@ -1452,10 +1679,19 @@ struct ErrorIdentity {
     bool operator==(const ErrorIdentity&) const = default;
 };
 
+struct AssertionIdentity {
+    ScheduleStep endpoint;
+    RegisterId reg{0};
+    Value value{0};
+
+    bool operator==(const AssertionIdentity&) const = default;
+};
+
 struct BugIdentitySet {
     std::optional<RaceIdentity> race;
     std::optional<DeadlockIdentity> deadlock;
     std::optional<ErrorIdentity> error;
+    std::optional<AssertionIdentity> assertion;
 };
 
 bool blocked_thread_less(const BlockedThread& lhs, const BlockedThread& rhs) {
@@ -1502,6 +1738,10 @@ ErrorIdentity identity_of(const ModelErrorReport& report) {
     return ErrorIdentity{report.endpoint};
 }
 
+AssertionIdentity identity_of(const AssertionFailureReport& report) {
+    return AssertionIdentity{report.endpoint, report.reg, report.value};
+}
+
 BugIdentitySet identities_of(const CheckResult& result) {
     BugIdentitySet identities;
     if (result.first_race.has_value()) {
@@ -1513,13 +1753,17 @@ BugIdentitySet identities_of(const CheckResult& result) {
     if (result.first_error.has_value()) {
         identities.error = identity_of(*result.first_error);
     }
+    if (result.first_assertion.has_value()) {
+        identities.assertion = identity_of(*result.first_assertion);
+    }
     return identities;
 }
 
 bool empty(const BugIdentitySet& identities) {
     return !identities.race.has_value() &&
            !identities.deadlock.has_value() &&
-           !identities.error.has_value();
+           !identities.error.has_value() &&
+           !identities.assertion.has_value();
 }
 
 bool reproduces_identities(const CheckResult& result, const BugIdentitySet& target) {
@@ -1538,6 +1782,12 @@ bool reproduces_identities(const CheckResult& result, const BugIdentitySet& targ
             return false;
         }
     }
+    if (target.assertion.has_value()) {
+        if (!result.first_assertion.has_value() ||
+            identity_of(*result.first_assertion) != *target.assertion) {
+            return false;
+        }
+    }
     return true;
 }
 
@@ -1547,6 +1797,9 @@ bool is_report_endpoint(const ScheduleStep& step, const BugIdentitySet& target) 
         return true;
     }
     if (target.error.has_value() && step == target.error->endpoint) {
+        return true;
+    }
+    if (target.assertion.has_value() && step == target.assertion->endpoint) {
         return true;
     }
     return false;
@@ -1563,7 +1816,8 @@ std::optional<std::size_t> last_step_index_for_thread(const Schedule& schedule, 
 
 Schedule minimize_schedule_for_identities(const Program& program,
                                           const Schedule& schedule,
-                                          const BugIdentitySet& target) {
+                                          const BugIdentitySet& target,
+                                          std::size_t step_bound) {
     Schedule minimized = schedule;
     bool changed = true;
     while (changed) {
@@ -1583,7 +1837,7 @@ Schedule minimize_schedule_for_identities(const Program& program,
             candidate.erase(candidate.begin() + static_cast<std::ptrdiff_t>(*last_step_index));
 
             try {
-                const CheckResult replayed = replay_schedule(program, candidate);
+                const CheckResult replayed = replay_schedule(program, candidate, step_bound);
                 if (reproduces_identities(replayed, target)) {
                     minimized = std::move(candidate);
                     changed = true;
@@ -1598,62 +1852,90 @@ Schedule minimize_schedule_for_identities(const Program& program,
     return minimized;
 }
 
-RaceReport minimized_race_report(const Program& program, const RaceReport& report) {
+RaceReport minimized_race_report(const Program& program,
+                                 const RaceReport& report,
+                                 std::size_t step_bound) {
     BugIdentitySet target;
     target.race = identity_of(report);
 
-    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target);
-    const CheckResult replayed = replay_schedule(program, minimized);
+    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target, step_bound);
+    const CheckResult replayed = replay_schedule(program, minimized, step_bound);
     if (!reproduces_identities(replayed, target) || !replayed.first_race.has_value()) {
         throw std::logic_error("race schedule minimization failed to preserve bug identity");
     }
     return *replayed.first_race;
 }
 
-DeadlockReport minimized_deadlock_report(const Program& program, const DeadlockReport& report) {
+DeadlockReport minimized_deadlock_report(const Program& program,
+                                         const DeadlockReport& report,
+                                         std::size_t step_bound) {
     BugIdentitySet target;
     target.deadlock = identity_of(report);
 
-    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target);
-    const CheckResult replayed = replay_schedule(program, minimized);
+    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target, step_bound);
+    const CheckResult replayed = replay_schedule(program, minimized, step_bound);
     if (!reproduces_identities(replayed, target) || !replayed.first_deadlock.has_value()) {
         throw std::logic_error("deadlock schedule minimization failed to preserve bug identity");
     }
     return *replayed.first_deadlock;
 }
 
-ModelErrorReport minimized_error_report(const Program& program, const ModelErrorReport& report) {
+ModelErrorReport minimized_error_report(const Program& program,
+                                        const ModelErrorReport& report,
+                                        std::size_t step_bound) {
     BugIdentitySet target;
     target.error = identity_of(report);
 
-    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target);
-    const CheckResult replayed = replay_schedule(program, minimized);
+    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target, step_bound);
+    const CheckResult replayed = replay_schedule(program, minimized, step_bound);
     if (!reproduces_identities(replayed, target) || !replayed.first_error.has_value()) {
         throw std::logic_error("error schedule minimization failed to preserve bug identity");
     }
     return *replayed.first_error;
 }
 
-void minimize_result_reports(const Program& program, CheckResult& result) {
+AssertionFailureReport minimized_assertion_report(const Program& program,
+                                                  const AssertionFailureReport& report,
+                                                  std::size_t step_bound) {
+    BugIdentitySet target;
+    target.assertion = identity_of(report);
+
+    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target, step_bound);
+    const CheckResult replayed = replay_schedule(program, minimized, step_bound);
+    if (!reproduces_identities(replayed, target) || !replayed.first_assertion.has_value()) {
+        throw std::logic_error("assertion schedule minimization failed to preserve bug identity");
+    }
+    return *replayed.first_assertion;
+}
+
+void minimize_result_reports(const Program& program, CheckResult& result, std::size_t step_bound) {
     if (result.first_race.has_value()) {
-        result.first_race = minimized_race_report(program, *result.first_race);
+        result.first_race = minimized_race_report(program, *result.first_race, step_bound);
     }
     if (result.first_deadlock.has_value()) {
-        result.first_deadlock = minimized_deadlock_report(program, *result.first_deadlock);
+        result.first_deadlock = minimized_deadlock_report(program, *result.first_deadlock, step_bound);
     }
     if (result.first_error.has_value()) {
-        result.first_error = minimized_error_report(program, *result.first_error);
+        result.first_error = minimized_error_report(program, *result.first_error, step_bound);
+    }
+    if (result.first_assertion.has_value()) {
+        result.first_assertion = minimized_assertion_report(program, *result.first_assertion, step_bound);
     }
 }
 
 } // namespace
 
-ModelChecker::ModelChecker(Program program) : program_(std::move(program)) {}
+ModelChecker::ModelChecker(Program program, std::size_t step_bound)
+    : program_(std::move(program)), step_bound_(step_bound) {
+    if (step_bound_ == 0) {
+        throw std::invalid_argument("step bound must be greater than zero");
+    }
+}
 
 CheckResult ModelChecker::explore_naive(std::size_t max_schedules) const {
     CheckResult result;
-    dfs(program_, initial_state(program_), result, max_schedules);
-    minimize_result_reports(program_, result);
+    dfs(program_, initial_state(program_), result, max_schedules, step_bound_);
+    minimize_result_reports(program_, result, step_bound_);
     return result;
 }
 
@@ -1661,22 +1943,22 @@ CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
     CheckResult result;
     std::vector<DporNode> nodes;
     std::vector<ExecutedTransition> trace;
-    dpor_dfs(program_, initial_state(program_), result, max_schedules, nodes, trace, {});
-    minimize_result_reports(program_, result);
+    dpor_dfs(program_, initial_state(program_), result, max_schedules, step_bound_, nodes, trace, {});
+    minimize_result_reports(program_, result, step_bound_);
     return result;
 }
 
 CheckResult ModelChecker::replay(const Schedule& schedule) const {
-    return replay_schedule(program_, schedule);
+    return replay_schedule(program_, schedule, step_bound_);
 }
 
 Schedule ModelChecker::minimize_schedule(const Schedule& schedule) const {
-    const CheckResult replayed = replay_schedule(program_, schedule);
+    const CheckResult replayed = replay_schedule(program_, schedule, step_bound_);
     const BugIdentitySet target = identities_of(replayed);
     if (empty(target)) {
         return schedule;
     }
-    return minimize_schedule_for_identities(program_, schedule, target);
+    return minimize_schedule_for_identities(program_, schedule, target, step_bound_);
 }
 
 } // namespace model

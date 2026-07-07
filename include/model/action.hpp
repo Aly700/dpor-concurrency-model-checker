@@ -1,19 +1,40 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
 namespace model {
 
 using ThreadId = std::uint32_t;
+using RegisterId = std::uint8_t;
+using Value = std::int64_t;
+
+inline constexpr std::size_t kRegisterCount = 8;
+
+enum class ValueOperandKind { Immediate, Register };
+
+struct ValueOperand {
+    ValueOperandKind kind{ValueOperandKind::Immediate};
+    Value immediate{0};
+    RegisterId reg{0};
+
+    bool operator==(const ValueOperand&) const = default;
+};
 
 enum class ActionKind {
+    Set,
+    Label,
+    BranchNonzero,
+    Assert,
     Read,
     Write,
     AtomicLoad,
     AtomicStore,
     AtomicRmw,
+    CompareExchange,
     Lock,
     Unlock,
     Spawn,
@@ -30,6 +51,11 @@ struct Action {
     std::string mutex;
     std::string condition;
     ThreadId target{0};
+    std::optional<RegisterId> destination;
+    std::optional<RegisterId> source_register;
+    std::optional<ValueOperand> value;
+    std::optional<ValueOperand> expected;
+    std::string label;
 
     bool operator==(const Action&) const = default;
 };

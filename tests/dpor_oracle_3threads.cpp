@@ -118,6 +118,14 @@ void assert_replays_dpor_report(const ModelChecker& checker, const CheckResult& 
         const auto r = checker.replay(dpor.first_error->schedule);
         assert(r.first_error && *r.first_error == *dpor.first_error);
     }
+    if (dpor.first_assertion) {
+        const auto r = checker.replay(dpor.first_assertion->schedule);
+        assert(r.first_assertion && *r.first_assertion == *dpor.first_assertion);
+    }
+}
+
+bool bound_hit(const CheckResult& result) {
+    return result.bound_exceeded_executions > 0;
 }
 
 void cross_validate_program(const Program& p,
@@ -132,6 +140,8 @@ void cross_validate_program(const Program& p,
     if (dpor.first_race.has_value() != naive.first_race.has_value() ||
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
+        dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "MISMATCH in 3-thread sweep at checked index " << checked << "\n";
         assert(false && "3-thread oracle mismatch");
@@ -140,6 +150,8 @@ void cross_validate_program(const Program& p,
     assert(dpor.first_race.has_value() == naive.first_race.has_value());
     assert(dpor.first_deadlock.has_value() == naive.first_deadlock.has_value());
     assert(dpor.first_error.has_value() == naive.first_error.has_value());
+    assert(dpor.first_assertion.has_value() == naive.first_assertion.has_value());
+    assert(bound_hit(dpor) == bound_hit(naive));
     assert(dpor.schedules_explored <= naive.schedules_explored);
     assert_replays_dpor_report(checker, dpor);
 
