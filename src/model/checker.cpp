@@ -59,6 +59,10 @@ struct DporNode {
     std::vector<ThreadId> backtrack;
     std::vector<ThreadId> done;
     std::vector<ThreadId> sleep;
+    std::vector<std::uint32_t> pc;
+    std::vector<bool> started;
+    std::map<std::string, ThreadId> mutex_owner;
+    std::vector<WaitPhase> wait_phase;
 };
 
 struct ExecutedTransition {
@@ -259,6 +263,302 @@ bool transition_enabled_at_node(const DporNode& node, const ExecutedTransition& 
     return enabled != node.enabled_transitions.end() &&
            enabled->second.endpoint == transition.endpoint &&
            enabled->second.effective_action == transition.effective_action;
+}
+
+bool has_next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
+    return node.pc.at(tid) < program.threads.at(tid).size();
+}
+
+bool is_finished_at_node(const Program& program, const DporNode& node, ThreadId tid) {
+    return node.started.at(tid) && !has_next_action_at_node(program, node, tid);
+}
+
+const Action& next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
+    return program.threads.at(tid).at(node.pc.at(tid));
+}
+
+Action effective_next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
+    Action action = next_action_at_node(program, node, tid);
+    if (action.kind == ActionKind::Wait && node.wait_phase.at(tid) == WaitPhase::Woken) {
+        Action reacquire;
+        reacquire.kind = ActionKind::Lock;
+        reacquire.mutex = action.mutex;
+        return reacquire;
+    }
+    return action;
+}
+
+bool enabled_at_node(const DporNode& node, ThreadId tid) {
+    return contains_thread(node.enabled, tid);
+}
+
+std::vector<ThreadId> singleton_thread(ThreadId tid) {
+    std::vector<ThreadId> threads;
+    insert_thread(threads, tid);
+    return threads;
+}
+
+void append_threads(std::vector<ThreadId>& destination, const std::vector<ThreadId>& source) {
+    for (const ThreadId tid : source) {
+        insert_thread(destination, tid);
+    }
+}
+
+bool has_remaining_spawn_to(const Program& program,
+                            const DporNode& node,
+                            ThreadId source,
+                            ThreadId target) {
+    if (target >= program.threads.size() || source == target) {
+        return false;
+    }
+    for (std::size_t index = node.pc.at(source); index < program.threads.at(source).size(); ++index) {
+        const Action& action = program.threads.at(source).at(index);
+        if (action.kind == ActionKind::Spawn && action.target == target) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool has_remaining_wake_on(const Program& program,
+                           const DporNode& node,
+                           ThreadId source,
+                           const std::string& condition) {
+    for (std::size_t index = node.pc.at(source); index < program.threads.at(source).size(); ++index) {
+        const Action& action = program.threads.at(source).at(index);
+        if ((action.kind == ActionKind::Signal || action.kind == ActionKind::Broadcast) &&
+            action.condition == condition) {
+            return true;
+        }
+    }
+    return false;
+}
+
+std::optional<std::vector<ThreadId>> enabler_heads_for_thread(const Program& program,
+                                                              const DporNode& node,
+                                                              ThreadId tid,
+                                                              std::vector<bool>& visiting);
+
+std::optional<std::vector<ThreadId>> enabler_heads_for_spawn_target(const Program& program,
+                                                                    const DporNode& node,
+                                                                    ThreadId target,
+                                                                    std::vector<bool>& visiting) {
+    std::vector<ThreadId> heads;
+    for (ThreadId source = 0; source < program.threads.size(); ++source) {
+        if (!has_remaining_spawn_to(program, node, source, target)) {
+            continue;
+        }
+
+        const auto source_heads = enabler_heads_for_thread(program, node, source, visiting);
+        if (!source_heads.has_value()) {
+            return std::nullopt;
+        }
+        append_threads(heads, *source_heads);
+    }
+
+    if (heads.empty()) {
+        return std::nullopt;
+    }
+    return heads;
+}
+
+std::optional<std::vector<ThreadId>> enabler_heads_for_waiter(const Program& program,
+                                                             const DporNode& node,
+                                                             const Action& wait_action,
+                                                             std::vector<bool>& visiting) {
+    std::vector<ThreadId> heads;
+    for (ThreadId source = 0; source < program.threads.size(); ++source) {
+        if (!has_remaining_wake_on(program, node, source, wait_action.condition)) {
+            continue;
+        }
+
+        const auto source_heads = enabler_heads_for_thread(program, node, source, visiting);
+        if (!source_heads.has_value()) {
+            return std::nullopt;
+        }
+        append_threads(heads, *source_heads);
+    }
+
+    if (heads.empty()) {
+        return std::nullopt;
+    }
+    return heads;
+}
+
+std::optional<std::vector<ThreadId>> enabler_heads_for_mutex_owner(const Program& program,
+                                                                   const DporNode& node,
+                                                                   const std::string& mutex,
+                                                                   ThreadId blocked_thread,
+                                                                   std::vector<bool>& visiting) {
+    const auto owner = node.mutex_owner.find(mutex);
+    if (owner == node.mutex_owner.end() || owner->second == blocked_thread) {
+        return std::nullopt;
+    }
+    return enabler_heads_for_thread(program, node, owner->second, visiting);
+}
+
+std::optional<std::vector<ThreadId>> enabler_heads_for_thread(const Program& program,
+                                                              const DporNode& node,
+                                                              ThreadId tid,
+                                                              std::vector<bool>& visiting) {
+    if (tid >= program.threads.size()) {
+        return std::nullopt;
+    }
+    if (visiting.at(tid)) {
+        return std::nullopt;
+    }
+
+    visiting.at(tid) = true;
+    const auto clear_visiting = [&]() {
+        visiting.at(tid) = false;
+    };
+
+    if (!node.started.at(tid)) {
+        const auto heads = enabler_heads_for_spawn_target(program, node, tid, visiting);
+        clear_visiting();
+        return heads;
+    }
+
+    if (is_finished_at_node(program, node, tid)) {
+        clear_visiting();
+        return std::nullopt;
+    }
+
+    if (enabled_at_node(node, tid)) {
+        clear_visiting();
+        return singleton_thread(tid);
+    }
+
+    const Action static_action = next_action_at_node(program, node, tid);
+    const Action effective_action = effective_next_action_at_node(program, node, tid);
+    std::optional<std::vector<ThreadId>> heads;
+    switch (effective_action.kind) {
+    case ActionKind::Lock:
+        heads = enabler_heads_for_mutex_owner(program, node, effective_action.mutex, tid, visiting);
+        break;
+    case ActionKind::Join:
+        if (!join_target_is_invalid(program, tid, effective_action)) {
+            heads = enabler_heads_for_thread(program, node, effective_action.target, visiting);
+        }
+        break;
+    case ActionKind::Wait:
+        if (node.wait_phase.at(tid) == WaitPhase::Waiting) {
+            heads = enabler_heads_for_waiter(program, node, static_action, visiting);
+        }
+        break;
+    default:
+        break;
+    }
+
+    clear_visiting();
+    return heads;
+}
+
+std::optional<std::vector<ThreadId>> disabled_repair_threads(const Program& program,
+                                                             const DporNode& node,
+                                                             const ExecutedTransition& current) {
+    if (current.thread >= program.threads.size()) {
+        return std::nullopt;
+    }
+
+    std::vector<bool> visiting(program.threads.size(), false);
+    if (!node.started.at(current.thread)) {
+        return enabler_heads_for_spawn_target(program, node, current.thread, visiting);
+    }
+
+    if (!has_next_action_at_node(program, node, current.thread)) {
+        return std::nullopt;
+    }
+
+    if (node.pc.at(current.thread) < current.endpoint.action_index) {
+        return enabler_heads_for_thread(program, node, current.thread, visiting);
+    }
+
+    if (node.pc.at(current.thread) != current.endpoint.action_index) {
+        return std::nullopt;
+    }
+
+    const Action static_action = next_action_at_node(program, node, current.thread);
+    const Action effective_action = effective_next_action_at_node(program, node, current.thread);
+    switch (effective_action.kind) {
+    case ActionKind::Join:
+        if (static_action == current.effective_action &&
+            !join_target_is_invalid(program, current.thread, static_action)) {
+            return enabler_heads_for_thread(program, node, static_action.target, visiting);
+        }
+        break;
+    case ActionKind::Wait:
+        if (static_action == current.effective_action &&
+            node.wait_phase.at(current.thread) == WaitPhase::Waiting) {
+            return enabler_heads_for_waiter(program, node, static_action, visiting);
+        }
+        break;
+    default:
+        break;
+    }
+
+    return std::nullopt;
+}
+
+void add_repair_threads(DporNode& node, const std::vector<ThreadId>& threads) {
+    for (const ThreadId tid : threads) {
+        if (!contains_thread(node.enabled, tid)) {
+            continue;
+        }
+        insert_thread(node.backtrack, tid);
+        remove_thread(node.sleep, tid);
+    }
+}
+
+void add_all_enabled_repair_threads(DporNode& node) {
+    add_repair_threads(node, node.enabled);
+}
+
+bool join_independent_from_transition(const Program& program,
+                                      ThreadId join_thread,
+                                      const Action& join_action,
+                                      ThreadId other_thread,
+                                      const Action& other_action) {
+    assert(join_action.kind == ActionKind::Join);
+    if (join_target_is_invalid(program, join_thread, join_action)) {
+        return false;
+    }
+    if (other_thread == join_action.target) {
+        return false;
+    }
+    if (other_action.kind == ActionKind::Spawn) {
+        return false;
+    }
+    if (other_action.kind == ActionKind::Join &&
+        !join_target_is_invalid(program, other_thread, other_action) &&
+        other_action.target == join_thread) {
+        return false;
+    }
+    return true;
+}
+
+bool transitions_independent(const Program& program,
+                             ThreadId lhs_thread,
+                             const Action& lhs,
+                             ThreadId rhs_thread,
+                             const Action& rhs) {
+    if (lhs_thread == rhs_thread) {
+        return false;
+    }
+
+    if (lhs.kind == ActionKind::Join || rhs.kind == ActionKind::Join) {
+        if (lhs.kind == ActionKind::Join &&
+            !join_independent_from_transition(program, lhs_thread, lhs, rhs_thread, rhs)) {
+            return false;
+        }
+        if (rhs.kind == ActionKind::Join &&
+            !join_independent_from_transition(program, rhs_thread, rhs, lhs_thread, lhs)) {
+            return false;
+        }
+        return true;
+    }
+
+    return independent(lhs, rhs);
 }
 
 std::optional<ThreadId> next_unexplored_backtrack(const DporNode& node) {
@@ -700,14 +1000,17 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
             }
 
             for (const ThreadId selected : node.backtrack) {
-                if (!independent(effective_next_action(program, state, candidate),
-                                 effective_next_action(program, state, selected))) {
+                if (!transitions_independent(program,
+                                             candidate,
+                                             effective_next_action(program, state, candidate),
+                                             selected,
+                                             effective_next_action(program, state, selected))) {
                     // INVARIANTS.md Soundness/Independence: an enabled
                     // transition is pruned from the initial persistent set
-                    // only when independent() says it commutes with every
-                    // selected enabled transition. A dependent enabled
-                    // transition is kept so a distinct bug class is not
-                    // skipped.
+                    // only when the transition predicate says it commutes
+                    // with every selected enabled transition. A dependent
+                    // enabled transition is kept so a distinct bug class is
+                    // not skipped.
                     insert_thread(node.backtrack, candidate);
                     changed = true;
                     break;
@@ -717,7 +1020,8 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
     }
 }
 
-void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
+void add_backtracks_for_transition_against_prefix(const Program& program,
+                                                  std::vector<DporNode>& nodes,
                                                   const std::vector<ExecutedTransition>& trace,
                                                   const ExecutedTransition& current,
                                                   std::size_t prefix_size) {
@@ -741,11 +1045,15 @@ void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
             continue;
         }
 
-        if (independent(previous.effective_action, current.effective_action)) {
+        if (transitions_independent(program,
+                                    previous.thread,
+                                    previous.effective_action,
+                                    current.thread,
+                                    current.effective_action)) {
             // INVARIANTS.md Soundness/Independence: this is the DPOR pruning
             // predicate. We may commute and therefore avoid a backtrack only
-            // when independent() says ordering cannot affect observable state
-            // or future enabledness.
+            // when the transition predicate says ordering cannot affect
+            // observable state or future enabledness.
             continue;
         }
 
@@ -801,25 +1109,33 @@ void add_backtracks_for_transition_against_prefix(std::vector<DporNode>& nodes,
 
     for (const std::size_t disabled_prefix : disabled_dependent_prefixes) {
         DporNode& backtrack_point = nodes.at(disabled_prefix);
-        // INVARIANTS.md Soundness, highest-risk disabled-transition fallback:
-        // the later effective transition could not be scheduled at this
-        // earlier point, so add every enabled thread. This preserves deadlock
-        // and pre-error detection by exploring whichever enabled transition
-        // may make the dependent transition reachable before the earlier one.
-        backtrack_point.sleep.clear();
-        for (const ThreadId enabled : backtrack_point.enabled) {
-            insert_thread(backtrack_point.backtrack, enabled);
+        if (const auto repair_threads = disabled_repair_threads(program, backtrack_point, current)) {
+            // INVARIANTS.md Soundness/Enabledness: when the disabled
+            // transition's concrete enabler chain is known at this prefix,
+            // only the first enabled heads of that chain can make the later
+            // transition reachable before the dependent earlier transition.
+            // Omitted enabled threads do not start the missing thread, finish
+            // the join target, or wake the sleeping waiter; independent bug
+            // classes involving them remain covered by normal DPOR repairs.
+            add_repair_threads(backtrack_point, *repair_threads);
+        } else {
+            // Conservative fallback for blocked locks, woken reacquires, and
+            // any chain we cannot compute. The later effective transition
+            // could not be scheduled here, so add every enabled thread just as
+            // ADR 0010 required.
+            add_all_enabled_repair_threads(backtrack_point);
         }
     }
 }
 
-void add_backtracks_for_transition(std::vector<DporNode>& nodes,
+void add_backtracks_for_transition(const Program& program,
+                                   std::vector<DporNode>& nodes,
                                    const std::vector<ExecutedTransition>& trace) {
     if (trace.empty()) {
         return;
     }
 
-    add_backtracks_for_transition_against_prefix(nodes, trace, trace.back(), trace.size() - 1);
+    add_backtracks_for_transition_against_prefix(program, nodes, trace, trace.back(), trace.size() - 1);
 }
 
 void add_disabled_backtracks(const Program& program,
@@ -850,7 +1166,7 @@ void add_disabled_backtracks(const Program& program,
         // the Independence invariant permits commuting them. effective_next_action()
         // makes the woken-Wait case a mutex reacquire, not a cv wait, while a
         // still-sleeping waiter remains condition-dependent for wakeup order.
-        add_backtracks_for_transition_against_prefix(nodes, trace, blocked, trace.size());
+        add_backtracks_for_transition_against_prefix(program, nodes, trace, blocked, trace.size());
     }
 }
 
@@ -865,7 +1181,11 @@ std::vector<ThreadId> inherited_sleep_set(const Program& program,
         }
 
         const Action slept_action = effective_next_action(program, state_after_transition, tid);
-        if (independent(slept_action, transition.effective_action)) {
+        if (transitions_independent(program,
+                                    tid,
+                                    slept_action,
+                                    transition.thread,
+                                    transition.effective_action)) {
             // Classic Godefroid sleep-set propagation: a slept transition is
             // inherited only while its phase-aware next action still commutes
             // with the transition just executed. If it is dependent, it must
@@ -895,6 +1215,10 @@ void dpor_dfs(const Program& program,
         {},
         {},
         std::move(sleep_set),
+        state.pc,
+        state.started,
+        state.mutex_owner,
+        state.wait_phase,
     });
 
     if (nodes.at(depth).enabled.empty()) {
@@ -956,7 +1280,7 @@ void dpor_dfs(const Program& program,
             step_report.spawned_thread,
         };
         trace.push_back(transition);
-        add_backtracks_for_transition(nodes, trace);
+        add_backtracks_for_transition(program, nodes, trace);
         record_step_report(result, step_report);
 
         if (step_report.error.has_value()) {
@@ -976,8 +1300,8 @@ void dpor_dfs(const Program& program,
             // INVARIANTS.md Soundness/Independence: enabled transitions not in
             // this node's backtrack set are the only schedules pruned here.
             // The initial persistent set and dynamic backtrack additions above
-            // omit an alternative solely after independent() justifies
-            // commuting it with the representative transition.
+            // omit an alternative solely after the transition predicate
+            // justifies commuting it with the representative transition.
             std::vector<ThreadId> child_sleep =
                 inherited_sleep_set(program, next, nodes.at(depth), transition);
             dpor_dfs(program,

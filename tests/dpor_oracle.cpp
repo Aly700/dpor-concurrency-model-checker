@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <optional>
 #include <sstream>
@@ -259,6 +260,33 @@ void assert_exact_dpor_schedules(const model::Program& program, std::size_t expe
     assert(dpor.schedules_explored == expected);
 }
 
+void assert_dpor_schedules_at_most(const model::Program& program, std::size_t upper_bound) {
+    const model::ModelChecker checker(program);
+    const auto naive = checker.explore_naive();
+    const auto dpor = checker.explore_dpor();
+    if (dpor.schedules_explored > upper_bound) {
+        std::cerr << "DPOR schedule bound exceeded: expected <= " << upper_bound
+                  << " got " << dpor.schedules_explored
+                  << " naive=" << naive.schedules_explored << '\n';
+        print_program(program);
+        std::abort();
+    }
+    if (dpor.schedules_explored >= naive.schedules_explored ||
+        dpor.first_race.has_value() != naive.first_race.has_value() ||
+        dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
+        dpor.first_error.has_value() != naive.first_error.has_value()) {
+        std::cerr << "DPOR upper-bound fixture changed verdict or lost reduction\n";
+        print_program(program);
+        std::abort();
+    }
+    assert(dpor.schedules_explored < naive.schedules_explored);
+    assert(dpor.schedules_explored <= upper_bound);
+    assert(dpor.first_race.has_value() == naive.first_race.has_value());
+    assert(dpor.first_deadlock.has_value() == naive.first_deadlock.has_value());
+    assert(dpor.first_error.has_value() == naive.first_error.has_value());
+    assert_replays_dpor_report(checker, dpor);
+}
+
 std::vector<model::Program> hand_picked_programs() {
     return {
         model::Program{{
@@ -369,6 +397,30 @@ int main() {
         {write("a"), write("b"), lock("m"), unlock("m")},
         {write("c"), write("d"), lock("m"), unlock("m")},
     }}, 2);
+    // The only semantic enabler for thread 0's Join(1) is thread 1 reaching
+    // completion; threads 2 and 3 perform only Yield actions, so they cannot
+    // change Join enabledness or expose a distinct modeled bug. There is one
+    // hand-counted trace class for "thread 1's three Yields, then Join"; the
+    // small upper bound rejects both prefix-wide all-enabled disabled repairs
+    // and treating an enabled valid Join as dependent with unrelated Yields.
+    assert_dpor_schedules_at_most(model::Program{{
+        {join(1)},
+        {yield(), yield(), yield()},
+        {yield(), yield(), yield()},
+        {yield(), yield(), yield()},
+    }}, 4);
+    // Two joiners wait for the same target. The hand-counted semantic chain is
+    // still just thread 1's three Yields before the two Join(1) actions; the
+    // fourth thread's Yields neither finish the target nor change any modeled
+    // verdict. The bound catches the old behavior where every disabled Join
+    // repair repeatedly added that unrelated worker at dependent prefixes, and
+    // where enabled valid Joins stayed dependent with unrelated Yields.
+    assert_dpor_schedules_at_most(model::Program{{
+        {join(1)},
+        {yield(), yield(), yield()},
+        {join(1)},
+        {yield(), yield(), yield()},
+    }}, 4);
 
     std::cout << "dpor_oracle: programs checked=" << programs_checked
               << " alphabet=" << kActions.size()

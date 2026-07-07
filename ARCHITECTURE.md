@@ -14,8 +14,9 @@
   stable reports plus replayable schedule blocks.
 - `ModelChecker::explore_naive` is the exhaustive oracle.
 - `ModelChecker::explore_dpor` is the reduced oracle added beside the naive
-  DFS. It uses deterministic backtrack/done sets and relies exclusively on
-  `independent()` when pruning equivalent orderings.
+  DFS. It uses deterministic backtrack/done sets, the public action-level
+  `independent()` predicate, and a checker-local transition refinement for
+  enabled valid `Join` operations.
 - `ModelChecker::replay` re-executes a deterministic schedule and rejects
   disabled or out-of-range steps with a clear error.
 - `ModelChecker::minimize_schedule` greedily deletes per-thread tail steps only
@@ -108,10 +109,20 @@ public schedules remain `(thread, action_index)` pairs.
 Dynamic backtracking follows the Flanagan-Godefroid last-point rule for enabled
 transitions: it adds the later thread only at the last earlier dependent
 transition that is not happens-before ordered before it. Each trace entry stores
-the executing thread's post-step vector clock for this check. If the later
-effective transition was not enabled at a dependent candidate prefix, DPOR uses
-a conservative disabled-transition fallback and adds every enabled thread at
-every such repair point.
+the executing thread's post-step vector clock for this check. Enabled valid
+`Join(target)` transitions use a checker-local transition-aware independence
+rule: after the target is finished, the join commutes with unrelated non-spawn
+transitions. Invalid joins, target-thread transitions, spawns, and joins that
+wait for the joiner remain dependent.
+
+If the later effective transition was not enabled at a dependent candidate
+prefix, DPOR first tries an enabler-chain repair. It adds only enabled threads
+that can advance the disabled transition's concrete chain: a remaining
+`Spawn(t)` for a not-started thread, the target's remaining execution for
+`Join(t)`, a same-thread prerequisite, a mutex owner inside such a chain, or a
+`Signal`/`Broadcast` chain for a sleeping waiter. If the chain is not proven,
+or if the top-level disabled transition is a blocked `Lock` or woken wait
+reacquire, DPOR falls back to ADR 0010's all-enabled repair.
 
 Godefroid sleep sets prune alternatives whose trace class has already been
 represented. A child inherits slept threads only while their current effective
@@ -142,9 +153,9 @@ whether the other action belongs to the target.
 The trace records which `Spawn` transitions actually started a thread. Disabled
 repair for a later target-thread transition does not move before that
 successful spawn enabler, while modeled-error spawn attempts are ignored as
-enablers. Disabled-transition repair also clears sleep entries at repair nodes;
-otherwise a dynamically added backtrack can be skipped solely because it was
-previously slept.
+enablers. Disabled-transition repair removes sleep entries for every inserted
+repair choice; otherwise a dynamically added backtrack can be skipped solely
+because it was previously slept.
 
 ## Verification Gates
 
