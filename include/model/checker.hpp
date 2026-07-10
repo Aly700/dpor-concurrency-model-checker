@@ -8,7 +8,7 @@
 
 namespace model {
 
-enum class MemoryModel { SC, TSO };
+enum class MemoryModel { SC, TSO, PSO };
 
 struct RaceReport {
     std::string address;

@@ -54,6 +54,7 @@ struct FuzzStats {
     std::size_t cycle{0};
     std::size_t bound_hit{0};
     std::size_t tso{0};
+    std::size_t pso{0};
     std::size_t naive_schedules{0};
     std::size_t dpor_schedules{0};
     std::size_t naive_cycles{0};
@@ -267,6 +268,8 @@ const char* memory_model_name(model::MemoryModel memory_model) {
         return "sc";
     case model::MemoryModel::TSO:
         return "tso";
+    case model::MemoryModel::PSO:
+        return "pso";
     }
     return "unknown";
 }
@@ -746,6 +749,8 @@ void check_program(std::uint64_t seed,
     ++stats.total;
     if (memory_model == model::MemoryModel::TSO) {
         ++stats.tso;
+    } else if (memory_model == model::MemoryModel::PSO) {
+        ++stats.pso;
     }
     stats.naive_schedules += naive.schedules_explored;
     stats.dpor_schedules += dpor.schedules_explored;
@@ -841,8 +846,14 @@ int main(int argc, char** argv) {
             } else if (index % 5 == 4) {
                 mode = GenerationMode::Value;
             }
-            const model::MemoryModel memory_model =
-                index % 4 == 3 ? model::MemoryModel::TSO : model::MemoryModel::SC;
+            model::MemoryModel memory_model = model::MemoryModel::SC;
+            if (index % 4 == 3) {
+                // Preserve the existing TSO lane (25% of generated programs).
+                memory_model = model::MemoryModel::TSO;
+            } else if (index % 8 == 2) {
+                // Add a deterministic, mode-independent PSO lane (12.5%).
+                memory_model = model::MemoryModel::PSO;
+            }
             check_program(seed, index, mode, memory_model, generate_program(rng, mode), stats);
         }
     }
@@ -857,6 +868,7 @@ int main(int argc, char** argv) {
               << " cycle_programs=" << stats.cycle
               << " bound_hits=" << stats.bound_hit
               << " tso_programs=" << stats.tso
+              << " pso_programs=" << stats.pso
               << " naive_schedules=" << stats.naive_schedules
               << " dpor_schedules=" << stats.dpor_schedules
               << " naive_cycles=" << stats.naive_cycles

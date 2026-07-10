@@ -71,13 +71,20 @@ struct Program {
 struct ScheduleStep {
     ThreadId thread{0};
     std::uint32_t action_index{0};
+    // Internal PSO flushes retain kFlushActionIndex and add the canonical
+    // numeric program-address id here. Source actions and TSO flushes leave it
+    // empty, preserving the existing two-number schedule representation.
+    std::optional<std::uint32_t> flush_address;
 
     bool operator==(const ScheduleStep&) const = default;
     bool operator<(const ScheduleStep& other) const {
         if (thread != other.thread) {
             return thread < other.thread;
         }
-        return action_index < other.action_index;
+        if (action_index != other.action_index) {
+            return action_index < other.action_index;
+        }
+        return flush_address < other.flush_address;
     }
 };
 

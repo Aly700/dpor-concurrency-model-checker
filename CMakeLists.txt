@@ -72,8 +72,17 @@ target_link_libraries(values_tests PRIVATE model_checker)
 add_executable(tso_litmus tests/tso_litmus.cpp)
 target_link_libraries(tso_litmus PRIVATE model_checker)
 
+add_executable(pso_litmus tests/pso_litmus.cpp)
+target_link_libraries(pso_litmus PRIVATE model_checker)
+
 add_executable(tso_oracle tests/tso_oracle.cpp)
 target_link_libraries(tso_oracle PRIVATE model_checker)
+
+add_executable(pso_oracle tests/pso_oracle.cpp)
+target_link_libraries(pso_oracle PRIVATE model_checker)
+
+add_executable(model_inclusion tests/model_inclusion.cpp)
+target_link_libraries(model_inclusion PRIVATE model_checker)
 
 add_executable(nontermination_tests tests/nontermination.cpp)
 target_link_libraries(nontermination_tests PRIVATE dpor_cli_lib)
@@ -108,7 +117,10 @@ add_test(NAME hb_edge_probes COMMAND hb_edge_probes)
 add_test(NAME atomics_tests COMMAND atomics_tests)
 add_test(NAME values_tests COMMAND values_tests)
 add_test(NAME tso_litmus COMMAND tso_litmus)
+add_test(NAME pso_litmus COMMAND pso_litmus)
 add_test(NAME tso_oracle COMMAND tso_oracle)
+add_test(NAME pso_oracle COMMAND pso_oracle)
+add_test(NAME model_inclusion COMMAND model_inclusion)
 add_test(NAME nontermination_tests COMMAND nontermination_tests)
 add_test(NAME spawn_tests COMMAND spawn_tests)
 add_test(NAME cli_tests COMMAND cli_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})

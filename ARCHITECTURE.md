@@ -61,8 +61,9 @@ The checker interprets a program as a small-step state machine:
   atomic accesses in the shared address namespace.
 - Under `MemoryModel::TSO`, `store_buffers[tid]` is a FIFO of pending plain
   writes. A source `Write` enqueues; an internal flush transition commits the
-  oldest entry. `MemoryModel::SC` has no pending store buffers and remains the
-  default.
+  oldest entry. Under `MemoryModel::PSO`, `pso_store_buffers[tid]` is a
+  canonical address map of FIFOs and each nonempty address is a distinct flush
+  choice. `MemoryModel::SC` has no pending store buffers and remains the default.
 
 At each DFS state, the naive oracle enumerates exactly the enabled transitions
 in deterministic schedule-step order. Not-started threads are disabled. `Read`, `Write`,
@@ -82,9 +83,9 @@ enabled choice names a thread that has already executed its per-thread step
 bound, that execution terminates with a bound outcome and increments
 `bound_exceeded_executions`.
 
-Under TSO, atomics, CAS, mutex/condition-variable operations, spawn, join, and
-`Fence` are ordered points: they are disabled until the executing thread's
-store buffer is empty. A nonempty buffer always enables a flush for that thread,
+Under TSO and PSO, atomics, CAS, mutex/condition-variable operations, spawn,
+join, and `Fence` are ordered points: they are disabled until all of the
+executing thread's buffers are empty. A nonempty buffer always enables a flush for that thread,
 including after the source pc is done, so buffered completion is not deadlock.
 
 ## Happens-Before Analysis
@@ -116,7 +117,7 @@ register operand. Atomic RMW returns the old value and adds its operand. CAS
 stores on success and writes `1` or `0` to its result register.
 
 Memory accesses compare their current vector clock against prior conflicting
-accesses to the same address. Under TSO, an enqueued plain write records no
+accesses to the same address. Under TSO or PSO, an enqueued plain write records no
 race metadata until its flush, which is the write's global visibility point.
 Plain reads forward from the reading thread's newest same-address buffered
 write before shared memory but are still recorded as plain reads
@@ -140,11 +141,19 @@ DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, done, and
 sleep schedule-step sets. Each enabled node records both the replay endpoint and the
 phase-aware effective action for each enabled thread, so `Wait` release/sleep
 and woken mutex reacquire are reduced as different transition semantics while
-public schedules remain `(thread, action_index)` pairs.
+source and TSO schedule steps remain `(thread, action_index)` pairs.
 
-TSO flushes use the reserved action index `kFlushActionIndex` in those same
-sets. This lets one thread have both its next source action and an internal
-flush enabled without changing public schedule records into a variant.
+TSO and PSO flushes use the reserved action index `kFlushActionIndex` in those
+same sets. TSO keeps the original two-number endpoint; PSO adds the canonical
+numeric address ID to `ScheduleStep`, so several address flushes from one
+thread are distinct enabled keys and replay selects the exact queue.
+
+Different-address PSO flushes owned by one thread commute as direct state
+updates, but they are not source-program ordered. The persistent-set
+initializer conservatively inserts every co-enabled sibling address whenever
+one such flush is selected. This prevents the checker's general same-thread
+trace-order rule from collapsing the two scheduler choices and permits another
+thread to observe state between them.
 
 Dynamic backtracking follows the Flanagan-Godefroid last-point rule for enabled
 transitions: it adds the later thread only at the last earlier dependent
@@ -206,7 +215,7 @@ because it was previously slept.
 
 ## Verification Gates
 
-The DPOR implementation is checked against four deterministic gates. The
+The DPOR implementation is checked against deterministic gates. The
 2-thread oracle sweep enumerates small programs by length pair over a 17-action
 alphabet and compares naive vs. DPOR race/deadlock/error/assertion existence,
 the bound-hit boolean, schedule dominance, and report replay identity. The
@@ -227,8 +236,11 @@ the lexicographically minimal topological order of the checker's DPOR
 dependence DAG, and asserts `class_count <= dpor <= naive`. It also checks that
 every schedule in a canonical class replays to the same public verdict kind,
 which re-validates the independence relation behind the pruning argument.
-TSO has a separate `tso_oracle` differential gate because internal flush
-transitions change the transition alphabet and class-count argument.
+TSO and PSO have separate differential oracles because internal flush
+transitions change the transition alphabet and class-count argument. The
+cross-model `model_inclusion` gate checks the separate semantic theorem that
+per-kind bug existence is monotone from SC to TSO to PSO, excluding capped or
+residual-bound runs where truncation would invalidate the implication.
 
 ## Design bias
 

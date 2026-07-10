@@ -16,17 +16,19 @@
   reset on backtrack and must never deduplicate states across executions.
 - The behavioral state includes normalized per-thread PCs, startedness, wait
   phases, registers, memory values, mutex owners, condition-variable wait sets,
-  and ordered TSO store buffers. Vector clocks, atomic/mutex clocks, race
-  metadata, step counters, and schedule history are analysis/budget/history
-  state and are excluded. Consequently a lasso proves schedule-existence of
-  non-termination only, not repetition of analysis instrumentation.
+  and ordered TSO store buffers or canonical per-address PSO FIFO maps. Vector
+  clocks, atomic/mutex clocks, race metadata, step counters, and schedule
+  history are analysis/budget/history state and are excluded. Consequently a
+  lasso proves schedule-existence of non-termination only, not repetition of
+  analysis instrumentation.
 - A cycle witness is `stem + one cycle`, split at the first occurrence of the
   revisited state. The claim is existential and makes no scheduler-fairness or
   starvation-freedom claim.
 
 ## Replay
 
-- A schedule is a deterministic sequence of thread IDs and action indexes.
+- A schedule is a deterministic sequence of thread IDs and action indexes,
+  plus a numeric canonical address ID on PSO flush steps only.
 - Replaying a schedule must produce the same state, report, and trace.
 - Labels are pseudo-actions and are never scheduled; replay validates each
   step against the normalized executable pc after skipping labels.
@@ -34,6 +36,10 @@
   reserved action index `kFlushActionIndex`. Replay must reject that sentinel
   unless the selected memory model is TSO and the thread's store buffer is
   nonempty at that exact step.
+- Under PSO, every nonempty `(thread, address)` FIFO is a distinct enabled
+  flush transition. It uses `kFlushActionIndex` plus that program address's
+  canonical numeric ID. Replay must require the ID and reject the step unless
+  that exact address FIFO is nonempty; SC/TSO source schedules remain unchanged.
 - Replaying a non-termination witness must reproduce the identical stem/cycle
   report by exact equality between the end-of-stem and end-of-cycle behavioral
   states. Replay rejects schedules that continue after the cycle closes.
@@ -72,19 +78,26 @@
 - Values are deterministic schedule-order int64 cell values. Plain reads have
   no weak-memory value semantics: in racy programs they observe the value
   produced by the explored interleaving, and the race report is the bug.
-- Under TSO, a plain write's global visibility point is its flush, not its
-  enqueue. Race metadata for the write must be recorded at the flush endpoint
-  using the flushing thread's clock at that step. A TSO read forwards from the
-  newest same-address entry in its own buffer before shared memory; forwarded
-  reads are still recorded as plain reads conservatively so same-address
-  dependence remains visible to DPOR.
+- Under TSO and PSO, a plain write's global visibility point is its flush, not
+  its enqueue. Race metadata for the write must be recorded at the flush
+  endpoint using the flushing thread's clock at that step. A buffered-model
+  read forwards from the newest same-address entry in its own buffer before
+  shared memory; forwarded reads are still recorded as plain reads
+  conservatively so same-address dependence remains visible to DPOR.
+- PSO has one FIFO per `(thread, address)`: same-address stores never reorder,
+  while all pending different-address flushes are simultaneously schedulable.
+  Atomics, CAS, synchronization operations, spawn/join, and `fence` remain
+  disabled until every address FIFO owned by that thread is empty.
 - Atomic/atomic accesses are never races. Mixed plain/atomic same-address
   accesses are races when unordered by happens-before and at least one side is
   write-like: plain write, atomic store, successful CAS, or atomic RMW. CAS is
   still dependent as an atomic RMW regardless of runtime success.
 - Register-only actions (`set`, `bnz`, `assert`) are thread-local and may be
   independent of every other thread's transition; same-thread program order is
-  still never commuted.
+  still never commuted. PSO internal flushes are not source-program actions:
+  different-address flushes of one thread commute, but every co-enabled address
+  must remain an explicit persistent-set choice so another thread can run
+  between the two drains.
 - Assertion failures are first-class terminal reports with replayable,
   minimized schedules. They must not be downgraded to modeled errors.
 - Deadlock detection must distinguish a true cycle from a voluntarily finished
@@ -96,9 +109,13 @@
 - A terminal state with no enabled actions is a deadlock when any started
   thread is unfinished, including a thread blocked on `Join(target)` where
   `target` has not started and no remaining enabled spawn can start it.
-- Under TSO, a started thread with pc done but a nonempty store buffer is not
-  finished. The nonempty buffer always enables a flush transition, so buffered
-  writes alone do not create deadlocks.
+- Under TSO or PSO, a started thread with pc done but a nonempty store buffer
+  is not finished. The nonempty buffer always enables a flush transition, so
+  buffered writes alone do not create deadlocks.
+- Cross-model bug existence is monotone for complete bounded explorations:
+  `SC => TSO => PSO` independently for race, deadlock, error, assertion, and
+  nontermination. Inclusion comparisons must skip any program for which a
+  model is schedule-capped or retains a bound-exceeded execution.
 - Cycle cutting is a terminal execution outcome like the step bound. DPOR must
   conservatively retain enabled siblings and must not sleep the cycle-closing
   transition across a sibling whose swapped prefix was not explored beyond the

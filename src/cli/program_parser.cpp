@@ -639,12 +639,16 @@ model::Schedule parse_schedule_file(const std::string& path) {
         }
 
         const std::vector<std::string> words = split_words(stripped);
-        if (words.size() != 2) {
-            throw ParseError(line, "schedule step must be two integers");
+        if (words.size() != 2 && words.size() != 3) {
+            throw ParseError(line, "schedule step must be two or three integers");
         }
+        const std::optional<std::uint32_t> flush_address = words.size() == 3
+            ? std::optional<std::uint32_t>{parse_u32_token(words[2], line, "flush address id")}
+            : std::nullopt;
         schedule.push_back(model::ScheduleStep{
             parse_u32_token(words[0], line, "thread id"),
             parse_u32_token(words[1], line, "action index"),
+            flush_address,
         });
     }
 

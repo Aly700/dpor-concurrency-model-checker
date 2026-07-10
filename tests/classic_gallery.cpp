@@ -134,6 +134,18 @@ std::string expected_text(ExpectedVerdict verdict) {
     fail("unknown expected verdict");
 }
 
+const char* memory_model_argument(model::MemoryModel memory_model) {
+    switch (memory_model) {
+    case model::MemoryModel::SC:
+        return "sc";
+    case model::MemoryModel::TSO:
+        return "tso";
+    case model::MemoryModel::PSO:
+        return "pso";
+    }
+    fail("unknown memory model");
+}
+
 ExpectedVerdict verdict_kind(const model::CheckResult& result) {
     const std::string verdict = cli::verdict_of(result);
     if (verdict == "clean") {
@@ -292,7 +304,7 @@ void require_cli_round_trip(const std::filesystem::path& binary,
     const auto check = run_command(
         binary,
         {"check", program.string(), "--explorer", "dpor",
-         "--memory-model", test_case.memory_model == model::MemoryModel::TSO ? "tso" : "sc",
+         "--memory-model", memory_model_argument(test_case.memory_model),
          "--step-bound", std::to_string(test_case.step_bound),
          "--max-schedules", std::to_string(test_case.max_schedules)},
         work_dir / (stem + ".check.out"),
@@ -308,7 +320,7 @@ void require_cli_round_trip(const std::filesystem::path& binary,
     const auto replay = run_command(
         binary,
         {"replay", program.string(), "--schedule", schedule_path.string(),
-         "--memory-model", test_case.memory_model == model::MemoryModel::TSO ? "tso" : "sc"},
+         "--memory-model", memory_model_argument(test_case.memory_model)},
         work_dir / (stem + ".replay.out"),
         work_dir / (stem + ".replay.err"));
 
@@ -351,8 +363,19 @@ const std::vector<GalleryCase>& gallery_cases() {
         {"failed_cas_handoff_broken_no_retry.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, std::nullopt, false},
         {"peterson_tso.dpor", ExpectedVerdict::Race, 12, 300000, true, model::MemoryModel::TSO, true, true},
         {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::TSO, false, true},
+        // The unfenced PSO run reaches both race and assertion witnesses but
+        // remains capped at this gallery budget; existence is still sound.
+        // The fenced PSO run exhausts and proves assertion absence.
+        {"peterson_tso.dpor", ExpectedVerdict::Race, 10, 300000, false, model::MemoryModel::PSO, true, true},
+        {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::PSO, false, true},
         {"dekker_tso.dpor", ExpectedVerdict::Race, 14, 500000, true, model::MemoryModel::TSO, true, true},
         {"dekker_tso_fenced.dpor", ExpectedVerdict::Race, 15, 500000, false, model::MemoryModel::TSO, false, true},
+        {"mp_pso.dpor", ExpectedVerdict::Race, 20, 100000, false, model::MemoryModel::SC, false, false},
+        {"mp_pso.dpor", ExpectedVerdict::Race, 20, 100000, false, model::MemoryModel::TSO, false, false},
+        {"mp_pso.dpor", ExpectedVerdict::Race, 20, 100000, false, model::MemoryModel::PSO, true, false},
+        {"mp_pso_fenced.dpor", ExpectedVerdict::Race, 20, 100000, false, model::MemoryModel::SC, false, false},
+        {"mp_pso_fenced.dpor", ExpectedVerdict::Race, 20, 100000, false, model::MemoryModel::TSO, false, false},
+        {"mp_pso_fenced.dpor", ExpectedVerdict::Race, 20, 100000, false, model::MemoryModel::PSO, false, false},
     };
     return cases;
 }

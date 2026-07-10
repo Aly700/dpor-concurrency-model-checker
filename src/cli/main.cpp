@@ -72,12 +72,15 @@ model::MemoryModel parse_memory_model(const std::string& value) {
     if (value == "tso") {
         return model::MemoryModel::TSO;
     }
+    if (value == "pso") {
+        return model::MemoryModel::PSO;
+    }
     throw UsageError("invalid memory model");
 }
 
 CheckCommand parse_check_command(int argc, char** argv) {
     if (argc < 3) {
-        throw UsageError("usage: dpor check <program.dpor> [--explorer naive|dpor] [--memory-model sc|tso] [--max-schedules N] [--step-bound N]");
+        throw UsageError("usage: dpor check <program.dpor> [--explorer naive|dpor] [--memory-model sc|tso|pso] [--max-schedules N] [--step-bound N]");
     }
 
     CheckCommand command;
@@ -118,7 +121,7 @@ CheckCommand parse_check_command(int argc, char** argv) {
 
 ReplayCommand parse_replay_command(int argc, char** argv) {
     if (argc < 5) {
-        throw UsageError("usage: dpor replay <program.dpor> --schedule <schedule-file> [--memory-model sc|tso]");
+        throw UsageError("usage: dpor replay <program.dpor> --schedule <schedule-file> [--memory-model sc|tso|pso]");
     }
     ReplayCommand command;
     command.program_path = argv[2];
@@ -142,7 +145,7 @@ ReplayCommand parse_replay_command(int argc, char** argv) {
         }
     }
     if (command.schedule_path.empty()) {
-        throw UsageError("usage: dpor replay <program.dpor> --schedule <schedule-file> [--memory-model sc|tso]");
+        throw UsageError("usage: dpor replay <program.dpor> --schedule <schedule-file> [--memory-model sc|tso|pso]");
     }
     return command;
 }

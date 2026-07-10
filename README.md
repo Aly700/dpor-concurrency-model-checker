@@ -16,7 +16,7 @@ state that proves the cycle.
 |---|---|---|
 | Registers and values | `set`, `bnz`, `assert`, labels | Eight int64 thread-local registers `r0`-`r7`; labels are unscheduled pseudo-actions; assertions fail when the register is zero |
 | Plain memory | `read`, `write` | Shared int64 cells, initial 0; conflicting unordered accesses are races |
-| Memory models | `--memory-model sc\|tso`, `fence` | SC by default; TSO adds per-thread FIFO store buffers, explicit drain fences, and internal replayable flush steps |
+| Memory models | `--memory-model sc\|tso\|pso`, `fence` | SC by default; TSO adds one FIFO store buffer per thread, PSO uses one FIFO per thread/address, and both expose replayable flush steps plus full drain fences |
 | Atomics | `atomic_load`, `atomic_store`, `atomic_rmw`, `cas` | Acquire/release/acq-rel, SC-per-location; atomic-atomic never races, mixed plain/atomic does |
 | Mutexes | `lock`, `unlock` | Blocking; release/acquire vector-clock edges; non-owner unlock is a modeled error |
 | Condition variables | `wait`, `signal`, `broadcast` | Mesa semantics, two-phase wait (release+sleep, then reacquire); no permit queuing, so lost wakeups deadlock |
@@ -118,10 +118,10 @@ atomic_load f -> rN     # legacy "atomic_load f" discards the value
 atomic_store f IMM|rN   # legacy "atomic_store f" stores 0
 atomic_rmw f IMM|rN -> rN  # legacy "atomic_rmw f" adds 1 and discards old value
 cas f EXPECTED NEW -> rN
-fence                   # SC no-op; under TSO, enabled only after this thread's store buffer is empty
+fence                   # SC no-op; under TSO/PSO, enabled only after all of this thread's stores drain
 ```
 
-`dpor check` accepts `--memory-model sc|tso` (default `sc`) and
+`dpor check` accepts `--memory-model sc|tso|pso` (default `sc`) and
 `--step-bound N` to set the per-thread step bound. Because
 backward branches can encode spin loops, a clean verdict is sound only relative
 to that bound. If any execution hits the bound, the CLI prints
@@ -136,7 +136,8 @@ exploration stops at the schedule cap (`--max-schedules`), the report says
 Cycle detection is per execution and path-local. After every transition, the
 checker compares an exact canonical byte encoding of the complete behavioral
 state: normalized thread PCs, started threads, wait phases and wait sets,
-registers, memory values, mutex owners, and ordered TSO store buffers. It never
+registers, memory values, mutex owners, ordered TSO store buffers, and
+canonical per-address PSO FIFO maps. It never
 uses a lossy hash; a collision could fabricate a false proof of divergence.
 Vector clocks and race history are analysis instrumentation rather than program
 behavior, so they are excluded. The resulting witness claims non-termination
@@ -172,12 +173,23 @@ lower-priority findings from the same exploration.
 More in `examples/`: data race, AB-BA deadlock, lost wakeup, atomic message
 passing, spawn+join pipeline, clean locked counter, unlock error.
 
-## TSO Memory Model
+## SC/TSO/PSO Memory Models
 
-Under `--memory-model tso`, each thread has a FIFO store buffer. `write x V`
-enqueues, and an internal `flush x` transition commits the oldest buffered
-store to shared memory. Flushes are printed in traces and replay through the
-reserved schedule action index `4294967295`.
+SC makes each plain write visible immediately. Under `--memory-model tso`, each
+thread instead has one FIFO store buffer. Under `--memory-model pso`, each
+thread has a separate FIFO for every address: stores to one address remain
+ordered, while different addresses may drain in either order. `write x V`
+enqueues and an internal `flush x` transition commits the oldest eligible
+value to shared memory.
+
+Flushes are printed in traces and use reserved schedule action index
+`4294967295`. TSO retains the existing two-number step. A PSO flush adds the
+canonical numeric program-address ID as a third number, so replay validates
+the exact address choice:
+
+```text
+0 4294967295 1
+```
 
 Store buffering is therefore observable:
 
@@ -190,10 +202,33 @@ thread:
   read x -> r1
 ```
 
-The outcome `r0 == 0 && r1 == 0` is reachable under TSO when both reads run
-before either buffer flushes. Adding `fence` after each write drains the buffers
-before the reads. Plain accesses are still checked for happens-before races, so
-litmus reports can contain both a race and an assertion witness.
+The outcome `r0 == 0 && r1 == 0` is reachable under both TSO and PSO when both
+reads run before either buffer flushes. Adding `fence` after each write drains
+all of that thread's buffers before the read. The IR intentionally provides one
+full fence; a separate `sfence` would add no behavior while loads are not
+reordered and is left as future work.
+
+Message passing distinguishes PSO from TSO:
+
+```text
+thread:
+  write data 1
+  write flag 1
+thread:
+  read flag -> r0
+  # if r0 != 0, read data and assert it is nonzero
+```
+
+| Outcome: observe `flag == 1`, then `data == 0` | SC | TSO | PSO |
+|---|---:|---:|---:|
+| Without a fence | unreachable | unreachable | reachable |
+| Fence between the writes | unreachable | unreachable | unreachable |
+
+TSO's single FIFO cannot publish `flag` before `data`; PSO can flush the flag
+address first. A fence between the stores drains `data` before `flag` can
+enqueue. Plain accesses are still checked for happens-before races, so these
+litmus reports contain a primary race verdict plus an assertion witness where
+the relaxed value outcome is reachable.
 
 `examples/classic/peterson_tso*.dpor` and `dekker_tso*.dpor` are bounded
 entry-check witnesses for plain flag/turn coordination under TSO. The unfenced
@@ -213,7 +248,7 @@ bounded verdict and any `.dpor` modeling limitation.
 
 ## Verification gates
 
-DPOR is never trusted on faith. Four deterministic gates assert that
+DPOR is never trusted on faith. Deterministic gates assert that
 `explore_dpor` and the exhaustive oracle agree on race/deadlock/error/assertion
 and cycle existence and on whether any execution hit the step bound, that DPOR never
 explores more schedules, that every DPOR report replays to an identical report,
@@ -227,20 +262,26 @@ and how far DPOR is from one schedule per Mazurkiewicz class:
    including spawn-shaped, value/branch/CAS/assertion programs, exact spin
    cycles, growing-state bound backstops, and deliberately malformed ones;
    failures print the seed and the program in `.dpor` syntax for by-hand
-   reproduction, and the summary prints naive/DPOR cycle counters.
+   reproduction. Deterministic fractions run under TSO and PSO, and the summary
+   prints both model counts plus naive/DPOR cycle counters.
 4. **Optimality meter** — collects naive schedules for small non-error,
    non-assertion programs, canonicalizes phase-aware Mazurkiewicz trace
    classes using the same transition predicate DPOR prunes with, asserts
    `classes <= dpor <= naive`, and prints the aggregate DPOR/classes
    redundancy ratio.
+5. **Buffered-model oracles** — capped TSO and PSO program sweeps compare
+   naive and DPOR verdict/cycle existence, schedule dominance, and exact replay.
+6. **Cross-model inclusion** — a deterministic two-thread corpus plus
+   fixed-seed samples checks per-kind bug existence is monotone
+   `SC => TSO => PSO`, skipping and reporting any truncated exploration.
 
 All gates are deterministic and run in CI on Linux and macOS.
 
 ## Design records
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
-soundness-relevant decision in `adr/` (0001 architecture crux through 0016
-lasso detection), including the exact vector-clock edge for each
+soundness-relevant decision in `adr/` (0001 architecture crux through 0017
+PSO), including the exact vector-clock edge for each
 synchronization kind and why each DPOR pruning step cannot lose a bug class.
 
 **[docs/case-study.md](docs/case-study.md)** tells the verification story:

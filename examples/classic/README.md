@@ -10,10 +10,27 @@ treated as findings, not as a reason to adjust core semantics.
 | Peterson inside assertion (`peterson_inside_assert.dpor`) | Plain `inside_free` is nonzero on entry | Clean up to bound | `peterson_inside_assert_broken_wrong_flag.dpor` races on `inside_free` before every violating schedule necessarily reaches the assertion |
 | Dekker counter (`dekker_counter.dpor`) | Plain critical-section counter touch is race-free | Nontermination; no race/assertion | `dekker_counter_broken_drop_turn_wait.dpor` enters immediately after the courtesy flag reset instead of waiting for turn |
 | Peterson TSO bounded entry (`peterson_tso.dpor`) | Plain flag/turn entry can admit two entrants under TSO | Race plus assertion under TSO | `peterson_tso_fenced.dpor` drains before the entry check and removes the assertion witness |
+| Message passing PSO discriminator (`mp_pso.dpor`) | `data` must be visible when `flag` is observed | Race in every model; assertion only under PSO | `mp_pso_fenced.dpor` drains `data` before enqueueing `flag`, removing the PSO assertion witness |
 | Dekker TSO bounded entry (`dekker_tso.dpor`) | Plain flag/turn entry can admit two entrants under TSO | Race plus assertion under TSO | `dekker_tso_fenced.dpor` drains before the entry check and removes the assertion witness |
 | Lamport bakery, bounded two-thread simplification (`bakery_bounded_counter.dpor`) | Plain critical-section counter touch is race-free | Nontermination; no race/assertion | `bakery_bounded_counter_broken_no_choosing_wait.dpor` uses a bounded one-check witness that observes `number[j] == 0` while the other thread is still choosing |
 | Treiber push skeleton (`treiber_push.dpor`) | Two CAS-retry pushes leave both node bits in `top` and increment `success_count` twice | Clean | `treiber_push_broken_load_store.dpor` loses an update when load+store replaces CAS |
 | Failed-CAS handoff (`failed_cas_handoff.dpor`) | A failed CAS acquire orders a later plain payload read after the writer's release store | Nontermination; no race/assertion | `failed_cas_handoff_broken_no_retry.dpor` reads payload after a successful pre-publication CAS |
+
+### SC/TSO/PSO verdicts
+
+Plain accesses make the primary verdict `race` in every cell. The parenthetic
+annotation records whether the bounded assertion witness also exists.
+
+| Gallery program | SC | TSO | PSO |
+|---|---|---|---|
+| `mp_pso.dpor` | race (no assertion) | race (no assertion) | race + assertion |
+| `mp_pso_fenced.dpor` | race (no assertion) | race (no assertion) | race (no assertion) |
+
+`peterson_tso.dpor` also has a race plus assertion witness under PSO, as it
+does under TSO. Its PSO run is capped at the gallery's 300,000-schedule budget,
+so that line proves existence only. `peterson_tso_fenced.dpor` exhausts under
+PSO with a race and no assertion, matching its TSO result: the modeled full
+fences drain every pending address before the entry checks.
 
 ## Modeling Notes
 

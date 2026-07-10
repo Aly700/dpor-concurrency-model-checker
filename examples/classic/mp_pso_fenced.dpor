@@ -1,0 +1,15 @@
+# A full fence drains data before the flag write can enqueue.
+thread:
+  write data 1
+  fence
+  write flag 1
+
+thread:
+  read flag -> r0
+  bnz r0 saw_flag
+  set r7 1
+  bnz r7 done
+saw_flag:
+  read data -> r1
+  assert r1
+done:

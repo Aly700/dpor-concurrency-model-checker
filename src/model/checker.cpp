@@ -11,6 +11,7 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <set>
 #include <sstream>
 #include <stdexcept>
 #include <utility>
@@ -37,6 +38,8 @@ struct StoreBufferEntry {
     Value value{0};
 };
 
+using PsoAddressBuffer = std::map<std::string, std::deque<Value>>;
+
 enum class WaitPhase { None, Waiting, Woken };
 
 struct ExecutionState {
@@ -53,7 +56,11 @@ struct ExecutionState {
     std::map<std::string, AddressState> memory;
     std::map<std::string, Value> memory_values;
     std::map<std::string, VectorClock> atomic_location_clock;
+    // TSO remains a single per-thread FIFO. PSO uses a separate per-address
+    // FIFO map so changing PSO cannot perturb the established TSO path.
     std::vector<std::deque<StoreBufferEntry>> store_buffers;
+    std::vector<PsoAddressBuffer> pso_store_buffers;
+    std::vector<std::string> flush_addresses;
     Schedule schedule;
 };
 
@@ -155,6 +162,24 @@ StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
         }
     }
 
+    if (state.memory_model == MemoryModel::PSO) {
+        append_u64(fingerprint, static_cast<std::uint64_t>(state.pso_store_buffers.size()));
+        for (const PsoAddressBuffer& thread_buffer : state.pso_store_buffers) {
+            // std::map iteration is canonical lexicographic address order.
+            // Empty queues are erased after their final flush, so the map has
+            // exactly one representation for an empty address buffer.
+            append_u64(fingerprint, static_cast<std::uint64_t>(thread_buffer.size()));
+            for (const auto& [address, values] : thread_buffer) {
+                assert(!values.empty());
+                append_string(fingerprint, address);
+                append_u64(fingerprint, static_cast<std::uint64_t>(values.size()));
+                for (const Value value : values) {
+                    append_u64(fingerprint, static_cast<std::uint64_t>(value));
+                }
+            }
+        }
+    }
+
     // Excluded deliberately: mutex/thread/atomic vector clocks and AddressState
     // race metadata are monotone analysis instrumentation; thread_steps is the
     // exploration budget; schedule is history. None changes program control,
@@ -212,6 +237,7 @@ struct DporNode {
     std::map<std::string, ThreadId> mutex_owner;
     std::vector<WaitPhase> wait_phase;
     std::vector<std::deque<StoreBufferEntry>> store_buffers;
+    std::vector<PsoAddressBuffer> pso_store_buffers;
 };
 
 struct ExecutedTransition {
@@ -242,6 +268,18 @@ std::vector<std::array<Value, kRegisterCount>> initial_registers(std::size_t thr
         thread_registers.fill(0);
     }
     return registers;
+}
+
+std::vector<std::string> program_addresses(const Program& program) {
+    std::set<std::string> addresses;
+    for (const auto& thread : program.threads) {
+        for (const Action& action : thread) {
+            if (!action.address.empty()) {
+                addresses.insert(action.address);
+            }
+        }
+    }
+    return {addresses.begin(), addresses.end()};
 }
 
 bool is_label_action(const Program& program, ThreadId tid, std::uint32_t pc) {
@@ -277,6 +315,8 @@ ExecutionState initial_state(const Program& program, MemoryModel memory_model) {
         {},
         {},
         std::vector<std::deque<StoreBufferEntry>>(program.threads.size()),
+        std::vector<PsoAddressBuffer>(program.threads.size()),
+        program_addresses(program),
         {},
     };
     normalize_all_pcs(program, state);
@@ -290,7 +330,8 @@ bool has_next_action(const Program& program, const ExecutionState& state, Thread
 bool is_finished(const Program& program, const ExecutionState& state, ThreadId tid) {
     return state.started.at(tid) &&
            !has_next_action(program, state, tid) &&
-           (state.memory_model != MemoryModel::TSO || state.store_buffers.at(tid).empty());
+           state.store_buffers.at(tid).empty() &&
+           state.pso_store_buffers.at(tid).empty();
 }
 
 bool all_finished(const Program& program, const ExecutionState& state) {
@@ -370,15 +411,25 @@ bool is_flush_step(const ScheduleStep& step) {
     return step.action_index == kFlushActionIndex;
 }
 
+bool is_buffered_memory_model(MemoryModel memory_model) {
+    return memory_model == MemoryModel::TSO || memory_model == MemoryModel::PSO;
+}
+
 bool has_pending_store(const ExecutionState& state, ThreadId tid) {
-    return state.memory_model == MemoryModel::TSO && !state.store_buffers.at(tid).empty();
+    if (state.memory_model == MemoryModel::TSO) {
+        return !state.store_buffers.at(tid).empty();
+    }
+    if (state.memory_model == MemoryModel::PSO) {
+        return !state.pso_store_buffers.at(tid).empty();
+    }
+    return false;
 }
 
 bool has_pending_store_at_node(const DporNode& node, ThreadId tid) {
-    return !node.store_buffers.at(tid).empty();
+    return !node.store_buffers.at(tid).empty() || !node.pso_store_buffers.at(tid).empty();
 }
 
-bool is_tso_ordered_point(const Action& action) {
+bool is_buffered_ordered_point(const Action& action) {
     switch (action.kind) {
     case ActionKind::AtomicLoad:
     case ActionKind::AtomicStore:
@@ -453,8 +504,8 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
     }
 
     const Action& action = next_action(program, state, tid);
-    if (state.memory_model == MemoryModel::TSO &&
-        is_tso_ordered_point(action) &&
+    if (is_buffered_memory_model(state.memory_model) &&
+        is_buffered_ordered_point(action) &&
         has_pending_store(state, tid)) {
         return false;
     }
@@ -521,13 +572,26 @@ std::vector<ScheduleStep> enabled_steps_for_thread(const Program& program,
         return enabled;
     }
     if (is_program_action_enabled(program, state, tid)) {
-        enabled.push_back(ScheduleStep{tid, state.pc.at(tid)});
+        enabled.push_back(ScheduleStep{tid, state.pc.at(tid), std::nullopt});
     }
     if (has_pending_store(state, tid)) {
         // A pending store buffer entry always has an enabled flush transition.
         // Therefore a thread with pc done but a nonempty buffer is unfinished
         // and cannot create a deadlock solely by buffering.
-        enabled.push_back(ScheduleStep{tid, kFlushActionIndex});
+        if (state.memory_model == MemoryModel::TSO) {
+            enabled.push_back(ScheduleStep{tid, kFlushActionIndex, std::nullopt});
+        } else {
+            assert(state.memory_model == MemoryModel::PSO);
+            for (const auto& [address, values] : state.pso_store_buffers.at(tid)) {
+                assert(!values.empty());
+                const auto found = std::lower_bound(
+                    state.flush_addresses.begin(), state.flush_addresses.end(), address);
+                assert(found != state.flush_addresses.end() && *found == address);
+                const auto address_id = static_cast<std::uint32_t>(
+                    std::distance(state.flush_addresses.begin(), found));
+                enabled.push_back(ScheduleStep{tid, kFlushActionIndex, address_id});
+            }
+        }
     }
     return enabled;
 }
@@ -553,7 +617,21 @@ Action effective_action_for_step(const Program& program,
                                  const ScheduleStep& step) {
     if (is_flush_step(step)) {
         assert(has_pending_store(state, step.thread));
-        return flush_action_for(state.store_buffers.at(step.thread).front());
+        if (state.memory_model == MemoryModel::TSO) {
+            assert(!step.flush_address.has_value());
+            return flush_action_for(state.store_buffers.at(step.thread).front());
+        }
+        assert(state.memory_model == MemoryModel::PSO);
+        assert(step.flush_address.has_value());
+        assert(*step.flush_address < state.flush_addresses.size());
+        Action action;
+        action.kind = ActionKind::Flush;
+        action.address = state.flush_addresses.at(*step.flush_address);
+        const auto pending = state.pso_store_buffers.at(step.thread).find(action.address);
+        assert(pending != state.pso_store_buffers.at(step.thread).end());
+        assert(!pending->second.empty());
+        (void)pending;
+        return action;
     }
     return effective_next_action(program, state, step.thread);
 }
@@ -884,6 +962,19 @@ bool transitions_independent(const Program& program,
                              const Action& lhs,
                              ThreadId rhs_thread,
                              const Action& rhs) {
+    if (lhs_thread == rhs_thread &&
+        lhs.kind == ActionKind::Flush &&
+        rhs.kind == ActionKind::Flush &&
+        !lhs.address.empty() &&
+        !rhs.address.empty() &&
+        lhs.address != rhs.address) {
+        // PSO flushes are not source-program actions. Different-address
+        // flushes of one owner commute in modeled state and are independently
+        // schedulable; initialize_dpor_backtrack nevertheless forces every
+        // co-enabled sibling address into the persistent choice set so trace
+        // DPOR cannot mistake them for same-thread program order.
+        return true;
+    }
     if (lhs_thread == rhs_thread) {
         return false;
     }
@@ -1124,6 +1215,12 @@ Value read_plain_value(const ExecutionState& state, ThreadId tid, const std::str
                 return iter->value;
             }
         }
+    } else if (state.memory_model == MemoryModel::PSO) {
+        const auto pending = state.pso_store_buffers.at(tid).find(address);
+        if (pending != state.pso_store_buffers.at(tid).end()) {
+            assert(!pending->second.empty());
+            return pending->second.back();
+        }
     }
     const auto value = state.memory_values.find(address);
     if (value == state.memory_values.end()) {
@@ -1138,9 +1235,9 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
     Action flush_action;
     const Action* action_ptr = nullptr;
     if (is_flush_step(step)) {
-        assert(state.memory_model == MemoryModel::TSO);
+        assert(is_buffered_memory_model(state.memory_model));
         assert(has_pending_store(state, tid));
-        flush_action = flush_action_for(state.store_buffers.at(tid).front());
+        flush_action = effective_action_for_step(program, state, step);
         action_ptr = &flush_action;
     } else {
         assert(step.action_index == state.pc.at(tid));
@@ -1334,16 +1431,32 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         advance_pc(program, state, tid);
         break;
     case ActionKind::Flush: {
-        assert(state.memory_model == MemoryModel::TSO);
-        auto& buffer = state.store_buffers.at(tid);
-        assert(!buffer.empty());
-        const StoreBufferEntry entry = buffer.front();
-        buffer.pop_front();
+        assert(is_buffered_memory_model(state.memory_model));
+        StoreBufferEntry entry;
+        if (state.memory_model == MemoryModel::TSO) {
+            auto& buffer = state.store_buffers.at(tid);
+            assert(!buffer.empty());
+            entry = buffer.front();
+            buffer.pop_front();
+        } else {
+            assert(step.flush_address.has_value());
+            assert(*step.flush_address < state.flush_addresses.size());
+            const std::string& address = state.flush_addresses.at(*step.flush_address);
+            auto& buffers = state.pso_store_buffers.at(tid);
+            const auto pending = buffers.find(address);
+            assert(pending != buffers.end());
+            assert(!pending->second.empty());
+            entry = StoreBufferEntry{address, pending->second.front()};
+            pending->second.pop_front();
+            if (pending->second.empty()) {
+                buffers.erase(pending);
+            }
+        }
         state.memory_values[entry.address] = entry.value;
         Action committed;
         committed.kind = ActionKind::Flush;
         committed.address = entry.address;
-        // TSO visibility point: an enqueued plain write becomes globally
+        // Buffered-model visibility point: an enqueued plain write becomes globally
         // visible only at this flush transition, so the race endpoint and
         // vector-clock comparison use the flush step, not the earlier enqueue.
         report.race = record_write(
@@ -1368,6 +1481,8 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
             const Value value = evaluate_operand_or(state, tid, action.value, 0);
             if (state.memory_model == MemoryModel::TSO) {
                 state.store_buffers.at(tid).push_back(StoreBufferEntry{action.address, value});
+            } else if (state.memory_model == MemoryModel::PSO) {
+                state.pso_store_buffers.at(tid)[action.address].push_back(value);
             } else {
                 state.memory_values[action.address] = value;
                 report.race = record_write(
@@ -1482,6 +1597,19 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
             for (const ScheduleStep& selected : node.backtrack) {
                 const Action& candidate_action = node.enabled_transitions.at(candidate).effective_action;
                 const Action& selected_action = node.enabled_transitions.at(selected).effective_action;
+                if (candidate.thread == selected.thread &&
+                    candidate_action.kind == ActionKind::Flush &&
+                    selected_action.kind == ActionKind::Flush &&
+                    candidate_action.address != selected_action.address) {
+                    // Co-enabled PSO address drains are real scheduler
+                    // alternatives even though their direct state effects
+                    // commute. Keeping every sibling is the conservative
+                    // persistent-set hook that permits another thread to run
+                    // between them (the MP discriminator depends on this).
+                    insert_step(node.backtrack, candidate);
+                    changed = true;
+                    break;
+                }
                 if (!transitions_independent(program,
                                              candidate.thread,
                                              candidate_action,
@@ -1636,7 +1764,7 @@ void add_disabled_backtracks(const Program& program,
         const ExecutedTransition blocked{
             tid,
             effective_next_action(program, state, tid),
-            ScheduleStep{tid, state.pc.at(tid)},
+            ScheduleStep{tid, state.pc.at(tid), std::nullopt},
             state.thread_clock.at(tid),
             std::nullopt,
         };
@@ -1727,6 +1855,7 @@ void dpor_dfs(const Program& program,
         state.mutex_owner,
         state.wait_phase,
         state.store_buffers,
+        state.pso_store_buffers,
     });
 
     if (nodes.at(depth).enabled.empty()) {
@@ -1983,10 +2112,19 @@ void validate_replay_step(const Program& program,
     }
 
     if (is_flush_step(step)) {
-        if (state.memory_model != MemoryModel::TSO) {
+        if (state.memory_model == MemoryModel::SC) {
             throw invalid_schedule(step_index, "schedule names a flush step under SC");
         }
+        if (state.memory_model == MemoryModel::TSO && step.flush_address.has_value()) {
+            throw invalid_schedule(step_index, "TSO flush step includes a PSO address id");
+        }
+        if (state.memory_model == MemoryModel::PSO && !step.flush_address.has_value()) {
+            throw invalid_schedule(step_index, "PSO flush step omits its address id");
+        }
     } else {
+        if (step.flush_address.has_value()) {
+            throw invalid_schedule(step_index, "source action includes a flush address id");
+        }
         const auto& thread = program.threads.at(step.thread);
         if (step.action_index >= thread.size()) {
             std::ostringstream reason;

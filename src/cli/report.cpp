@@ -45,6 +45,16 @@ std::string endpoint_text(const model::ScheduleStep& step) {
     return output.str();
 }
 
+void print_numeric_step(std::ostream& output,
+                        const char* indentation,
+                        const model::ScheduleStep& step) {
+    output << indentation << step.thread << ' ' << step.action_index;
+    if (step.flush_address.has_value()) {
+        output << ' ' << *step.flush_address;
+    }
+    output << '\n';
+}
+
 void print_deadlock_blocker(std::ostream& output, const model::BlockedThread& blocked) {
     output << "    thread " << blocked.thread << ": ";
     switch (blocked.kind) {
@@ -67,9 +77,9 @@ void print_deadlock_blocker(std::ostream& output, const model::BlockedThread& bl
 }
 
 // The verdict and detail block show only the highest-priority bug kind, but
-// a program can exhibit several kinds at once (e.g. the TSO litmus programs
+// a program can exhibit several kinds at once (e.g. the weak-memory litmus programs
 // race by construction AND reach the relaxed-outcome assertion). Listing the
-// other kinds keeps cross-model comparisons honest at the CLI: the SC-vs-TSO
+// other kinds keeps cross-model comparisons honest at the CLI: a cross-model
 // discriminator on such programs is exactly whether 'assertion' appears here.
 void print_also_found(std::ostream& output, const model::CheckResult& result) {
     std::vector<const char*> also;
@@ -127,11 +137,11 @@ void print_bug_details(std::ostream& output, const model::CheckResult& result) {
         output << "nontermination:\n";
         output << "  stem:\n";
         for (const model::ScheduleStep& step : result.first_nontermination->stem) {
-            output << "    " << step.thread << ' ' << step.action_index << '\n';
+            print_numeric_step(output, "    ", step);
         }
         output << "  cycle:\n";
         for (const model::ScheduleStep& step : result.first_nontermination->cycle) {
-            output << "    " << step.thread << ' ' << step.action_index << '\n';
+            print_numeric_step(output, "    ", step);
         }
     }
 }
@@ -178,7 +188,7 @@ void print_trace(std::ostream& output,
 void print_schedule(std::ostream& output, const model::Schedule& schedule) {
     output << "schedule:\n";
     for (const model::ScheduleStep& step : schedule) {
-        output << "  " << step.thread << " " << step.action_index << '\n';
+        print_numeric_step(output, "  ", step);
     }
 }
 
@@ -188,6 +198,8 @@ const char* memory_model_text(model::MemoryModel memory_model) {
         return "sc";
     case model::MemoryModel::TSO:
         return "tso";
+    case model::MemoryModel::PSO:
+        return "pso";
     }
     return "unknown";
 }
