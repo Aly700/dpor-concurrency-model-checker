@@ -135,6 +135,28 @@ deferred optimal-DPOR upgrade) would buy at most 6.7% at metered scales,
 in exactly the code region where both historical bugs lived. The attempt
 stays closed — now by instrument, not estimate.
 
+## The third and fourth campaigns: weak memory, then proof of divergence
+
+Two further campaigns took the checker beyond sequential consistency and
+beyond bounded verdicts:
+
+- **TSO** — per-thread store buffers with nondeterministically scheduled
+  flush transitions, store-to-load forwarding, draining synchronization
+  actions, and a `fence` keyword. The semantics are held up by litmus
+  differentials (store-buffering's relaxed outcome reachable under TSO,
+  unreachable under SC, unreachable again with fences) and a TSO oracle
+  gate. The gallery demo is three command lines: Peterson under SC shows
+  no assertion; under TSO, `also_found: assertion` — store buffering
+  breaks mutual exclusion; fenced, it holds again.
+- **Lasso detection** — an execution that revisits an exact canonical
+  state (buffers included, clocks excluded, field audit in ADR 0016) is a
+  *theorem* that some interleaving diverges, reported with a replayable
+  stem+cycle witness validated by state equality. Gallery verdicts
+  upgraded from `clean up to bound` (a budget shrug) to `nontermination`
+  (a proof), while a growing-state litmus keeps the bound backstop
+  honest. Witnesses ship unminimized because a sound lasso-preserving
+  minimizer was not available — declined, documented, not faked.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
