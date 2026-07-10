@@ -7,6 +7,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <deque>
 #include <limits>
 #include <map>
 #include <optional>
@@ -31,9 +32,15 @@ struct AddressState {
     std::vector<MemoryAccess> atomic_accesses;
 };
 
+struct StoreBufferEntry {
+    std::string address;
+    Value value{0};
+};
+
 enum class WaitPhase { None, Waiting, Woken };
 
 struct ExecutionState {
+    MemoryModel memory_model{MemoryModel::SC};
     std::vector<std::uint32_t> pc;
     std::vector<bool> started;
     std::map<std::string, ThreadId> mutex_owner;
@@ -46,6 +53,7 @@ struct ExecutionState {
     std::map<std::string, AddressState> memory;
     std::map<std::string, Value> memory_values;
     std::map<std::string, VectorClock> atomic_location_clock;
+    std::vector<std::deque<StoreBufferEntry>> store_buffers;
     Schedule schedule;
 };
 
@@ -62,15 +70,16 @@ struct EnabledTransition {
 };
 
 struct DporNode {
-    std::vector<ThreadId> enabled;
-    std::map<ThreadId, EnabledTransition> enabled_transitions;
-    std::vector<ThreadId> backtrack;
-    std::vector<ThreadId> done;
-    std::vector<ThreadId> sleep;
+    std::vector<ScheduleStep> enabled;
+    std::map<ScheduleStep, EnabledTransition> enabled_transitions;
+    std::vector<ScheduleStep> backtrack;
+    std::vector<ScheduleStep> done;
+    std::vector<ScheduleStep> sleep;
     std::vector<std::uint32_t> pc;
     std::vector<bool> started;
     std::map<std::string, ThreadId> mutex_owner;
     std::vector<WaitPhase> wait_phase;
+    std::vector<std::deque<StoreBufferEntry>> store_buffers;
 };
 
 struct ExecutedTransition {
@@ -120,8 +129,9 @@ void normalize_all_pcs(const Program& program, ExecutionState& state) {
     }
 }
 
-ExecutionState initial_state(const Program& program) {
+ExecutionState initial_state(const Program& program, MemoryModel memory_model) {
     ExecutionState state{
+        memory_model,
         std::vector<std::uint32_t>(program.threads.size(), 0),
         initially_started_threads(program),
         {},
@@ -134,6 +144,7 @@ ExecutionState initial_state(const Program& program) {
         {},
         {},
         {},
+        std::vector<std::deque<StoreBufferEntry>>(program.threads.size()),
         {},
     };
     normalize_all_pcs(program, state);
@@ -145,7 +156,9 @@ bool has_next_action(const Program& program, const ExecutionState& state, Thread
 }
 
 bool is_finished(const Program& program, const ExecutionState& state, ThreadId tid) {
-    return state.started.at(tid) && !has_next_action(program, state, tid);
+    return state.started.at(tid) &&
+           !has_next_action(program, state, tid) &&
+           (state.memory_model != MemoryModel::TSO || state.store_buffers.at(tid).empty());
 }
 
 bool all_finished(const Program& program, const ExecutionState& state) {
@@ -221,6 +234,53 @@ void set_pc(const Program& program, ExecutionState& state, ThreadId tid, std::ui
     normalize_pc(program, state, tid);
 }
 
+bool is_flush_step(const ScheduleStep& step) {
+    return step.action_index == kFlushActionIndex;
+}
+
+bool has_pending_store(const ExecutionState& state, ThreadId tid) {
+    return state.memory_model == MemoryModel::TSO && !state.store_buffers.at(tid).empty();
+}
+
+bool has_pending_store_at_node(const DporNode& node, ThreadId tid) {
+    return !node.store_buffers.at(tid).empty();
+}
+
+bool is_tso_ordered_point(const Action& action) {
+    switch (action.kind) {
+    case ActionKind::AtomicLoad:
+    case ActionKind::AtomicStore:
+    case ActionKind::AtomicRmw:
+    case ActionKind::CompareExchange:
+    case ActionKind::Fence:
+    case ActionKind::Lock:
+    case ActionKind::Unlock:
+    case ActionKind::Wait:
+    case ActionKind::Signal:
+    case ActionKind::Broadcast:
+    case ActionKind::Join:
+    case ActionKind::Spawn:
+        return true;
+    case ActionKind::Set:
+    case ActionKind::Label:
+    case ActionKind::BranchNonzero:
+    case ActionKind::Assert:
+    case ActionKind::Read:
+    case ActionKind::Write:
+    case ActionKind::Flush:
+    case ActionKind::Yield:
+        return false;
+    }
+    return false;
+}
+
+Action flush_action_for(const StoreBufferEntry& entry) {
+    Action action;
+    action.kind = ActionKind::Flush;
+    action.address = entry.address;
+    return action;
+}
+
 Action effective_next_action(const Program& program, const ExecutionState& state, ThreadId tid) {
     Action action = next_action(program, state, tid);
     if (action.kind == ActionKind::Wait && state.wait_phase.at(tid) == WaitPhase::Woken) {
@@ -252,17 +312,27 @@ bool spawn_target_is_invalid(const Program& program, ThreadId tid, const Action&
     return action.target >= program.threads.size() || action.target == tid;
 }
 
-bool is_enabled(const Program& program, const ExecutionState& state, ThreadId tid) {
+bool is_program_action_enabled(const Program& program, const ExecutionState& state, ThreadId tid) {
     if (!state.started.at(tid)) {
         return false;
     }
-    if (is_finished(program, state, tid)) {
+    if (!has_next_action(program, state, tid)) {
         return false;
     }
 
     const Action& action = next_action(program, state, tid);
+    if (state.memory_model == MemoryModel::TSO &&
+        is_tso_ordered_point(action) &&
+        has_pending_store(state, tid)) {
+        return false;
+    }
+
     switch (action.kind) {
     case ActionKind::Label:
+        return false;
+    case ActionKind::Fence:
+        return true;
+    case ActionKind::Flush:
         return false;
     case ActionKind::Lock:
         return state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
@@ -304,15 +374,34 @@ bool is_enabled(const Program& program, const ExecutionState& state, ThreadId ti
 
 bool any_enabled(const Program& program, const ExecutionState& state) {
     for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
-        if (is_enabled(program, state, tid)) {
+        if (has_pending_store(state, tid) || is_program_action_enabled(program, state, tid)) {
             return true;
         }
     }
     return false;
 }
 
-std::vector<ThreadId> enabled_threads(const Program& program, const ExecutionState& state) {
-    std::vector<ThreadId> enabled;
+std::vector<ScheduleStep> enabled_steps_for_thread(const Program& program,
+                                                   const ExecutionState& state,
+                                                   ThreadId tid) {
+    std::vector<ScheduleStep> enabled;
+    if (!state.started.at(tid)) {
+        return enabled;
+    }
+    if (is_program_action_enabled(program, state, tid)) {
+        enabled.push_back(ScheduleStep{tid, state.pc.at(tid)});
+    }
+    if (has_pending_store(state, tid)) {
+        // A pending store buffer entry always has an enabled flush transition.
+        // Therefore a thread with pc done but a nonempty buffer is unfinished
+        // and cannot create a deadlock solely by buffering.
+        enabled.push_back(ScheduleStep{tid, kFlushActionIndex});
+    }
+    return enabled;
+}
+
+std::vector<ScheduleStep> enabled_steps(const Program& program, const ExecutionState& state) {
+    std::vector<ScheduleStep> enabled;
     for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
         // INVARIANTS.md Replay/HB: Wait's two phases are represented in
         // per-thread state, not by rewriting the program. A sleeping waiter is
@@ -320,50 +409,57 @@ std::vector<ThreadId> enabled_threads(const Program& program, const ExecutionSta
         // can run under the original (thread, action_index) schedule step.
         // Join appears only when its target is finished, except invalid joins
         // stay enabled so replay reaches the modeled error deterministically.
-        if (is_enabled(program, state, tid)) {
-            enabled.push_back(tid);
-        }
+        const auto thread_steps = enabled_steps_for_thread(program, state, tid);
+        enabled.insert(enabled.end(), thread_steps.begin(), thread_steps.end());
     }
+    std::sort(enabled.begin(), enabled.end());
     return enabled;
 }
 
-std::map<ThreadId, EnabledTransition> enabled_transitions(const Program& program,
-                                                          const ExecutionState& state) {
-    std::map<ThreadId, EnabledTransition> transitions;
-    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
-        if (!is_enabled(program, state, tid)) {
-            continue;
-        }
+Action effective_action_for_step(const Program& program,
+                                 const ExecutionState& state,
+                                 const ScheduleStep& step) {
+    if (is_flush_step(step)) {
+        assert(has_pending_store(state, step.thread));
+        return flush_action_for(state.store_buffers.at(step.thread).front());
+    }
+    return effective_next_action(program, state, step.thread);
+}
+
+std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& program,
+                                                              const ExecutionState& state) {
+    std::map<ScheduleStep, EnabledTransition> transitions;
+    for (const ScheduleStep& step : enabled_steps(program, state)) {
         transitions.emplace(
-            tid,
+            step,
             EnabledTransition{
-                ScheduleStep{tid, state.pc.at(tid)},
-                effective_next_action(program, state, tid),
+                step,
+                effective_action_for_step(program, state, step),
             });
     }
     return transitions;
 }
 
-bool contains_thread(const std::vector<ThreadId>& threads, ThreadId tid) {
-    return std::binary_search(threads.begin(), threads.end(), tid);
+bool contains_step(const std::vector<ScheduleStep>& steps, const ScheduleStep& step) {
+    return std::binary_search(steps.begin(), steps.end(), step);
 }
 
-void insert_thread(std::vector<ThreadId>& threads, ThreadId tid) {
-    const auto position = std::lower_bound(threads.begin(), threads.end(), tid);
-    if (position == threads.end() || *position != tid) {
-        threads.insert(position, tid);
+void insert_step(std::vector<ScheduleStep>& steps, const ScheduleStep& step) {
+    const auto position = std::lower_bound(steps.begin(), steps.end(), step);
+    if (position == steps.end() || !(*position == step)) {
+        steps.insert(position, step);
     }
 }
 
-void remove_thread(std::vector<ThreadId>& threads, ThreadId tid) {
-    const auto position = std::lower_bound(threads.begin(), threads.end(), tid);
-    if (position != threads.end() && *position == tid) {
-        threads.erase(position);
+void remove_step(std::vector<ScheduleStep>& steps, const ScheduleStep& step) {
+    const auto position = std::lower_bound(steps.begin(), steps.end(), step);
+    if (position != steps.end() && *position == step) {
+        steps.erase(position);
     }
 }
 
 bool transition_enabled_at_node(const DporNode& node, const ExecutedTransition& transition) {
-    const auto enabled = node.enabled_transitions.find(transition.thread);
+    const auto enabled = node.enabled_transitions.find(transition.endpoint);
     return enabled != node.enabled_transitions.end() &&
            enabled->second.endpoint == transition.endpoint &&
            enabled->second.effective_action == transition.effective_action;
@@ -374,7 +470,9 @@ bool has_next_action_at_node(const Program& program, const DporNode& node, Threa
 }
 
 bool is_finished_at_node(const Program& program, const DporNode& node, ThreadId tid) {
-    return node.started.at(tid) && !has_next_action_at_node(program, node, tid);
+    return node.started.at(tid) &&
+           !has_next_action_at_node(program, node, tid) &&
+           !has_pending_store_at_node(node, tid);
 }
 
 const Action& next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
@@ -394,19 +492,24 @@ Action effective_next_action_at_node(const Program& program, const DporNode& nod
     return action;
 }
 
+std::vector<ScheduleStep> enabled_steps_for_thread_at_node(const DporNode& node, ThreadId tid) {
+    std::vector<ScheduleStep> steps;
+    for (const ScheduleStep& step : node.enabled) {
+        if (step.thread == tid) {
+            steps.push_back(step);
+        }
+    }
+    return steps;
+}
+
 bool enabled_at_node(const DporNode& node, ThreadId tid) {
-    return contains_thread(node.enabled, tid);
+    const auto steps = enabled_steps_for_thread_at_node(node, tid);
+    return !steps.empty();
 }
 
-std::vector<ThreadId> singleton_thread(ThreadId tid) {
-    std::vector<ThreadId> threads;
-    insert_thread(threads, tid);
-    return threads;
-}
-
-void append_threads(std::vector<ThreadId>& destination, const std::vector<ThreadId>& source) {
-    for (const ThreadId tid : source) {
-        insert_thread(destination, tid);
+void append_steps(std::vector<ScheduleStep>& destination, const std::vector<ScheduleStep>& source) {
+    for (const ScheduleStep& step : source) {
+        insert_step(destination, step);
     }
 }
 
@@ -440,16 +543,16 @@ bool has_remaining_wake_on(const Program& program,
     return false;
 }
 
-std::optional<std::vector<ThreadId>> enabler_heads_for_thread(const Program& program,
-                                                              const DporNode& node,
-                                                              ThreadId tid,
-                                                              std::vector<bool>& visiting);
+std::optional<std::vector<ScheduleStep>> enabler_heads_for_thread(const Program& program,
+                                                                  const DporNode& node,
+                                                                  ThreadId tid,
+                                                                  std::vector<bool>& visiting);
 
-std::optional<std::vector<ThreadId>> enabler_heads_for_spawn_target(const Program& program,
-                                                                    const DporNode& node,
-                                                                    ThreadId target,
-                                                                    std::vector<bool>& visiting) {
-    std::vector<ThreadId> heads;
+std::optional<std::vector<ScheduleStep>> enabler_heads_for_spawn_target(const Program& program,
+                                                                        const DporNode& node,
+                                                                        ThreadId target,
+                                                                        std::vector<bool>& visiting) {
+    std::vector<ScheduleStep> heads;
     for (ThreadId source = 0; source < program.threads.size(); ++source) {
         if (!has_remaining_spawn_to(program, node, source, target)) {
             continue;
@@ -459,7 +562,7 @@ std::optional<std::vector<ThreadId>> enabler_heads_for_spawn_target(const Progra
         if (!source_heads.has_value()) {
             return std::nullopt;
         }
-        append_threads(heads, *source_heads);
+        append_steps(heads, *source_heads);
     }
 
     if (heads.empty()) {
@@ -468,11 +571,11 @@ std::optional<std::vector<ThreadId>> enabler_heads_for_spawn_target(const Progra
     return heads;
 }
 
-std::optional<std::vector<ThreadId>> enabler_heads_for_waiter(const Program& program,
-                                                             const DporNode& node,
-                                                             const Action& wait_action,
-                                                             std::vector<bool>& visiting) {
-    std::vector<ThreadId> heads;
+std::optional<std::vector<ScheduleStep>> enabler_heads_for_waiter(const Program& program,
+                                                                  const DporNode& node,
+                                                                  const Action& wait_action,
+                                                                  std::vector<bool>& visiting) {
+    std::vector<ScheduleStep> heads;
     for (ThreadId source = 0; source < program.threads.size(); ++source) {
         if (!has_remaining_wake_on(program, node, source, wait_action.condition)) {
             continue;
@@ -482,7 +585,7 @@ std::optional<std::vector<ThreadId>> enabler_heads_for_waiter(const Program& pro
         if (!source_heads.has_value()) {
             return std::nullopt;
         }
-        append_threads(heads, *source_heads);
+        append_steps(heads, *source_heads);
     }
 
     if (heads.empty()) {
@@ -491,11 +594,11 @@ std::optional<std::vector<ThreadId>> enabler_heads_for_waiter(const Program& pro
     return heads;
 }
 
-std::optional<std::vector<ThreadId>> enabler_heads_for_mutex_owner(const Program& program,
-                                                                   const DporNode& node,
-                                                                   const std::string& mutex,
-                                                                   ThreadId blocked_thread,
-                                                                   std::vector<bool>& visiting) {
+std::optional<std::vector<ScheduleStep>> enabler_heads_for_mutex_owner(const Program& program,
+                                                                       const DporNode& node,
+                                                                       const std::string& mutex,
+                                                                       ThreadId blocked_thread,
+                                                                       std::vector<bool>& visiting) {
     const auto owner = node.mutex_owner.find(mutex);
     if (owner == node.mutex_owner.end() || owner->second == blocked_thread) {
         return std::nullopt;
@@ -503,10 +606,10 @@ std::optional<std::vector<ThreadId>> enabler_heads_for_mutex_owner(const Program
     return enabler_heads_for_thread(program, node, owner->second, visiting);
 }
 
-std::optional<std::vector<ThreadId>> enabler_heads_for_thread(const Program& program,
-                                                              const DporNode& node,
-                                                              ThreadId tid,
-                                                              std::vector<bool>& visiting) {
+std::optional<std::vector<ScheduleStep>> enabler_heads_for_thread(const Program& program,
+                                                                  const DporNode& node,
+                                                                  ThreadId tid,
+                                                                  std::vector<bool>& visiting) {
     if (tid >= program.threads.size()) {
         return std::nullopt;
     }
@@ -531,13 +634,14 @@ std::optional<std::vector<ThreadId>> enabler_heads_for_thread(const Program& pro
     }
 
     if (enabled_at_node(node, tid)) {
+        const auto heads = enabled_steps_for_thread_at_node(node, tid);
         clear_visiting();
-        return singleton_thread(tid);
+        return heads;
     }
 
     const Action static_action = next_action_at_node(program, node, tid);
     const Action effective_action = effective_next_action_at_node(program, node, tid);
-    std::optional<std::vector<ThreadId>> heads;
+    std::optional<std::vector<ScheduleStep>> heads;
     switch (effective_action.kind) {
     case ActionKind::Lock:
         heads = enabler_heads_for_mutex_owner(program, node, effective_action.mutex, tid, visiting);
@@ -560,9 +664,9 @@ std::optional<std::vector<ThreadId>> enabler_heads_for_thread(const Program& pro
     return heads;
 }
 
-std::optional<std::vector<ThreadId>> disabled_repair_threads(const Program& program,
-                                                             const DporNode& node,
-                                                             const ExecutedTransition& current) {
+std::optional<std::vector<ScheduleStep>> disabled_repair_steps(const Program& program,
+                                                               const DporNode& node,
+                                                               const ExecutedTransition& current) {
     if (current.thread >= program.threads.size()) {
         return std::nullopt;
     }
@@ -572,12 +676,12 @@ std::optional<std::vector<ThreadId>> disabled_repair_threads(const Program& prog
         return enabler_heads_for_spawn_target(program, node, current.thread, visiting);
     }
 
-    if (!has_next_action_at_node(program, node, current.thread)) {
-        return std::nullopt;
-    }
-
     if (node.pc.at(current.thread) < current.endpoint.action_index) {
         return enabler_heads_for_thread(program, node, current.thread, visiting);
+    }
+
+    if (!has_next_action_at_node(program, node, current.thread)) {
+        return std::nullopt;
     }
 
     if (node.pc.at(current.thread) != current.endpoint.action_index) {
@@ -606,18 +710,18 @@ std::optional<std::vector<ThreadId>> disabled_repair_threads(const Program& prog
     return std::nullopt;
 }
 
-void add_repair_threads(DporNode& node, const std::vector<ThreadId>& threads) {
-    for (const ThreadId tid : threads) {
-        if (!contains_thread(node.enabled, tid)) {
+void add_repair_steps(DporNode& node, const std::vector<ScheduleStep>& steps) {
+    for (const ScheduleStep& step : steps) {
+        if (!contains_step(node.enabled, step)) {
             continue;
         }
-        insert_thread(node.backtrack, tid);
-        remove_thread(node.sleep, tid);
+        insert_step(node.backtrack, step);
+        remove_step(node.sleep, step);
     }
 }
 
-void add_all_enabled_repair_threads(DporNode& node) {
-    add_repair_threads(node, node.enabled);
+void add_all_enabled_repair_steps(DporNode& node) {
+    add_repair_steps(node, node.enabled);
 }
 
 bool join_independent_from_transition(const Program& program,
@@ -667,10 +771,10 @@ bool transitions_independent(const Program& program,
     return independent(lhs, rhs);
 }
 
-std::optional<ThreadId> next_unexplored_backtrack(const DporNode& node) {
-    for (const ThreadId tid : node.backtrack) {
-        if (!contains_thread(node.done, tid)) {
-            return tid;
+std::optional<ScheduleStep> next_unexplored_backtrack(const DporNode& node) {
+    for (const ScheduleStep& step : node.backtrack) {
+        if (!contains_step(node.done, step)) {
+            return step;
         }
     }
     return std::nullopt;
@@ -880,10 +984,37 @@ void broadcast_waiters(ExecutionState& state, const Action& action, ThreadId sig
     }
 }
 
-StepReport execute_enabled_step(const Program& program, ExecutionState& state, ThreadId tid) {
-    const auto action_index = state.pc.at(tid);
-    const ScheduleStep endpoint{tid, action_index};
-    const Action& action = program.threads.at(tid).at(action_index);
+Value read_plain_value(const ExecutionState& state, ThreadId tid, const std::string& address) {
+    if (state.memory_model == MemoryModel::TSO) {
+        const auto& buffer = state.store_buffers.at(tid);
+        for (auto iter = buffer.rbegin(); iter != buffer.rend(); ++iter) {
+            if (iter->address == address) {
+                return iter->value;
+            }
+        }
+    }
+    const auto value = state.memory_values.find(address);
+    if (value == state.memory_values.end()) {
+        return 0;
+    }
+    return value->second;
+}
+
+StepReport execute_enabled_step(const Program& program, ExecutionState& state, const ScheduleStep& step) {
+    const ThreadId tid = step.thread;
+    const ScheduleStep endpoint = step;
+    Action flush_action;
+    const Action* action_ptr = nullptr;
+    if (is_flush_step(step)) {
+        assert(state.memory_model == MemoryModel::TSO);
+        assert(has_pending_store(state, tid));
+        flush_action = flush_action_for(state.store_buffers.at(tid).front());
+        action_ptr = &flush_action;
+    } else {
+        assert(step.action_index == state.pc.at(tid));
+        action_ptr = &program.threads.at(tid).at(step.action_index);
+    }
+    const Action& action = *action_ptr;
 
     state.schedule.push_back(endpoint);
     ++state.thread_steps.at(tid);
@@ -1067,10 +1198,32 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
                 MemoryAccess{state.thread_clock.at(tid), endpoint, true, success});
         }
         break;
+    case ActionKind::Fence:
+        advance_pc(program, state, tid);
+        break;
+    case ActionKind::Flush: {
+        assert(state.memory_model == MemoryModel::TSO);
+        auto& buffer = state.store_buffers.at(tid);
+        assert(!buffer.empty());
+        const StoreBufferEntry entry = buffer.front();
+        buffer.pop_front();
+        state.memory_values[entry.address] = entry.value;
+        Action committed;
+        committed.kind = ActionKind::Flush;
+        committed.address = entry.address;
+        // TSO visibility point: an enqueued plain write becomes globally
+        // visible only at this flush transition, so the race endpoint and
+        // vector-clock comparison use the flush step, not the earlier enqueue.
+        report.race = record_write(
+            state,
+            committed,
+            MemoryAccess{state.thread_clock.at(tid), endpoint, false, true});
+        break;
+    }
     case ActionKind::Read:
         advance_pc(program, state, tid);
         if (!action.address.empty()) {
-            write_register(state, tid, action.destination, state.memory_values[action.address]);
+            write_register(state, tid, action.destination, read_plain_value(state, tid, action.address));
             report.race = record_read(
                 state,
                 action,
@@ -1080,11 +1233,16 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, T
     case ActionKind::Write:
         advance_pc(program, state, tid);
         if (!action.address.empty()) {
-            state.memory_values[action.address] = evaluate_operand_or(state, tid, action.value, 0);
-            report.race = record_write(
-                state,
-                action,
-                MemoryAccess{state.thread_clock.at(tid), endpoint, false, true});
+            const Value value = evaluate_operand_or(state, tid, action.value, 0);
+            if (state.memory_model == MemoryModel::TSO) {
+                state.store_buffers.at(tid).push_back(StoreBufferEntry{action.address, value});
+            } else {
+                state.memory_values[action.address] = value;
+                report.race = record_write(
+                    state,
+                    action,
+                    MemoryAccess{state.thread_clock.at(tid), endpoint, false, true});
+            }
         }
         break;
     case ActionKind::Yield:
@@ -1161,6 +1319,7 @@ void record_step_report(CheckResult& result, const StepReport& report) {
 }
 
 void initialize_dpor_backtrack(const Program& program, const ExecutionState& state, DporNode& node) {
+    (void)state;
     if (!node.backtrack.empty() || node.enabled.empty()) {
         return;
     }
@@ -1168,7 +1327,7 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
     const auto first_awake = std::find_if(
         node.enabled.begin(),
         node.enabled.end(),
-        [&](ThreadId tid) { return !contains_thread(node.sleep, tid); });
+        [&](const ScheduleStep& step) { return !contains_step(node.sleep, step); });
     if (first_awake == node.enabled.end()) {
         // Sleep sets interact with the max_schedules cutoff only by reducing
         // the number of representative schedules counted. If every enabled
@@ -1177,30 +1336,32 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
         return;
     }
 
-    insert_thread(node.backtrack, *first_awake);
+    insert_step(node.backtrack, *first_awake);
 
     bool changed = true;
     while (changed) {
         changed = false;
-        for (const ThreadId candidate : node.enabled) {
-            if (contains_thread(node.backtrack, candidate) ||
-                contains_thread(node.sleep, candidate)) {
+        for (const ScheduleStep& candidate : node.enabled) {
+            if (contains_step(node.backtrack, candidate) ||
+                contains_step(node.sleep, candidate)) {
                 continue;
             }
 
-            for (const ThreadId selected : node.backtrack) {
+            for (const ScheduleStep& selected : node.backtrack) {
+                const Action& candidate_action = node.enabled_transitions.at(candidate).effective_action;
+                const Action& selected_action = node.enabled_transitions.at(selected).effective_action;
                 if (!transitions_independent(program,
-                                             candidate,
-                                             effective_next_action(program, state, candidate),
-                                             selected,
-                                             effective_next_action(program, state, selected))) {
+                                             candidate.thread,
+                                             candidate_action,
+                                             selected.thread,
+                                             selected_action)) {
                     // INVARIANTS.md Soundness/Independence: an enabled
                     // transition is pruned from the initial persistent set
                     // only when the transition predicate says it commutes
                     // with every selected enabled transition. A dependent
                     // enabled transition is kept so a distinct bug class is
                     // not skipped.
-                    insert_thread(node.backtrack, candidate);
+                    insert_step(node.backtrack, candidate);
                     changed = true;
                     break;
                 }
@@ -1291,14 +1452,14 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
         // added inductively when exploration reaches those prefixes, which
         // avoids the old conservative "every dependent prefix" explosion
         // without weakening INVARIANTS.md Soundness.
-        insert_thread(backtrack_point.backtrack, current.thread);
-        remove_thread(backtrack_point.sleep, current.thread);
+        insert_step(backtrack_point.backtrack, current.endpoint);
+        remove_step(backtrack_point.sleep, current.endpoint);
         return;
     }
 
     for (const std::size_t disabled_prefix : disabled_dependent_prefixes) {
         DporNode& backtrack_point = nodes.at(disabled_prefix);
-        if (const auto repair_threads = disabled_repair_threads(program, backtrack_point, current)) {
+        if (const auto repair_steps = disabled_repair_steps(program, backtrack_point, current)) {
             // INVARIANTS.md Soundness/Enabledness: when the disabled
             // transition's concrete enabler chain is known at this prefix,
             // only the first enabled heads of that chain can make the later
@@ -1306,13 +1467,13 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
             // Omitted enabled threads do not start the missing thread, finish
             // the join target, or wake the sleeping waiter; independent bug
             // classes involving them remain covered by normal DPOR repairs.
-            add_repair_threads(backtrack_point, *repair_threads);
+            add_repair_steps(backtrack_point, *repair_steps);
         } else {
             // Conservative fallback for blocked locks, woken reacquires, and
             // any chain we cannot compute. The later effective transition
             // could not be scheduled here, so add every enabled thread just as
             // ADR 0010 required.
-            add_all_enabled_repair_threads(backtrack_point);
+            add_all_enabled_repair_steps(backtrack_point);
         }
     }
 }
@@ -1332,7 +1493,8 @@ void add_disabled_backtracks(const Program& program,
                              std::vector<DporNode>& nodes,
                              const std::vector<ExecutedTransition>& trace) {
     for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
-        if (is_finished(program, state, tid) || is_enabled(program, state, tid)) {
+        if (is_finished(program, state, tid) ||
+            !enabled_steps_for_thread(program, state, tid).empty()) {
             continue;
         }
         if (!has_next_action(program, state, tid)) {
@@ -1359,19 +1521,24 @@ void add_disabled_backtracks(const Program& program,
     }
 }
 
-std::vector<ThreadId> inherited_sleep_set(const Program& program,
-                                          const ExecutionState& state_after_transition,
-                                          const DporNode& parent,
-                                          const ExecutedTransition& transition) {
-    std::vector<ThreadId> inherited;
-    for (const ThreadId tid : parent.sleep) {
-        if (tid == transition.thread || !is_enabled(program, state_after_transition, tid)) {
+std::vector<ScheduleStep> inherited_sleep_set(const Program& program,
+                                              const ExecutionState& state_after_transition,
+                                              const DporNode& parent,
+                                              const ExecutedTransition& transition) {
+    std::vector<ScheduleStep> inherited;
+    const auto child_transitions = enabled_transitions(program, state_after_transition);
+    for (const ScheduleStep& slept : parent.sleep) {
+        if (slept == transition.endpoint) {
+            continue;
+        }
+        const auto child = child_transitions.find(slept);
+        if (child == child_transitions.end()) {
             continue;
         }
 
-        const Action slept_action = effective_next_action(program, state_after_transition, tid);
+        const Action& slept_action = child->second.effective_action;
         if (transitions_independent(program,
-                                    tid,
+                                    slept.thread,
                                     slept_action,
                                     transition.thread,
                                     transition.effective_action)) {
@@ -1380,7 +1547,7 @@ std::vector<ThreadId> inherited_sleep_set(const Program& program,
             // with the transition just executed. If it is dependent, it must
             // be removed so the child prefix can keep a representative for any
             // newly distinct Mazurkiewicz class.
-            insert_thread(inherited, tid);
+            insert_step(inherited, slept);
         }
     }
     return inherited;
@@ -1402,14 +1569,14 @@ void dpor_dfs(const Program& program,
               std::size_t step_bound,
               std::vector<DporNode>& nodes,
               std::vector<ExecutedTransition>& trace,
-              std::vector<ThreadId> sleep_set) {
+              std::vector<ScheduleStep> sleep_set) {
     if (result.schedules_explored >= max_schedules) {
         return;
     }
 
     const auto depth = nodes.size();
     nodes.push_back(DporNode{
-        enabled_threads(program, state),
+        enabled_steps(program, state),
         enabled_transitions(program, state),
         {},
         {},
@@ -1418,6 +1585,7 @@ void dpor_dfs(const Program& program,
         state.started,
         state.mutex_owner,
         state.wait_phase,
+        state.store_buffers,
     });
 
     if (nodes.at(depth).enabled.empty()) {
@@ -1449,16 +1617,16 @@ void dpor_dfs(const Program& program,
     }
 
     while (result.schedules_explored < max_schedules) {
-        const std::optional<ThreadId> next_tid = next_unexplored_backtrack(nodes.at(depth));
-        if (!next_tid.has_value()) {
+        const std::optional<ScheduleStep> next_step = next_unexplored_backtrack(nodes.at(depth));
+        if (!next_step.has_value()) {
             break;
         }
 
-        insert_thread(nodes.at(depth).done, *next_tid);
-        if (!contains_thread(nodes.at(depth).enabled, *next_tid)) {
+        insert_step(nodes.at(depth).done, *next_step);
+        if (!contains_step(nodes.at(depth).enabled, *next_step)) {
             continue;
         }
-        if (contains_thread(nodes.at(depth).sleep, *next_tid)) {
+        if (contains_step(nodes.at(depth).sleep, *next_step)) {
             // Sleep-blocked prefixes are not counted as explored schedules:
             // the schedule budget applies to representatives that actually
             // execute. Choice order remains deterministic because slept
@@ -1466,26 +1634,25 @@ void dpor_dfs(const Program& program,
             continue;
         }
 
-        if (step_bound_reached(state, *next_tid, step_bound)) {
+        if (step_bound_reached(state, next_step->thread, step_bound)) {
             nodes.at(depth).sleep.clear();
-            for (const ThreadId enabled : nodes.at(depth).enabled) {
-                insert_thread(nodes.at(depth).backtrack, enabled);
+            for (const ScheduleStep& enabled : nodes.at(depth).enabled) {
+                insert_step(nodes.at(depth).backtrack, enabled);
             }
             record_bound_exceeded(result);
-            insert_thread(nodes.at(depth).sleep, *next_tid);
+            insert_step(nodes.at(depth).sleep, *next_step);
             continue;
         }
 
-        const auto action_index = state.pc.at(*next_tid);
-        const Action effective_action = effective_next_action(program, state, *next_tid);
+        const Action effective_action = effective_action_for_step(program, state, *next_step);
 
         ExecutionState next = state;
-        const StepReport step_report = execute_enabled_step(program, next, *next_tid);
+        const StepReport step_report = execute_enabled_step(program, next, *next_step);
         const ExecutedTransition transition{
-            *next_tid,
+            next_step->thread,
             effective_action,
-            ScheduleStep{*next_tid, action_index},
-            next.thread_clock.at(*next_tid),
+            *next_step,
+            next.thread_clock.at(next_step->thread),
             step_report.spawned_thread,
         };
         trace.push_back(transition);
@@ -1502,8 +1669,8 @@ void dpor_dfs(const Program& program,
             // errors, or assertions reachable before it still have a
             // representative schedule.
             nodes.at(depth).sleep.clear();
-            for (const ThreadId enabled : nodes.at(depth).enabled) {
-                insert_thread(nodes.at(depth).backtrack, enabled);
+            for (const ScheduleStep& enabled : nodes.at(depth).enabled) {
+                insert_step(nodes.at(depth).backtrack, enabled);
             }
             ++result.schedules_explored;
         } else {
@@ -1512,7 +1679,7 @@ void dpor_dfs(const Program& program,
             // The initial persistent set and dynamic backtrack additions above
             // omit an alternative solely after the transition predicate
             // justifies commuting it with the representative transition.
-            std::vector<ThreadId> child_sleep =
+            std::vector<ScheduleStep> child_sleep =
                 inherited_sleep_set(program, next, nodes.at(depth), transition);
             dpor_dfs(program,
                      std::move(next),
@@ -1525,7 +1692,7 @@ void dpor_dfs(const Program& program,
         }
 
         trace.pop_back();
-        insert_thread(nodes.at(depth).sleep, *next_tid);
+        insert_step(nodes.at(depth).sleep, *next_step);
     }
 
     nodes.pop_back();
@@ -1541,13 +1708,9 @@ void dfs(const Program& program,
     }
 
     bool explored_child = false;
-    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
-        if (!is_enabled(program, state, tid)) {
-            continue;
-        }
-
+    for (const ScheduleStep& step : enabled_steps(program, state)) {
         explored_child = true;
-        if (step_bound_reached(state, tid, step_bound)) {
+        if (step_bound_reached(state, step.thread, step_bound)) {
             record_bound_exceeded(result);
             if (result.schedules_explored >= max_schedules) {
                 return;
@@ -1556,7 +1719,7 @@ void dfs(const Program& program,
         }
 
         ExecutionState next = state;
-        const StepReport step_report = execute_enabled_step(program, next, tid);
+        const StepReport step_report = execute_enabled_step(program, next, step);
         record_step_report(result, step_report);
         if (step_report.error.has_value() || step_report.assertion.has_value()) {
             ++result.schedules_explored;
@@ -1589,15 +1752,11 @@ void collect_naive_schedules_dfs(const Program& program,
     }
 
     bool explored_child = false;
-    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
-        if (!is_enabled(program, state, tid)) {
-            continue;
-        }
-
+    for (const ScheduleStep& step : enabled_steps(program, state)) {
         explored_child = true;
-        if (step_bound_reached(state, tid, step_bound)) {
+        if (step_bound_reached(state, step.thread, step_bound)) {
             Schedule bounded = state.schedule;
-            bounded.push_back(ScheduleStep{tid, state.pc.at(tid)});
+            bounded.push_back(step);
             schedules.push_back(std::move(bounded));
             if (schedules.size() >= max_schedules) {
                 return;
@@ -1606,7 +1765,7 @@ void collect_naive_schedules_dfs(const Program& program,
         }
 
         ExecutionState next = state;
-        const StepReport step_report = execute_enabled_step(program, next, tid);
+        const StepReport step_report = execute_enabled_step(program, next, step);
         if (step_report.error.has_value() || step_report.assertion.has_value()) {
             schedules.push_back(next.schedule);
         } else {
@@ -1639,32 +1798,41 @@ void validate_replay_step(const Program& program,
         throw invalid_schedule(step_index, reason.str());
     }
 
-    const auto& thread = program.threads.at(step.thread);
-    if (step.action_index >= thread.size()) {
-        std::ostringstream reason;
-        reason << "schedule names out-of-range action " << step.action_index
-               << " for thread " << step.thread;
-        throw invalid_schedule(step_index, reason.str());
+    if (is_flush_step(step)) {
+        if (state.memory_model != MemoryModel::TSO) {
+            throw invalid_schedule(step_index, "schedule names a flush step under SC");
+        }
+    } else {
+        const auto& thread = program.threads.at(step.thread);
+        if (step.action_index >= thread.size()) {
+            std::ostringstream reason;
+            reason << "schedule names out-of-range action " << step.action_index
+                   << " for thread " << step.thread;
+            throw invalid_schedule(step_index, reason.str());
+        }
     }
 
-    const auto expected_action = state.pc.at(step.thread);
-    if (step.action_index != expected_action) {
+    if (!is_flush_step(step) && step.action_index != state.pc.at(step.thread)) {
         std::ostringstream reason;
         reason << "schedule names action " << step.action_index << " for thread " << step.thread
-               << " but the next action is " << expected_action;
+               << " but the next action is " << state.pc.at(step.thread);
         throw invalid_schedule(step_index, reason.str());
     }
 
-    if (!is_enabled(program, state, step.thread)) {
+    const auto transitions = enabled_transitions(program, state);
+    if (transitions.find(step) == transitions.end()) {
         std::ostringstream reason;
         reason << "schedule names a disabled action for thread " << step.thread;
         throw invalid_schedule(step_index, reason.str());
     }
 }
 
-CheckResult replay_schedule(const Program& program, const Schedule& schedule, std::size_t step_bound) {
+CheckResult replay_schedule(const Program& program,
+                            const Schedule& schedule,
+                            std::size_t step_bound,
+                            MemoryModel memory_model) {
     CheckResult result;
-    ExecutionState state = initial_state(program);
+    ExecutionState state = initial_state(program, memory_model);
 
     for (std::size_t i = 0; i < schedule.size(); ++i) {
         validate_replay_step(program, state, schedule[i], i);
@@ -1675,7 +1843,7 @@ CheckResult replay_schedule(const Program& program, const Schedule& schedule, st
             record_bound_exceeded(result);
             return result;
         }
-        const StepReport step_report = execute_enabled_step(program, state, schedule[i].thread);
+        const StepReport step_report = execute_enabled_step(program, state, schedule[i]);
         record_step_report(result, step_report);
         if (step_report.error.has_value() || step_report.assertion.has_value()) {
             if (i + 1 < schedule.size()) {
@@ -1698,9 +1866,10 @@ CheckResult replay_schedule(const Program& program, const Schedule& schedule, st
 
 std::vector<EffectiveScheduleStep> replay_effective_trace(const Program& program,
                                                           const Schedule& schedule,
-                                                          std::size_t step_bound) {
+                                                          std::size_t step_bound,
+                                                          MemoryModel memory_model) {
     std::vector<EffectiveScheduleStep> trace;
-    ExecutionState state = initial_state(program);
+    ExecutionState state = initial_state(program, memory_model);
 
     for (std::size_t i = 0; i < schedule.size(); ++i) {
         validate_replay_step(program, state, schedule[i], i);
@@ -1713,10 +1882,10 @@ std::vector<EffectiveScheduleStep> replay_effective_trace(const Program& program
 
         trace.push_back(EffectiveScheduleStep{
             schedule[i],
-            effective_next_action(program, state, schedule[i].thread),
+            effective_action_for_step(program, state, schedule[i]),
         });
 
-        const StepReport step_report = execute_enabled_step(program, state, schedule[i].thread);
+        const StepReport step_report = execute_enabled_step(program, state, schedule[i]);
         if (step_report.error.has_value() || step_report.assertion.has_value()) {
             if (i + 1 < schedule.size()) {
                 throw invalid_schedule(i + 1, "schedule continues after a terminal execution report");
@@ -1893,7 +2062,8 @@ std::optional<std::size_t> last_step_index_for_thread(const Schedule& schedule, 
 Schedule minimize_schedule_for_identities(const Program& program,
                                           const Schedule& schedule,
                                           const BugIdentitySet& target,
-                                          std::size_t step_bound) {
+                                          std::size_t step_bound,
+                                          MemoryModel memory_model) {
     Schedule minimized = schedule;
     bool changed = true;
     while (changed) {
@@ -1913,7 +2083,7 @@ Schedule minimize_schedule_for_identities(const Program& program,
             candidate.erase(candidate.begin() + static_cast<std::ptrdiff_t>(*last_step_index));
 
             try {
-                const CheckResult replayed = replay_schedule(program, candidate, step_bound);
+                const CheckResult replayed = replay_schedule(program, candidate, step_bound, memory_model);
                 if (reproduces_identities(replayed, target)) {
                     minimized = std::move(candidate);
                     changed = true;
@@ -1930,12 +2100,14 @@ Schedule minimize_schedule_for_identities(const Program& program,
 
 RaceReport minimized_race_report(const Program& program,
                                  const RaceReport& report,
-                                 std::size_t step_bound) {
+                                 std::size_t step_bound,
+                                 MemoryModel memory_model) {
     BugIdentitySet target;
     target.race = identity_of(report);
 
-    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target, step_bound);
-    const CheckResult replayed = replay_schedule(program, minimized, step_bound);
+    const Schedule minimized =
+        minimize_schedule_for_identities(program, report.schedule, target, step_bound, memory_model);
+    const CheckResult replayed = replay_schedule(program, minimized, step_bound, memory_model);
     if (!reproduces_identities(replayed, target) || !replayed.first_race.has_value()) {
         throw std::logic_error("race schedule minimization failed to preserve bug identity");
     }
@@ -1944,12 +2116,14 @@ RaceReport minimized_race_report(const Program& program,
 
 DeadlockReport minimized_deadlock_report(const Program& program,
                                          const DeadlockReport& report,
-                                         std::size_t step_bound) {
+                                         std::size_t step_bound,
+                                         MemoryModel memory_model) {
     BugIdentitySet target;
     target.deadlock = identity_of(report);
 
-    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target, step_bound);
-    const CheckResult replayed = replay_schedule(program, minimized, step_bound);
+    const Schedule minimized =
+        minimize_schedule_for_identities(program, report.schedule, target, step_bound, memory_model);
+    const CheckResult replayed = replay_schedule(program, minimized, step_bound, memory_model);
     if (!reproduces_identities(replayed, target) || !replayed.first_deadlock.has_value()) {
         throw std::logic_error("deadlock schedule minimization failed to preserve bug identity");
     }
@@ -1958,12 +2132,14 @@ DeadlockReport minimized_deadlock_report(const Program& program,
 
 ModelErrorReport minimized_error_report(const Program& program,
                                         const ModelErrorReport& report,
-                                        std::size_t step_bound) {
+                                        std::size_t step_bound,
+                                        MemoryModel memory_model) {
     BugIdentitySet target;
     target.error = identity_of(report);
 
-    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target, step_bound);
-    const CheckResult replayed = replay_schedule(program, minimized, step_bound);
+    const Schedule minimized =
+        minimize_schedule_for_identities(program, report.schedule, target, step_bound, memory_model);
+    const CheckResult replayed = replay_schedule(program, minimized, step_bound, memory_model);
     if (!reproduces_identities(replayed, target) || !replayed.first_error.has_value()) {
         throw std::logic_error("error schedule minimization failed to preserve bug identity");
     }
@@ -1972,37 +2148,44 @@ ModelErrorReport minimized_error_report(const Program& program,
 
 AssertionFailureReport minimized_assertion_report(const Program& program,
                                                   const AssertionFailureReport& report,
-                                                  std::size_t step_bound) {
+                                                  std::size_t step_bound,
+                                                  MemoryModel memory_model) {
     BugIdentitySet target;
     target.assertion = identity_of(report);
 
-    const Schedule minimized = minimize_schedule_for_identities(program, report.schedule, target, step_bound);
-    const CheckResult replayed = replay_schedule(program, minimized, step_bound);
+    const Schedule minimized =
+        minimize_schedule_for_identities(program, report.schedule, target, step_bound, memory_model);
+    const CheckResult replayed = replay_schedule(program, minimized, step_bound, memory_model);
     if (!reproduces_identities(replayed, target) || !replayed.first_assertion.has_value()) {
         throw std::logic_error("assertion schedule minimization failed to preserve bug identity");
     }
     return *replayed.first_assertion;
 }
 
-void minimize_result_reports(const Program& program, CheckResult& result, std::size_t step_bound) {
+void minimize_result_reports(const Program& program,
+                             CheckResult& result,
+                             std::size_t step_bound,
+                             MemoryModel memory_model) {
     if (result.first_race.has_value()) {
-        result.first_race = minimized_race_report(program, *result.first_race, step_bound);
+        result.first_race = minimized_race_report(program, *result.first_race, step_bound, memory_model);
     }
     if (result.first_deadlock.has_value()) {
-        result.first_deadlock = minimized_deadlock_report(program, *result.first_deadlock, step_bound);
+        result.first_deadlock =
+            minimized_deadlock_report(program, *result.first_deadlock, step_bound, memory_model);
     }
     if (result.first_error.has_value()) {
-        result.first_error = minimized_error_report(program, *result.first_error, step_bound);
+        result.first_error = minimized_error_report(program, *result.first_error, step_bound, memory_model);
     }
     if (result.first_assertion.has_value()) {
-        result.first_assertion = minimized_assertion_report(program, *result.first_assertion, step_bound);
+        result.first_assertion =
+            minimized_assertion_report(program, *result.first_assertion, step_bound, memory_model);
     }
 }
 
 } // namespace
 
-ModelChecker::ModelChecker(Program program, std::size_t step_bound)
-    : program_(std::move(program)), step_bound_(step_bound) {
+ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel memory_model)
+    : program_(std::move(program)), step_bound_(step_bound), memory_model_(memory_model) {
     if (step_bound_ == 0) {
         throw std::invalid_argument("step bound must be greater than zero");
     }
@@ -2010,9 +2193,9 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound)
 
 CheckResult ModelChecker::explore_naive(std::size_t max_schedules) const {
     CheckResult result;
-    dfs(program_, initial_state(program_), result, max_schedules, step_bound_);
+    dfs(program_, initial_state(program_, memory_model_), result, max_schedules, step_bound_);
     result.exploration_capped = result.schedules_explored >= max_schedules;
-    minimize_result_reports(program_, result, step_bound_);
+    minimize_result_reports(program_, result, step_bound_, memory_model_);
     return result;
 }
 
@@ -2020,24 +2203,25 @@ CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
     CheckResult result;
     std::vector<DporNode> nodes;
     std::vector<ExecutedTransition> trace;
-    dpor_dfs(program_, initial_state(program_), result, max_schedules, step_bound_, nodes, trace, {});
+    dpor_dfs(program_, initial_state(program_, memory_model_), result, max_schedules, step_bound_, nodes, trace, {});
     result.exploration_capped = result.schedules_explored >= max_schedules;
-    minimize_result_reports(program_, result, step_bound_);
+    minimize_result_reports(program_, result, step_bound_, memory_model_);
     return result;
 }
 
 CheckResult ModelChecker::replay(const Schedule& schedule) const {
-    return replay_schedule(program_, schedule, step_bound_);
+    return replay_schedule(program_, schedule, step_bound_, memory_model_);
 }
 
 std::vector<Schedule> ModelChecker::collect_naive_schedules(std::size_t max_schedules) const {
     std::vector<Schedule> schedules;
-    collect_naive_schedules_dfs(program_, initial_state(program_), schedules, max_schedules, step_bound_);
+    collect_naive_schedules_dfs(
+        program_, initial_state(program_, memory_model_), schedules, max_schedules, step_bound_);
     return schedules;
 }
 
 std::vector<EffectiveScheduleStep> ModelChecker::replay_effective_trace(const Schedule& schedule) const {
-    return model::replay_effective_trace(program_, schedule, step_bound_);
+    return model::replay_effective_trace(program_, schedule, step_bound_, memory_model_);
 }
 
 bool ModelChecker::dpor_transitions_independent(ThreadId lhs_thread,
@@ -2048,12 +2232,12 @@ bool ModelChecker::dpor_transitions_independent(ThreadId lhs_thread,
 }
 
 Schedule ModelChecker::minimize_schedule(const Schedule& schedule) const {
-    const CheckResult replayed = replay_schedule(program_, schedule, step_bound_);
+    const CheckResult replayed = replay_schedule(program_, schedule, step_bound_, memory_model_);
     const BugIdentitySet target = identities_of(replayed);
     if (empty(target)) {
         return schedule;
     }
-    return minimize_schedule_for_identities(program_, schedule, target, step_bound_);
+    return minimize_schedule_for_identities(program_, schedule, target, step_bound_, memory_model_);
 }
 
 } // namespace model

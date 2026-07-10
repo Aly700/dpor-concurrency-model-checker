@@ -1,0 +1,220 @@
+#include "model/checker.hpp"
+
+#include <algorithm>
+#include <array>
+#include <cassert>
+#include <cstddef>
+#include <cstdint>
+#include <iostream>
+#include <sstream>
+#include <string>
+#include <utility>
+
+namespace {
+
+model::Action read(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::Read;
+    action.address = std::move(address);
+    return action;
+}
+
+model::Action write(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::Write;
+    action.address = std::move(address);
+    return action;
+}
+
+model::Action atomic_load(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::AtomicLoad;
+    action.address = std::move(address);
+    return action;
+}
+
+model::Action atomic_store(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::AtomicStore;
+    action.address = std::move(address);
+    return action;
+}
+
+model::Action lock(std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Lock;
+    action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action unlock(std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Unlock;
+    action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action fence() {
+    model::Action action;
+    action.kind = model::ActionKind::Fence;
+    return action;
+}
+
+const std::array<model::Action, 11> kActions{
+    read("x"),
+    read("y"),
+    write("x"),
+    write("y"),
+    atomic_load("x"),
+    atomic_load("y"),
+    atomic_store("x"),
+    atomic_store("y"),
+    lock("m"),
+    unlock("m"),
+    fence(),
+};
+
+model::Program two_thread_program(std::uint64_t encoded, std::size_t lhs_length, std::size_t rhs_length) {
+    model::Program program;
+    program.threads.resize(2);
+    for (std::size_t i = 0; i < lhs_length; ++i) {
+        program.threads[0].push_back(kActions.at(encoded % kActions.size()));
+        encoded /= kActions.size();
+    }
+    for (std::size_t i = 0; i < rhs_length; ++i) {
+        program.threads[1].push_back(kActions.at(encoded % kActions.size()));
+        encoded /= kActions.size();
+    }
+    return program;
+}
+
+std::uint64_t pow_actions(std::size_t exponent) {
+    std::uint64_t result = 1;
+    for (std::size_t i = 0; i < exponent; ++i) {
+        result *= kActions.size();
+    }
+    return result;
+}
+
+bool bound_hit(const model::CheckResult& result) {
+    return result.bound_exceeded_executions > 0;
+}
+
+void assert_replays_dpor_report(const model::ModelChecker& checker, const model::CheckResult& dpor) {
+    if (dpor.first_race.has_value()) {
+        const auto replay = checker.replay(dpor.first_race->schedule);
+        assert(replay.first_race.has_value());
+        assert(*replay.first_race == *dpor.first_race);
+    }
+    if (dpor.first_deadlock.has_value()) {
+        const auto replay = checker.replay(dpor.first_deadlock->schedule);
+        assert(replay.first_deadlock.has_value());
+        assert(*replay.first_deadlock == *dpor.first_deadlock);
+    }
+    if (dpor.first_error.has_value()) {
+        const auto replay = checker.replay(dpor.first_error->schedule);
+        assert(replay.first_error.has_value());
+        assert(*replay.first_error == *dpor.first_error);
+    }
+    if (dpor.first_assertion.has_value()) {
+        const auto replay = checker.replay(dpor.first_assertion->schedule);
+        assert(replay.first_assertion.has_value());
+        assert(*replay.first_assertion == *dpor.first_assertion);
+    }
+}
+
+std::string action_string(const model::Action& action) {
+    std::ostringstream out;
+    out << static_cast<int>(action.kind);
+    if (!action.address.empty()) {
+        out << " " << action.address;
+    }
+    if (!action.mutex.empty()) {
+        out << " " << action.mutex;
+    }
+    return out.str();
+}
+
+void print_program(const model::Program& program) {
+    for (std::size_t tid = 0; tid < program.threads.size(); ++tid) {
+        std::cerr << "  t" << tid << ':';
+        for (const auto& action : program.threads[tid]) {
+            std::cerr << " [" << action_string(action) << ']';
+        }
+        std::cerr << '\n';
+    }
+}
+
+void cross_validate_program(const model::Program& program,
+                            std::size_t& programs_checked,
+                            std::size_t& naive_total,
+                            std::size_t& dpor_total) {
+    constexpr std::size_t kStepBound = 20;
+    constexpr std::size_t kMaxSchedules = 50000;
+    const model::ModelChecker checker(program, kStepBound, model::MemoryModel::TSO);
+    const auto naive = checker.explore_naive(kMaxSchedules);
+    const auto dpor = checker.explore_dpor(kMaxSchedules);
+
+    if (naive.exploration_capped || dpor.exploration_capped) {
+        return;
+    }
+
+    if (dpor.first_race.has_value() != naive.first_race.has_value() ||
+        dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
+        dpor.first_error.has_value() != naive.first_error.has_value() ||
+        dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        bound_hit(dpor) != bound_hit(naive) ||
+        dpor.schedules_explored > naive.schedules_explored) {
+        std::cerr << "TSO oracle mismatch\n";
+        print_program(program);
+        std::cerr << "  naive schedules=" << naive.schedules_explored
+                  << " race=" << naive.first_race.has_value()
+                  << " deadlock=" << naive.first_deadlock.has_value()
+                  << " error=" << naive.first_error.has_value()
+                  << " assertion=" << naive.first_assertion.has_value()
+                  << " bound=" << bound_hit(naive) << '\n';
+        std::cerr << "  dpor schedules=" << dpor.schedules_explored
+                  << " race=" << dpor.first_race.has_value()
+                  << " deadlock=" << dpor.first_deadlock.has_value()
+                  << " error=" << dpor.first_error.has_value()
+                  << " assertion=" << dpor.first_assertion.has_value()
+                  << " bound=" << bound_hit(dpor) << '\n';
+        assert(false && "TSO oracle mismatch");
+    }
+
+    assert_replays_dpor_report(checker, dpor);
+    ++programs_checked;
+    naive_total += naive.schedules_explored;
+    dpor_total += dpor.schedules_explored;
+}
+
+} // namespace
+
+int main() {
+    std::size_t programs_checked = 0;
+    std::size_t naive_total = 0;
+    std::size_t dpor_total = 0;
+
+    constexpr std::uint64_t kProgramsPerLengthPairCap = 1024;
+    for (std::size_t lhs_length = 0; lhs_length <= 3; ++lhs_length) {
+        for (std::size_t rhs_length = 0; rhs_length <= 3; ++rhs_length) {
+            const auto count = pow_actions(lhs_length + rhs_length);
+            const auto samples = std::min<std::uint64_t>(count, kProgramsPerLengthPairCap);
+            for (std::uint64_t sample = 0; sample < samples; ++sample) {
+                const auto encoded = count == samples ? sample : (sample * count) / samples;
+                cross_validate_program(
+                    two_thread_program(encoded, lhs_length, rhs_length),
+                    programs_checked,
+                    naive_total,
+                    dpor_total);
+            }
+        }
+    }
+
+    std::cout << "tso_oracle: programs checked=" << programs_checked
+              << " alphabet=" << kActions.size()
+              << " cap_per_length_pair=" << kProgramsPerLengthPairCap
+              << " naive schedules total=" << naive_total
+              << " dpor schedules total=" << dpor_total << '\n';
+    return 0;
+}

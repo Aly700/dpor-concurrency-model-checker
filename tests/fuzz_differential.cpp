@@ -34,6 +34,7 @@ enum class Choice {
     Broadcast,
     Spawn,
     Join,
+    Fence,
     Yield
 };
 
@@ -51,6 +52,7 @@ struct FuzzStats {
     std::size_t error{0};
     std::size_t assertion{0};
     std::size_t bound_hit{0};
+    std::size_t tso{0};
     std::size_t naive_schedules{0};
     std::size_t dpor_schedules{0};
 };
@@ -143,6 +145,12 @@ model::Action spawn(model::ThreadId target) {
 model::Action yield() {
     model::Action action;
     action.kind = model::ActionKind::Yield;
+    return action;
+}
+
+model::Action fence() {
+    model::Action action;
+    action.kind = model::ActionKind::Fence;
     return action;
 }
 
@@ -250,6 +258,16 @@ const char* mode_name(GenerationMode mode) {
     return "unknown";
 }
 
+const char* memory_model_name(model::MemoryModel memory_model) {
+    switch (memory_model) {
+    case model::MemoryModel::SC:
+        return "sc";
+    case model::MemoryModel::TSO:
+        return "tso";
+    }
+    return "unknown";
+}
+
 Choice choose(std::mt19937_64& rng, const std::vector<WeightedChoice>& choices) {
     int total = 0;
     for (const auto& choice : choices) {
@@ -335,6 +353,7 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         {Choice::Broadcast, 10},
         {Choice::Spawn, 10},
         {Choice::Join, 14},
+        {Choice::Fence, 5},
         {Choice::Yield, 4},
     };
 
@@ -376,6 +395,8 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         return spawn(random_other_thread(rng, tid, thread_count));
     case Choice::Join:
         return join(random_other_thread(rng, tid, thread_count));
+    case Choice::Fence:
+        return fence();
     case Choice::Yield:
         return yield();
     }
@@ -399,6 +420,7 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         {Choice::Broadcast, 6},
         {Choice::Spawn, 12},
         {Choice::Join, 14},
+        {Choice::Fence, 5},
         {Choice::Yield, 4},
     };
 
@@ -425,6 +447,8 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         return bounded(rng, 3) == 0
             ? join(tid)
             : join(static_cast<model::ThreadId>(bounded(rng, thread_count)));
+    case Choice::Fence:
+        return fence();
     case Choice::Yield:
         return yield();
     }
@@ -559,6 +583,7 @@ bool hit_step_bound(const model::CheckResult& result) {
 void print_failure(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
+                   model::MemoryModel memory_model,
                    const model::Program& program,
                    const model::CheckResult& naive,
                    const model::CheckResult& dpor,
@@ -567,6 +592,7 @@ void print_failure(std::uint64_t seed,
     std::cerr << "seed: " << hex_seed(seed) << '\n';
     std::cerr << "program_index: " << program_index << '\n';
     std::cerr << "mode: " << mode_name(mode) << '\n';
+    std::cerr << "memory_model: " << memory_model_name(memory_model) << '\n';
     std::cerr << "naive schedules=" << naive.schedules_explored
               << " race=" << naive.first_race.has_value()
               << " deadlock=" << naive.first_deadlock.has_value()
@@ -585,17 +611,19 @@ void print_failure(std::uint64_t seed,
 void fail_program(std::uint64_t seed,
                   std::size_t program_index,
                   GenerationMode mode,
+                  model::MemoryModel memory_model,
                   const model::Program& program,
                   const model::CheckResult& naive,
                   const model::CheckResult& dpor,
                   const std::string& reason) {
-    print_failure(seed, program_index, mode, program, naive, dpor, reason);
+    print_failure(seed, program_index, mode, memory_model, program, naive, dpor, reason);
     assert(false && "differential fuzz mismatch");
 }
 
 void assert_replays_dpor_report(std::uint64_t seed,
                                 std::size_t program_index,
                                 GenerationMode mode,
+                                model::MemoryModel memory_model,
                                 const model::Program& program,
                                 const model::ModelChecker& checker,
                                 const model::CheckResult& naive,
@@ -603,27 +631,27 @@ void assert_replays_dpor_report(std::uint64_t seed,
     if (dpor.first_race.has_value()) {
         const auto replayed = checker.replay(dpor.first_race->schedule);
         if (!replayed.first_race.has_value() || *replayed.first_race != *dpor.first_race) {
-            fail_program(seed, program_index, mode, program, naive, dpor, "race replay changed report");
+            fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "race replay changed report");
         }
     }
     if (dpor.first_deadlock.has_value()) {
         const auto replayed = checker.replay(dpor.first_deadlock->schedule);
         if (!replayed.first_deadlock.has_value() ||
             *replayed.first_deadlock != *dpor.first_deadlock) {
-            fail_program(seed, program_index, mode, program, naive, dpor, "deadlock replay changed report");
+            fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "deadlock replay changed report");
         }
     }
     if (dpor.first_error.has_value()) {
         const auto replayed = checker.replay(dpor.first_error->schedule);
         if (!replayed.first_error.has_value() || *replayed.first_error != *dpor.first_error) {
-            fail_program(seed, program_index, mode, program, naive, dpor, "error replay changed report");
+            fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "error replay changed report");
         }
     }
     if (dpor.first_assertion.has_value()) {
         const auto replayed = checker.replay(dpor.first_assertion->schedule);
         if (!replayed.first_assertion.has_value() ||
             *replayed.first_assertion != *dpor.first_assertion) {
-            fail_program(seed, program_index, mode, program, naive, dpor, "assertion replay changed report");
+            fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "assertion replay changed report");
         }
     }
 }
@@ -654,7 +682,14 @@ void assert_round_trips(std::uint64_t seed,
     if (parsed.threads != program.threads) {
         const model::CheckResult empty_naive;
         const model::CheckResult empty_dpor;
-        print_failure(seed, program_index, mode, program, empty_naive, empty_dpor, "CLI parse/render changed program");
+        print_failure(seed,
+                      program_index,
+                      mode,
+                      model::MemoryModel::SC,
+                      program,
+                      empty_naive,
+                      empty_dpor,
+                      "CLI parse/render changed program");
         std::cerr << "round_trip.dpor:\n" << cli::render_program(parsed);
         assert(false && "CLI parse/render round trip failed");
     }
@@ -663,15 +698,19 @@ void assert_round_trips(std::uint64_t seed,
 void check_program(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
+                   model::MemoryModel memory_model,
                    const model::Program& program,
                    FuzzStats& stats) {
     constexpr std::size_t kMaxSchedules = 20000;
     constexpr std::size_t kStepBound = 40;
-    const model::ModelChecker checker(program, kStepBound);
+    const model::ModelChecker checker(program, kStepBound, memory_model);
     const model::CheckResult naive = checker.explore_naive(kMaxSchedules);
     const model::CheckResult dpor = checker.explore_dpor(kMaxSchedules);
 
     ++stats.total;
+    if (memory_model == model::MemoryModel::TSO) {
+        ++stats.tso;
+    }
     stats.naive_schedules += naive.schedules_explored;
     stats.dpor_schedules += dpor.schedules_explored;
 
@@ -689,14 +728,15 @@ void check_program(std::uint64_t seed,
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
         hit_step_bound(dpor) != hit_step_bound(naive)) {
-        fail_program(seed, program_index, mode, program, naive, dpor, "verdict mismatch");
+        fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "verdict mismatch");
     }
 
     if (dpor.schedules_explored > naive.schedules_explored) {
-        fail_program(seed, program_index, mode, program, naive, dpor, "DPOR explored more schedules than naive");
+        fail_program(
+            seed, program_index, mode, memory_model, program, naive, dpor, "DPOR explored more schedules than naive");
     }
 
-    assert_replays_dpor_report(seed, program_index, mode, program, checker, naive, dpor);
+    assert_replays_dpor_report(seed, program_index, mode, memory_model, program, checker, naive, dpor);
 
     ++stats.checked;
     if (naive.first_race.has_value()) {
@@ -758,7 +798,9 @@ int main(int argc, char** argv) {
             } else if (index % 5 == 4) {
                 mode = GenerationMode::Value;
             }
-            check_program(seed, index, mode, generate_program(rng, mode), stats);
+            const model::MemoryModel memory_model =
+                index % 4 == 3 ? model::MemoryModel::TSO : model::MemoryModel::SC;
+            check_program(seed, index, mode, memory_model, generate_program(rng, mode), stats);
         }
     }
 
@@ -770,6 +812,7 @@ int main(int argc, char** argv) {
               << " errors=" << stats.error
               << " assertions=" << stats.assertion
               << " bound_hits=" << stats.bound_hit
+              << " tso_programs=" << stats.tso
               << " naive_schedules=" << stats.naive_schedules
               << " dpor_schedules=" << stats.dpor_schedules << '\n';
 

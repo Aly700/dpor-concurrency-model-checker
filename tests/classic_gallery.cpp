@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
@@ -28,6 +29,9 @@ struct GalleryCase {
     std::size_t step_bound;
     std::size_t max_schedules;
     bool broken;
+    model::MemoryModel memory_model{model::MemoryModel::SC};
+    std::optional<bool> assertion_exists;
+    bool dpor_only{false};
 };
 
 struct CommandResult {
@@ -162,6 +166,10 @@ void require_expected_verdict(const GalleryCase& test_case,
         require(result.bound_exceeded_executions > 0,
                 test_case.file + " " + explorer + " should hit the step bound");
     }
+    if (test_case.assertion_exists.has_value()) {
+        require(result.first_assertion.has_value() == *test_case.assertion_exists,
+                test_case.file + " " + explorer + " assertion-existence mismatch");
+    }
 }
 
 void require_naive_dpor_agree(const GalleryCase& test_case,
@@ -237,6 +245,11 @@ std::string details_for_round_trip(const std::string& report) {
     while (copying && std::getline(input, line)) {
         if (line.rfind("schedules_explored:", 0) == 0 ||
             line.rfind("bound_exceeded_executions:", 0) == 0 ||
+            line.rfind("exploration_capped:", 0) == 0 ||
+            // also_found summarizes the WHOLE exploration; a replay of one
+            // schedule cannot reproduce it, so it is exploration-scope, not
+            // part of the reproducible bug report.
+            line.rfind("also_found:", 0) == 0 ||
             line == "trace:" ||
             line == "schedule:") {
             if (line == "trace:" || line == "schedule:") {
@@ -258,6 +271,7 @@ void require_cli_round_trip(const std::filesystem::path& binary,
     const auto check = run_command(
         binary,
         {"check", program.string(), "--explorer", "dpor",
+         "--memory-model", test_case.memory_model == model::MemoryModel::TSO ? "tso" : "sc",
          "--step-bound", std::to_string(test_case.step_bound),
          "--max-schedules", std::to_string(test_case.max_schedules)},
         work_dir / (stem + ".check.out"),
@@ -272,7 +286,8 @@ void require_cli_round_trip(const std::filesystem::path& binary,
     write_file(schedule_path, schedule_block(check.stdout_text));
     const auto replay = run_command(
         binary,
-        {"replay", program.string(), "--schedule", schedule_path.string()},
+        {"replay", program.string(), "--schedule", schedule_path.string(),
+         "--memory-model", test_case.memory_model == model::MemoryModel::TSO ? "tso" : "sc"},
         work_dir / (stem + ".replay.out"),
         work_dir / (stem + ".replay.err"));
 
@@ -293,18 +308,22 @@ const std::vector<GalleryCase>& gallery_cases() {
     //   that the naive oracle exhausts before max_schedules.
     // - Treiber has no intended bound hit; failed-CAS handoff does.
     static const std::vector<GalleryCase> cases = {
-        {"peterson_counter.dpor", ExpectedVerdict::CleanUpToBound, 9, 300000, false},
-        {"peterson_counter_broken_wrong_flag.dpor", ExpectedVerdict::Race, 8, 100000, true},
-        {"peterson_inside_assert.dpor", ExpectedVerdict::CleanUpToBound, 9, 500000, false},
-        {"peterson_inside_assert_broken_wrong_flag.dpor", ExpectedVerdict::Race, 9, 1000000, true},
-        {"dekker_counter.dpor", ExpectedVerdict::CleanUpToBound, 9, 300000, false},
-        {"dekker_counter_broken_drop_turn_wait.dpor", ExpectedVerdict::Race, 10, 500000, true},
-        {"bakery_bounded_counter.dpor", ExpectedVerdict::CleanUpToBound, 10, 1000000, false},
-        {"bakery_bounded_counter_broken_no_choosing_wait.dpor", ExpectedVerdict::Race, 10, 300000, true},
-        {"treiber_push.dpor", ExpectedVerdict::Clean, 12, 100000, false},
-        {"treiber_push_broken_load_store.dpor", ExpectedVerdict::Assertion, 12, 100000, true},
-        {"failed_cas_handoff.dpor", ExpectedVerdict::CleanUpToBound, 10, 100000, false},
-        {"failed_cas_handoff_broken_no_retry.dpor", ExpectedVerdict::Race, 10, 100000, true},
+        {"peterson_counter.dpor", ExpectedVerdict::CleanUpToBound, 9, 300000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"peterson_counter_broken_wrong_flag.dpor", ExpectedVerdict::Race, 8, 100000, true, model::MemoryModel::SC, std::nullopt, false},
+        {"peterson_inside_assert.dpor", ExpectedVerdict::CleanUpToBound, 9, 500000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"peterson_inside_assert_broken_wrong_flag.dpor", ExpectedVerdict::Race, 9, 1000000, true, model::MemoryModel::SC, std::nullopt, false},
+        {"dekker_counter.dpor", ExpectedVerdict::CleanUpToBound, 9, 300000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"dekker_counter_broken_drop_turn_wait.dpor", ExpectedVerdict::Race, 10, 500000, true, model::MemoryModel::SC, std::nullopt, false},
+        {"bakery_bounded_counter.dpor", ExpectedVerdict::CleanUpToBound, 10, 1000000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"bakery_bounded_counter_broken_no_choosing_wait.dpor", ExpectedVerdict::Race, 10, 300000, true, model::MemoryModel::SC, std::nullopt, false},
+        {"treiber_push.dpor", ExpectedVerdict::Clean, 12, 100000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"treiber_push_broken_load_store.dpor", ExpectedVerdict::Assertion, 12, 100000, true, model::MemoryModel::SC, std::nullopt, false},
+        {"failed_cas_handoff.dpor", ExpectedVerdict::CleanUpToBound, 10, 100000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"failed_cas_handoff_broken_no_retry.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, std::nullopt, false},
+        {"peterson_tso.dpor", ExpectedVerdict::Race, 12, 300000, true, model::MemoryModel::TSO, true, true},
+        {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::TSO, false, true},
+        {"dekker_tso.dpor", ExpectedVerdict::Race, 14, 500000, true, model::MemoryModel::TSO, true, true},
+        {"dekker_tso_fenced.dpor", ExpectedVerdict::Race, 15, 500000, false, model::MemoryModel::TSO, false, true},
     };
     return cases;
 }
@@ -312,14 +331,16 @@ const std::vector<GalleryCase>& gallery_cases() {
 void verify_gallery_with_library(const std::filesystem::path& source_dir) {
     for (const GalleryCase& test_case : gallery_cases()) {
         const model::Program program = cli::parse_program_file(gallery_file(source_dir, test_case.file).string());
-        const model::ModelChecker checker(program, test_case.step_bound);
-        const model::CheckResult naive = checker.explore_naive(test_case.max_schedules);
+        const model::ModelChecker checker(program, test_case.step_bound, test_case.memory_model);
         const model::CheckResult dpor = checker.explore_dpor(test_case.max_schedules);
 
-        require_expected_verdict(test_case, naive, "naive");
         require_expected_verdict(test_case, dpor, "DPOR");
-        require_naive_dpor_agree(test_case, naive, dpor);
-        require_replays_report(test_case.file + " naive", checker, naive);
+        if (!test_case.dpor_only) {
+            const model::CheckResult naive = checker.explore_naive(test_case.max_schedules);
+            require_expected_verdict(test_case, naive, "naive");
+            require_naive_dpor_agree(test_case, naive, dpor);
+            require_replays_report(test_case.file + " naive", checker, naive);
+        }
         require_replays_report(test_case.file + " DPOR", checker, dpor);
     }
 }

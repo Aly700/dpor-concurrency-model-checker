@@ -11,5 +11,10 @@ std::string action_text(const model::Action& action);
 std::string verdict_of(const model::CheckResult& result);
 bool has_bug(const model::CheckResult& result);
 void print_report(std::ostream& output, const model::Program& program, const model::CheckResult& result);
+void print_report(std::ostream& output,
+                  const model::Program& program,
+                  const model::CheckResult& result,
+                  model::MemoryModel memory_model,
+                  std::size_t step_bound = model::ModelChecker::kDefaultStepBound);
 
 } // namespace cli

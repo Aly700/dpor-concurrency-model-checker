@@ -59,6 +59,13 @@ model::Action yield() {
     return model::Action{model::ActionKind::Yield, "", ""};
 }
 
+model::Action flush(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::Flush;
+    action.address = std::move(address);
+    return action;
+}
+
 model::Action set(model::RegisterId reg, model::Value value) {
     model::Action action;
     action.kind = model::ActionKind::Set;
@@ -105,6 +112,9 @@ void assert_pair_commutes_when_independent(const model::Action& lhs, const model
 int main() {
     assert(!model::independent(write("x"), write("x")));
     assert(!model::independent(write("x"), read("x")));
+    assert(!model::independent(flush("x"), read("x")));
+    assert(!model::independent(flush("x"), write("x")));
+    assert(!model::independent(flush("x"), flush("x")));
     assert(!model::independent(lock("m"), lock("m")));
     assert(!model::independent(join(0), yield()));
     assert(!model::independent(spawn(1), yield()));
@@ -114,6 +124,8 @@ int main() {
     assert(model::independent(wait("cv0", "m"), signal("cv1")));
     assert(model::independent(set(0, 1), write("x")));
     assert(model::independent(assert_nonzero(0), spawn(1)));
+    assert(model::independent(flush("x"), read("y")));
+    assert(model::independent(flush("x"), set(0, 1)));
 
     assert_pair_commutes_when_independent(read("x"), read("x"));
     assert_pair_commutes_when_independent(read("x"), write("y"));

@@ -16,6 +16,10 @@
 - Replaying a schedule must produce the same state, report, and trace.
 - Labels are pseudo-actions and are never scheduled; replay validates each
   step against the normalized executable pc after skipping labels.
+- Under TSO, an internal flush is scheduled as the executing thread with the
+  reserved action index `kFlushActionIndex`. Replay must reject that sentinel
+  unless the selected memory model is TSO and the thread's store buffer is
+  nonempty at that exact step.
 - Test programs must not depend on OS thread scheduling.
 
 ## Happens-before
@@ -51,6 +55,12 @@
 - Values are deterministic schedule-order int64 cell values. Plain reads have
   no weak-memory value semantics: in racy programs they observe the value
   produced by the explored interleaving, and the race report is the bug.
+- Under TSO, a plain write's global visibility point is its flush, not its
+  enqueue. Race metadata for the write must be recorded at the flush endpoint
+  using the flushing thread's clock at that step. A TSO read forwards from the
+  newest same-address entry in its own buffer before shared memory; forwarded
+  reads are still recorded as plain reads conservatively so same-address
+  dependence remains visible to DPOR.
 - Atomic/atomic accesses are never races. Mixed plain/atomic same-address
   accesses are races when unordered by happens-before and at least one side is
   write-like: plain write, atomic store, successful CAS, or atomic RMW. CAS is
@@ -69,3 +79,6 @@
 - A terminal state with no enabled actions is a deadlock when any started
   thread is unfinished, including a thread blocked on `Join(target)` where
   `target` has not started and no remaining enabled spawn can start it.
+- Under TSO, a started thread with pc done but a nonempty store buffer is not
+  finished. The nonempty buffer always enables a flush transition, so buffered
+  writes alone do not create deadlocks.

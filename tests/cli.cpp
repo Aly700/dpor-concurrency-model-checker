@@ -313,6 +313,39 @@ void assert_assertion_reports_round_trip(const std::filesystem::path& binary,
     assert(details_for_round_trip(replay.stdout_text) == details_for_round_trip(check.stdout_text));
 }
 
+void assert_tso_report_renders_flush_and_replays(const std::filesystem::path& binary,
+                                                 const std::filesystem::path& work_dir) {
+    const auto program_path = work_dir / "cli_tso_flush.dpor";
+    write_file(program_path,
+               "thread:\n"
+               "  write x 1\n"
+               "thread:\n"
+               "  read x -> r0\n");
+
+    const auto check = run_command(
+        binary,
+        {"check", program_path.string(), "--explorer", "dpor", "--memory-model", "tso"},
+        work_dir / "cli_tso_flush.out",
+        work_dir / "cli_tso_flush.err");
+    assert(check.exit_code == 1);
+    assert(check.stderr_text.empty());
+    assert(first_line(check.stdout_text) == "verdict: race");
+    assert(check.stdout_text.find("memory_model: tso\n") != std::string::npos);
+    assert(check.stdout_text.find("flush x") != std::string::npos);
+    assert(check.stdout_text.find("0 4294967295") != std::string::npos);
+
+    const auto schedule_path = work_dir / "cli_tso_flush.schedule";
+    write_file(schedule_path, schedule_block(check.stdout_text));
+    const auto replay = run_command(
+        binary,
+        {"replay", program_path.string(), "--schedule", schedule_path.string(), "--memory-model", "tso"},
+        work_dir / "cli_tso_flush_replay.out",
+        work_dir / "cli_tso_flush_replay.err");
+    assert(replay.exit_code == 1);
+    assert(replay.stderr_text.empty());
+    assert(details_for_round_trip(replay.stdout_text) == details_for_round_trip(check.stdout_text));
+}
+
 void assert_step_bound_reports_clean_up_to_bound(const std::filesystem::path& binary,
                                                  const std::filesystem::path& work_dir) {
     const auto program_path = work_dir / "cli_spin_bound.dpor";
@@ -356,6 +389,7 @@ int main(int argc, char** argv) {
     assert_invalid_schedule_exits_two(binary, source_dir, work_dir);
     assert_explorer_flags_work_and_agree(binary, source_dir, work_dir);
     assert_assertion_reports_round_trip(binary, work_dir);
+    assert_tso_report_renders_flush_and_replays(binary, work_dir);
     assert_step_bound_reports_clean_up_to_bound(binary, work_dir);
     return 0;
 }

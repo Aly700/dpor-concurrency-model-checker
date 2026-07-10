@@ -25,11 +25,13 @@ struct CheckCommand {
     Explorer explorer{Explorer::Dpor};
     std::size_t max_schedules{100000};
     std::size_t step_bound{model::ModelChecker::kDefaultStepBound};
+    model::MemoryModel memory_model{model::MemoryModel::SC};
 };
 
 struct ReplayCommand {
     std::string program_path;
     std::string schedule_path;
+    model::MemoryModel memory_model{model::MemoryModel::SC};
 };
 
 std::size_t parse_size_token(const std::string& token, const std::string& description) {
@@ -63,9 +65,19 @@ Explorer parse_explorer(const std::string& value) {
     throw UsageError("invalid explorer");
 }
 
+model::MemoryModel parse_memory_model(const std::string& value) {
+    if (value == "sc") {
+        return model::MemoryModel::SC;
+    }
+    if (value == "tso") {
+        return model::MemoryModel::TSO;
+    }
+    throw UsageError("invalid memory model");
+}
+
 CheckCommand parse_check_command(int argc, char** argv) {
     if (argc < 3) {
-        throw UsageError("usage: dpor check <program.dpor> [--explorer naive|dpor] [--max-schedules N] [--step-bound N]");
+        throw UsageError("usage: dpor check <program.dpor> [--explorer naive|dpor] [--memory-model sc|tso] [--max-schedules N] [--step-bound N]");
     }
 
     CheckCommand command;
@@ -78,6 +90,12 @@ CheckCommand parse_check_command(int argc, char** argv) {
                 throw UsageError("missing explorer");
             }
             command.explorer = parse_explorer(argv[index + 1]);
+            index += 2;
+        } else if (flag == "--memory-model") {
+            if (index + 1 >= argc) {
+                throw UsageError("missing memory model");
+            }
+            command.memory_model = parse_memory_model(argv[index + 1]);
             index += 2;
         } else if (flag == "--max-schedules") {
             if (index + 1 >= argc) {
@@ -99,31 +117,52 @@ CheckCommand parse_check_command(int argc, char** argv) {
 }
 
 ReplayCommand parse_replay_command(int argc, char** argv) {
-    if (argc != 5) {
-        throw UsageError("usage: dpor replay <program.dpor> --schedule <schedule-file>");
+    if (argc < 5) {
+        throw UsageError("usage: dpor replay <program.dpor> --schedule <schedule-file> [--memory-model sc|tso]");
     }
-    if (std::string(argv[3]) != "--schedule") {
-        throw UsageError("usage: dpor replay <program.dpor> --schedule <schedule-file>");
+    ReplayCommand command;
+    command.program_path = argv[2];
+    int index = 3;
+    while (index < argc) {
+        const std::string flag = argv[index];
+        if (flag == "--schedule") {
+            if (index + 1 >= argc) {
+                throw UsageError("missing schedule file");
+            }
+            command.schedule_path = argv[index + 1];
+            index += 2;
+        } else if (flag == "--memory-model") {
+            if (index + 1 >= argc) {
+                throw UsageError("missing memory model");
+            }
+            command.memory_model = parse_memory_model(argv[index + 1]);
+            index += 2;
+        } else {
+            throw UsageError("unknown option");
+        }
     }
-    return ReplayCommand{argv[2], argv[4]};
+    if (command.schedule_path.empty()) {
+        throw UsageError("usage: dpor replay <program.dpor> --schedule <schedule-file> [--memory-model sc|tso]");
+    }
+    return command;
 }
 
 int run_check(const CheckCommand& command) {
     const model::Program program = cli::parse_program_file(command.program_path);
-    const model::ModelChecker checker(program, command.step_bound);
+    const model::ModelChecker checker(program, command.step_bound, command.memory_model);
     const model::CheckResult result = command.explorer == Explorer::Naive
         ? checker.explore_naive(command.max_schedules)
         : checker.explore_dpor(command.max_schedules);
-    cli::print_report(std::cout, program, result);
+    cli::print_report(std::cout, program, result, command.memory_model, command.step_bound);
     return cli::has_bug(result) ? 1 : 0;
 }
 
 int run_replay(const ReplayCommand& command) {
     const model::Program program = cli::parse_program_file(command.program_path);
     const model::Schedule schedule = cli::parse_schedule_file(command.schedule_path);
-    const model::ModelChecker checker(program);
+    const model::ModelChecker checker(program, model::ModelChecker::kDefaultStepBound, command.memory_model);
     const model::CheckResult result = checker.replay(schedule);
-    cli::print_report(std::cout, program, result);
+    cli::print_report(std::cout, program, result, command.memory_model);
     return cli::has_bug(result) ? 1 : 0;
 }
 

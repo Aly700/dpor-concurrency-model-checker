@@ -59,11 +59,15 @@ The checker interprets a program as a small-step state machine:
   plain/atomic race check.
 - `memory_values[address]` records the current int64 value for both plain and
   atomic accesses in the shared address namespace.
+- Under `MemoryModel::TSO`, `store_buffers[tid]` is a FIFO of pending plain
+  writes. A source `Write` enqueues; an internal flush transition commits the
+  oldest entry. `MemoryModel::SC` has no pending store buffers and remains the
+  default.
 
-At each DFS state, the naive oracle enumerates exactly the enabled actions in
-ascending thread-id order. Not-started threads are disabled. `Read`, `Write`,
+At each DFS state, the naive oracle enumerates exactly the enabled transitions
+in deterministic schedule-step order. Not-started threads are disabled. `Read`, `Write`,
 `AtomicLoad`, `AtomicStore`, `AtomicRmw`, `CompareExchange`, `Set`,
-`BranchNonzero`, `Assert`, `Yield`, `Unlock`, `Spawn`, `Signal`, and
+`BranchNonzero`, `Assert`, `Fence`, `Yield`, `Unlock`, `Spawn`, `Signal`, and
 `Broadcast` are enabled for started unfinished threads; invalid `Unlock`,
 invalid `Wait`, invalid `Spawn`, and invalid `Join` steps are reported as
 modeled errors. `Lock` is enabled only when its mutex is not currently owned.
@@ -77,6 +81,11 @@ termination, even if some static thread bodies were never spawned. If an
 enabled choice names a thread that has already executed its per-thread step
 bound, that execution terminates with a bound outcome and increments
 `bound_exceeded_executions`.
+
+Under TSO, atomics, CAS, mutex/condition-variable operations, spawn, join, and
+`Fence` are ordered points: they are disabled until the executing thread's
+store buffer is empty. A nonempty buffer always enables a flush for that thread,
+including after the source pc is done, so buffered completion is not deadlock.
 
 ## Happens-Before Analysis
 
@@ -107,7 +116,11 @@ register operand. Atomic RMW returns the old value and adds its operand. CAS
 stores on success and writes `1` or `0` to its result register.
 
 Memory accesses compare their current vector clock against prior conflicting
-accesses to the same address. Plain/plain races use the existing last-write and
+accesses to the same address. Under TSO, an enqueued plain write records no
+race metadata until its flush, which is the write's global visibility point.
+Plain reads forward from the reading thread's newest same-address buffered
+write before shared memory but are still recorded as plain reads
+conservatively. Plain/plain races use the existing last-write and
 reads-since-last-write metadata. Atomic/atomic accesses never race. Mixed
 plain/atomic accesses race when unordered by happens-before and at least one
 side is write-like: plain write, atomic store, successful CAS, or atomic RMW.
@@ -124,10 +137,14 @@ prefix that reports it.
 ## DPOR Reduction
 
 DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, done, and
-sleep thread sets. Each enabled node records both the replay endpoint and the
+sleep schedule-step sets. Each enabled node records both the replay endpoint and the
 phase-aware effective action for each enabled thread, so `Wait` release/sleep
 and woken mutex reacquire are reduced as different transition semantics while
 public schedules remain `(thread, action_index)` pairs.
+
+TSO flushes use the reserved action index `kFlushActionIndex` in those same
+sets. This lets one thread have both its next source action and an internal
+flush enabled without changing public schedule records into a variant.
 
 Dynamic backtracking follows the Flanagan-Godefroid last-point rule for enabled
 transitions: it adds the later thread only at the last earlier dependent
@@ -203,13 +220,15 @@ value-mode lane with registers, branches, CAS, fetch-add, assertions, and
 deliberate bound hits; capped explorations are counted but excluded from
 verdict equality because truncation can legitimately hide a later endpoint.
 
-The optimality meter is the fourth gate. It collects all naive maximal
+The optimality meter is the fourth gate and remains SC-only. It collects all naive maximal
 schedules for small non-error/non-assertion programs, replays them into
 phase-aware effective traces, canonicalizes each Mazurkiewicz trace class by
 the lexicographically minimal topological order of the checker's DPOR
 dependence DAG, and asserts `class_count <= dpor <= naive`. It also checks that
 every schedule in a canonical class replays to the same public verdict kind,
 which re-validates the independence relation behind the pruning argument.
+TSO has a separate `tso_oracle` differential gate because internal flush
+transitions change the transition alphabet and class-count argument.
 
 ## Design bias
 

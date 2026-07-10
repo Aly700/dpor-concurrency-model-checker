@@ -4,6 +4,7 @@
 #include <ostream>
 #include <sstream>
 #include <utility>
+#include <vector>
 
 namespace cli {
 namespace {
@@ -32,7 +33,12 @@ bool is_selected_error_endpoint(const model::CheckResult& result,
 
 std::string endpoint_text(const model::ScheduleStep& step) {
     std::ostringstream output;
-    output << "thread " << step.thread << " action " << step.action_index;
+    output << "thread " << step.thread;
+    if (step.action_index == model::kFlushActionIndex) {
+        output << " flush";
+    } else {
+        output << " action " << step.action_index;
+    }
     return output.str();
 }
 
@@ -55,6 +61,33 @@ void print_deadlock_blocker(std::ostream& output, const model::BlockedThread& bl
         break;
     }
     output << '\n';
+}
+
+// The verdict and detail block show only the highest-priority bug kind, but
+// a program can exhibit several kinds at once (e.g. the TSO litmus programs
+// race by construction AND reach the relaxed-outcome assertion). Listing the
+// other kinds keeps cross-model comparisons honest at the CLI: the SC-vs-TSO
+// discriminator on such programs is exactly whether 'assertion' appears here.
+void print_also_found(std::ostream& output, const model::CheckResult& result) {
+    std::vector<const char*> also;
+    bool primary_seen = false;
+    const auto consider = [&](bool present, const char* name) {
+        if (!present) {
+            return;
+        }
+        if (!primary_seen) {
+            primary_seen = true;
+            return;
+        }
+        also.push_back(name);
+    };
+    consider(result.first_race.has_value(), "race");
+    consider(result.first_deadlock.has_value(), "deadlock");
+    consider(result.first_error.has_value(), "error");
+    consider(result.first_assertion.has_value(), "assertion");
+    for (const char* name : also) {
+        output << "also_found: " << name << '\n';
+    }
 }
 
 void print_bug_details(std::ostream& output, const model::CheckResult& result) {
@@ -90,16 +123,29 @@ void print_bug_details(std::ostream& output, const model::CheckResult& result) {
 void print_trace(std::ostream& output,
                  const model::Program& program,
                  const model::CheckResult& result,
-                 const model::Schedule& schedule) {
+                 const model::Schedule& schedule,
+                 model::MemoryModel memory_model,
+                 std::size_t step_bound) {
     output << "trace:\n";
+    const std::vector<model::EffectiveScheduleStep> effective_trace =
+        model::ModelChecker(program, step_bound, memory_model).replay_effective_trace(schedule);
     std::map<std::pair<model::ThreadId, std::uint32_t>, std::size_t> wait_occurrences;
     for (std::size_t index = 0; index < schedule.size(); ++index) {
         const model::ScheduleStep& step = schedule[index];
-        const model::Action& action = program.threads.at(step.thread).at(step.action_index);
-        output << "  " << index << ": thread " << step.thread
-               << " action " << step.action_index << " " << action_text(action);
+        const model::Action& effective_action = effective_trace.at(index).effective_action;
+        const bool flush = step.action_index == model::kFlushActionIndex;
+        const model::Action& action = flush
+            ? effective_action
+            : program.threads.at(step.thread).at(step.action_index);
+        output << "  " << index << ": thread " << step.thread;
+        if (flush) {
+            output << " flush " << action.address;
+        } else {
+            output << " action " << step.action_index << " " << action_text(action);
+        }
 
-        if (action.kind == model::ActionKind::Wait &&
+        if (!flush &&
+            action.kind == model::ActionKind::Wait &&
             !is_selected_error_endpoint(result, step, index, schedule)) {
             auto key = std::make_pair(step.thread, step.action_index);
             const std::size_t occurrence = wait_occurrences[key]++;
@@ -118,6 +164,16 @@ void print_schedule(std::ostream& output, const model::Schedule& schedule) {
     for (const model::ScheduleStep& step : schedule) {
         output << "  " << step.thread << " " << step.action_index << '\n';
     }
+}
+
+const char* memory_model_text(model::MemoryModel memory_model) {
+    switch (memory_model) {
+    case model::MemoryModel::SC:
+        return "sc";
+    case model::MemoryModel::TSO:
+        return "tso";
+    }
+    return "unknown";
 }
 
 } // namespace
@@ -149,7 +205,18 @@ bool has_bug(const model::CheckResult& result) {
 }
 
 void print_report(std::ostream& output, const model::Program& program, const model::CheckResult& result) {
+    print_report(output, program, result, model::MemoryModel::SC, model::ModelChecker::kDefaultStepBound);
+}
+
+void print_report(std::ostream& output,
+                  const model::Program& program,
+                  const model::CheckResult& result,
+                  model::MemoryModel memory_model,
+                  std::size_t step_bound) {
     output << "verdict: " << verdict_of(result) << '\n';
+    if (memory_model != model::MemoryModel::SC) {
+        output << "memory_model: " << memory_model_text(memory_model) << '\n';
+    }
     output << "schedules_explored: " << result.schedules_explored << '\n';
     if (result.bound_exceeded_executions > 0) {
         output << "bound_exceeded_executions: " << result.bound_exceeded_executions << '\n';
@@ -163,9 +230,10 @@ void print_report(std::ostream& output, const model::Program& program, const mod
         return;
     }
 
+    print_also_found(output, result);
     print_bug_details(output, result);
     const model::Schedule& schedule = bug_schedule(result);
-    print_trace(output, program, result, schedule);
+    print_trace(output, program, result, schedule, memory_model, step_bound);
     print_schedule(output, schedule);
 }
 

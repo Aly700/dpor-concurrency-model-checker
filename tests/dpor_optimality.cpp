@@ -507,6 +507,12 @@ std::string action_string(const model::Action& action) {
     case model::ActionKind::CompareExchange:
         out << "CompareExchange " << action.address;
         break;
+    case model::ActionKind::Fence:
+        out << "Fence";
+        break;
+    case model::ActionKind::Flush:
+        out << "Flush " << action.address;
+        break;
     case model::ActionKind::Lock:
         out << "Lock " << action.mutex;
         break;

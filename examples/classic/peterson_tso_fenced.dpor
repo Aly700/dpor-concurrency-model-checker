@@ -1,0 +1,48 @@
+# Algorithm: bounded Peterson entry check with plain flag/turn cells and TSO fences.
+# Property: no second entrant should observe inside_taken already set.
+# Expected TSO shape: no assertion; plain coordination races remain reported.
+thread:
+  set r7 1
+  write flag0 1
+  write turn 1
+  fence
+  read flag1 -> r0
+  bnz r0 p0_check_turn
+  bnz r7 p0_enter
+p0_check_turn:
+  read turn -> r1
+  bnz r1 p0_done
+p0_enter:
+  read inside_taken -> r2
+  bnz r2 p0_fail
+  write inside_taken 1
+  write inside_taken 0
+  fence
+  bnz r7 p0_done
+p0_fail:
+  assert r7
+p0_done:
+  write flag0 0
+thread:
+  set r7 1
+  write flag1 1
+  write turn 0
+  fence
+  read flag0 -> r0
+  bnz r0 p1_check_turn
+  bnz r7 p1_enter
+p1_check_turn:
+  read turn -> r1
+  bnz r1 p1_enter
+  bnz r7 p1_done
+p1_enter:
+  read inside_taken -> r2
+  bnz r2 p1_fail
+  write inside_taken 1
+  write inside_taken 0
+  fence
+  bnz r7 p1_done
+p1_fail:
+  assert r7
+p1_done:
+  write flag1 0

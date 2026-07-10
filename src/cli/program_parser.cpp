@@ -222,6 +222,12 @@ model::Action yield_action() {
     return action;
 }
 
+model::Action fence_action() {
+    model::Action action;
+    action.kind = model::ActionKind::Fence;
+    return action;
+}
+
 model::Action set_action(model::RegisterId destination, model::Value value) {
     model::Action action;
     action.kind = model::ActionKind::Set;
@@ -347,6 +353,10 @@ model::Action parse_action(const std::vector<std::string>& words, std::size_t li
                           parse_value_operand(words[2], line),
                           parse_value_operand(words[3], line),
                           parse_register_token(words[5], line, "destination register"));
+    }
+    if (keyword == "fence") {
+        require_arity(words, 1, line, keyword);
+        return fence_action();
     }
     if (keyword == "lock") {
         require_arity(words, 2, line, keyword);
@@ -570,6 +580,12 @@ std::string action_text(const model::Action& action) {
                << operand_text(action.expected.value_or(immediate_operand(0))) << ' '
                << operand_text(action.value.value_or(immediate_operand(0))) << " -> "
                << register_text(action.destination.value_or(0));
+        break;
+    case model::ActionKind::Fence:
+        output << "fence";
+        break;
+    case model::ActionKind::Flush:
+        output << "flush " << action.address;
         break;
     case model::ActionKind::Lock:
         output << "lock " << action.mutex;

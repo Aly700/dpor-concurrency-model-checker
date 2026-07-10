@@ -8,6 +8,8 @@
 
 namespace model {
 
+enum class MemoryModel { SC, TSO };
+
 struct RaceReport {
     std::string address;
     ScheduleStep first;
@@ -79,7 +81,9 @@ class ModelChecker {
 public:
     static constexpr std::size_t kDefaultStepBound = 2000;
 
-    explicit ModelChecker(Program program, std::size_t step_bound = kDefaultStepBound);
+    explicit ModelChecker(Program program,
+                          std::size_t step_bound = kDefaultStepBound,
+                          MemoryModel memory_model = MemoryModel::SC);
     CheckResult explore_naive(std::size_t max_schedules = 100000) const;
     CheckResult explore_dpor(std::size_t max_schedules = 100000) const;
     CheckResult replay(const Schedule& schedule) const;
@@ -116,6 +120,7 @@ public:
 private:
     Program program_;
     std::size_t step_bound_{kDefaultStepBound};
+    MemoryModel memory_model_{MemoryModel::SC};
 };
 
 } // namespace model

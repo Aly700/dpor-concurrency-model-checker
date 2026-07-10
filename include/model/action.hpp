@@ -2,6 +2,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <vector>
@@ -13,6 +14,7 @@ using RegisterId = std::uint8_t;
 using Value = std::int64_t;
 
 inline constexpr std::size_t kRegisterCount = 8;
+inline constexpr std::uint32_t kFlushActionIndex = std::numeric_limits<std::uint32_t>::max();
 
 enum class ValueOperandKind { Immediate, Register };
 
@@ -35,6 +37,8 @@ enum class ActionKind {
     AtomicStore,
     AtomicRmw,
     CompareExchange,
+    Fence,
+    Flush,
     Lock,
     Unlock,
     Spawn,
@@ -69,6 +73,12 @@ struct ScheduleStep {
     std::uint32_t action_index{0};
 
     bool operator==(const ScheduleStep&) const = default;
+    bool operator<(const ScheduleStep& other) const {
+        if (thread != other.thread) {
+            return thread < other.thread;
+        }
+        return action_index < other.action_index;
+    }
 };
 
 using Schedule = std::vector<ScheduleStep>;

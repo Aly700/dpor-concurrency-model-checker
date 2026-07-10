@@ -14,6 +14,7 @@ exactly.
 |---|---|---|
 | Registers and values | `set`, `bnz`, `assert`, labels | Eight int64 thread-local registers `r0`-`r7`; labels are unscheduled pseudo-actions; assertions fail when the register is zero |
 | Plain memory | `read`, `write` | Shared int64 cells, initial 0; conflicting unordered accesses are races |
+| Memory models | `--memory-model sc\|tso`, `fence` | SC by default; TSO adds per-thread FIFO store buffers, explicit drain fences, and internal replayable flush steps |
 | Atomics | `atomic_load`, `atomic_store`, `atomic_rmw`, `cas` | Acquire/release/acq-rel, SC-per-location; atomic-atomic never races, mixed plain/atomic does |
 | Mutexes | `lock`, `unlock` | Blocking; release/acquire vector-clock edges; non-owner unlock is a modeled error |
 | Condition variables | `wait`, `signal`, `broadcast` | Mesa semantics, two-phase wait (release+sleep, then reacquire); no permit queuing, so lost wakeups deadlock |
@@ -112,9 +113,11 @@ atomic_load f -> rN     # legacy "atomic_load f" discards the value
 atomic_store f IMM|rN   # legacy "atomic_store f" stores 0
 atomic_rmw f IMM|rN -> rN  # legacy "atomic_rmw f" adds 1 and discards old value
 cas f EXPECTED NEW -> rN
+fence                   # SC no-op; under TSO, enabled only after this thread's store buffer is empty
 ```
 
-`dpor check` accepts `--step-bound N` to set the per-thread step bound. Because
+`dpor check` accepts `--memory-model sc|tso` (default `sc`) and
+`--step-bound N` to set the per-thread step bound. Because
 backward branches can encode spin loops, a clean verdict is sound only relative
 to that bound. If any execution hits the bound, the CLI prints
 `verdict: clean up to bound` and `bound_exceeded_executions: N`. Independently,
@@ -123,6 +126,36 @@ if exploration stops at the schedule cap (`--max-schedules`), the report says
 
 More in `examples/`: data race, AB-BA deadlock, lost wakeup, atomic message
 passing, spawn+join pipeline, clean locked counter, unlock error.
+
+## TSO Memory Model
+
+Under `--memory-model tso`, each thread has a FIFO store buffer. `write x V`
+enqueues, and an internal `flush x` transition commits the oldest buffered
+store to shared memory. Flushes are printed in traces and replay through the
+reserved schedule action index `4294967295`.
+
+Store buffering is therefore observable:
+
+```text
+thread:
+  write x 1
+  read y -> r0
+thread:
+  write y 1
+  read x -> r1
+```
+
+The outcome `r0 == 0 && r1 == 0` is reachable under TSO when both reads run
+before either buffer flushes. Adding `fence` after each write drains the buffers
+before the reads. Plain accesses are still checked for happens-before races, so
+litmus reports can contain both a race and an assertion witness.
+
+`examples/classic/peterson_tso*.dpor` and `dekker_tso*.dpor` are bounded
+entry-check witnesses for plain flag/turn coordination under TSO. The unfenced
+files reach the assertion in TSO; the fenced files remove that assertion in the
+bounded witness. Because this checker treats plain flag/turn accesses as data
+races, these plain-coordinate demos are not clean SC proofs; the race-free SC
+gallery uses atomic coordination variables instead.
 
 ## Classic algorithms
 

@@ -4,7 +4,9 @@ namespace model {
 namespace {
 
 bool is_plain_memory_action(const Action& action) {
-    return action.kind == ActionKind::Read || action.kind == ActionKind::Write;
+    return action.kind == ActionKind::Read ||
+           action.kind == ActionKind::Write ||
+           action.kind == ActionKind::Flush;
 }
 
 bool is_atomic_action(const Action& action) {
@@ -20,6 +22,7 @@ bool is_memory_action(const Action& action) {
 
 bool is_write_like(const Action& action) {
     return action.kind == ActionKind::Write ||
+           action.kind == ActionKind::Flush ||
            action.kind == ActionKind::AtomicStore ||
            action.kind == ActionKind::AtomicRmw ||
            action.kind == ActionKind::CompareExchange;
@@ -41,7 +44,8 @@ bool is_thread_local_action(const Action& action) {
     return action.kind == ActionKind::Set ||
            action.kind == ActionKind::BranchNonzero ||
            action.kind == ActionKind::Assert ||
-           action.kind == ActionKind::Label;
+           action.kind == ActionKind::Label ||
+           action.kind == ActionKind::Fence;
 }
 
 } // namespace
