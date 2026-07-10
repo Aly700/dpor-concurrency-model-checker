@@ -157,6 +157,29 @@ beyond bounded verdicts:
   honest. Witnesses ship unminimized because a sound lasso-preserving
   minimizer was not available — declined, documented, not faked.
 
+## The fifth campaign: PSO, fairness, and instrument completeness
+
+- **PSO** — per-address store buffers, whose crux is that DPOR's
+  same-thread ordering rule would silently collapse the very reorderings
+  PSO exists to expose; the fix forces every co-enabled per-address flush
+  into the persistent choice set. The litmus gradient is textbook:
+  message-passing breaks only under PSO and is repaired by a fence. A new
+  gate class arrived with it: **cross-model monotonicity** (SC executions
+  embed in TSO, TSO in PSO, so bug existence must be monotone — 13,590
+  inclusion checks, zero violations).
+- **Fairness classification** — lasso witnesses now state their
+  scheduling assumptions: a cycle ignored by a runnable peer is an
+  *unfair-schedule witness* (Peterson's spins), while a cycle every
+  outsider is disabled against is a *fair divergence* (a mutual back-off
+  retry loop classifies this way). The field describes the witness, not
+  the system — recorded prominently rather than overclaimed.
+- **Instrument completeness** — the optimality meter now covers all three
+  memory models with the per-model same-thread flush ordering encoded
+  exactly (11 TSO classes vs 12 PSO classes on the discriminator
+  fixture). Baselines: SC 1.067, TSO 1.096, PSO 1.098 — the pruner stays
+  within ~10% of the theoretical minimum across the family, and the gap
+  is recorded as quantified headroom, not tuned away.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
