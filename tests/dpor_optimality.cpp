@@ -24,7 +24,7 @@ constexpr std::size_t kMaxMeteredNaiveSchedules = 24;
 constexpr std::size_t kNoScheduleCap = std::numeric_limits<std::size_t>::max();
 
 enum class ProgramSource { TwoThreadFamily, HandPicked, Fuzz };
-enum class VerdictKind { Clean, Race, Deadlock, Error, Assertion, Bound };
+enum class VerdictKind { Clean, Race, Deadlock, Error, Assertion, NonTermination, Bound };
 
 struct SourceStats {
     std::size_t metered{0};
@@ -450,6 +450,9 @@ VerdictKind verdict_kind(const model::CheckResult& result) {
     if (result.first_assertion.has_value()) {
         return VerdictKind::Assertion;
     }
+    if (result.first_nontermination.has_value()) {
+        return VerdictKind::NonTermination;
+    }
     if (result.bound_exceeded_executions > 0) {
         return VerdictKind::Bound;
     }
@@ -468,6 +471,8 @@ const char* verdict_name(VerdictKind verdict) {
         return "error";
     case VerdictKind::Assertion:
         return "assertion";
+    case VerdictKind::NonTermination:
+        return "nontermination";
     case VerdictKind::Bound:
         return "bound";
     }
@@ -560,6 +565,7 @@ bool eligible_for_meter(const model::CheckResult& naive, bool enforce_small_sche
            naive.bound_exceeded_executions == 0 &&
            !naive.first_error.has_value() &&
            !naive.first_assertion.has_value() &&
+           !naive.first_nontermination.has_value() &&
            (!enforce_small_schedule_limit ||
             naive.schedules_explored <= kMaxMeteredNaiveSchedules);
 }

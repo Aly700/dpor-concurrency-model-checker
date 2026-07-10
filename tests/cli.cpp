@@ -101,6 +101,10 @@ std::string details_for_round_trip(const std::string& report) {
     bool copying = true;
     while (copying && std::getline(input, line)) {
         if (line.rfind("schedules_explored:", 0) == 0 ||
+            line.rfind("cycles_detected:", 0) == 0 ||
+            line.rfind("bound_exceeded_executions:", 0) == 0 ||
+            line.rfind("exploration_capped:", 0) == 0 ||
+            line.rfind("also_found:", 0) == 0 ||
             line == "trace:" ||
             line == "schedule:") {
             if (line == "trace:" || line == "schedule:") {
@@ -346,8 +350,8 @@ void assert_tso_report_renders_flush_and_replays(const std::filesystem::path& bi
     assert(details_for_round_trip(replay.stdout_text) == details_for_round_trip(check.stdout_text));
 }
 
-void assert_step_bound_reports_clean_up_to_bound(const std::filesystem::path& binary,
-                                                 const std::filesystem::path& work_dir) {
+void assert_spin_cycle_reports_nontermination_and_round_trips(const std::filesystem::path& binary,
+                                                              const std::filesystem::path& work_dir) {
     const auto program_path = work_dir / "cli_spin_bound.dpor";
     write_file(program_path,
                "thread:\n"
@@ -366,10 +370,49 @@ void assert_step_bound_reports_clean_up_to_bound(const std::filesystem::path& bi
         {"check", program_path.string(), "--explorer", "dpor", "--step-bound", "5"},
         work_dir / "cli_spin_bound.out",
         work_dir / "cli_spin_bound.err");
+    // Formerly clean up to bound: the unfair schedule that postpones thread 1
+    // now closes an exact cycle. Residual short-bound outcomes may coexist,
+    // but nontermination has the stronger verdict priority.
+    assert(check.exit_code == 1);
+    assert(check.stderr_text.empty());
+    assert(first_line(check.stdout_text) == "verdict: nontermination");
+    assert(check.stdout_text.find("cycles_detected: ") != std::string::npos);
+    assert(check.stdout_text.find("nontermination:\n  stem:\n") != std::string::npos);
+    assert(check.stdout_text.find("  cycle:\n") != std::string::npos);
+    assert(check.stdout_text.find("bound_exceeded_executions: ") != std::string::npos);
+
+    const auto schedule_path = work_dir / "cli_spin_cycle.schedule";
+    write_file(schedule_path, schedule_block(check.stdout_text));
+    const auto replay = run_command(
+        binary,
+        {"replay", program_path.string(), "--schedule", schedule_path.string()},
+        work_dir / "cli_spin_cycle_replay.out",
+        work_dir / "cli_spin_cycle_replay.err");
+    assert(replay.exit_code == 1);
+    assert(replay.stderr_text.empty());
+    assert(details_for_round_trip(replay.stdout_text) == details_for_round_trip(check.stdout_text));
+}
+
+void assert_growing_loop_reports_clean_up_to_bound(const std::filesystem::path& binary,
+                                                   const std::filesystem::path& work_dir) {
+    const auto program_path = work_dir / "cli_growing_bound.dpor";
+    write_file(program_path,
+               "thread:\n"
+               "  set r1 1\n"
+               "grow:\n"
+               "  atomic_rmw counter 1 -> r0\n"
+               "  bnz r1 grow\n");
+
+    const auto check = run_command(
+        binary,
+        {"check", program_path.string(), "--explorer", "dpor", "--step-bound", "5"},
+        work_dir / "cli_growing_bound.out",
+        work_dir / "cli_growing_bound.err");
     assert(check.exit_code == 0);
     assert(check.stderr_text.empty());
     assert(first_line(check.stdout_text) == "verdict: clean up to bound");
-    assert(check.stdout_text.find("bound_exceeded_executions: ") != std::string::npos);
+    assert(check.stdout_text.find("cycles_detected:") == std::string::npos);
+    assert(check.stdout_text.find("bound_exceeded_executions: 1\n") != std::string::npos);
 }
 
 } // namespace
@@ -390,6 +433,7 @@ int main(int argc, char** argv) {
     assert_explorer_flags_work_and_agree(binary, source_dir, work_dir);
     assert_assertion_reports_round_trip(binary, work_dir);
     assert_tso_report_renders_flush_and_replays(binary, work_dir);
-    assert_step_bound_reports_clean_up_to_bound(binary, work_dir);
+    assert_spin_cycle_reports_nontermination_and_round_trips(binary, work_dir);
+    assert_growing_loop_reports_clean_up_to_bound(binary, work_dir);
     return 0;
 }

@@ -51,10 +51,13 @@ struct FuzzStats {
     std::size_t deadlock{0};
     std::size_t error{0};
     std::size_t assertion{0};
+    std::size_t cycle{0};
     std::size_t bound_hit{0};
     std::size_t tso{0};
     std::size_t naive_schedules{0};
     std::size_t dpor_schedules{0};
+    std::size_t naive_cycles{0};
+    std::size_t dpor_cycles{0};
 };
 
 model::Action read(std::string address) {
@@ -457,7 +460,7 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
 }
 
 model::Program generate_value_program(std::mt19937_64& rng) {
-    switch (bounded(rng, 6)) {
+    switch (bounded(rng, 7)) {
     case 0: {
         const bool failing_assertion = bounded(rng, 4) == 0;
         return model::Program{{
@@ -498,6 +501,17 @@ model::Program generate_value_program(std::mt19937_64& rng) {
                 assert_nonzero(1),
             },
             {atomic_store_value("f", imm(1))},
+        }};
+    case 5:
+        // Growing shared state prevents an exact cycle, so this lane keeps the
+        // step bound exercised as the required non-repeating backstop.
+        return model::Program{{
+            {
+                set(1, 1),
+                label("grow"),
+                atomic_rmw_value("counter", imm(1), 0),
+                bnz(1, "grow"),
+            },
         }};
     default:
         return model::Program{{
@@ -580,6 +594,10 @@ bool hit_step_bound(const model::CheckResult& result) {
     return result.bound_exceeded_executions > 0;
 }
 
+bool cycle_exists(const model::CheckResult& result) {
+    return result.cycles_detected > 0;
+}
+
 void print_failure(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
@@ -598,12 +616,16 @@ void print_failure(std::uint64_t seed,
               << " deadlock=" << naive.first_deadlock.has_value()
               << " error=" << naive.first_error.has_value()
               << " assertion=" << naive.first_assertion.has_value()
+              << " cycle=" << cycle_exists(naive)
+              << " cycles_detected=" << naive.cycles_detected
               << " bound=" << hit_step_bound(naive) << '\n';
     std::cerr << "dpor schedules=" << dpor.schedules_explored
               << " race=" << dpor.first_race.has_value()
               << " deadlock=" << dpor.first_deadlock.has_value()
               << " error=" << dpor.first_error.has_value()
               << " assertion=" << dpor.first_assertion.has_value()
+              << " cycle=" << cycle_exists(dpor)
+              << " cycles_detected=" << dpor.cycles_detected
               << " bound=" << hit_step_bound(dpor) << '\n';
     std::cerr << "program.dpor:\n" << cli::render_program(program);
 }
@@ -652,6 +674,20 @@ void assert_replays_dpor_report(std::uint64_t seed,
         if (!replayed.first_assertion.has_value() ||
             *replayed.first_assertion != *dpor.first_assertion) {
             fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "assertion replay changed report");
+        }
+    }
+    if (dpor.first_nontermination.has_value()) {
+        const auto replayed = checker.replay(dpor.first_nontermination->schedule);
+        if (!replayed.first_nontermination.has_value() ||
+            *replayed.first_nontermination != *dpor.first_nontermination) {
+            fail_program(seed,
+                         program_index,
+                         mode,
+                         memory_model,
+                         program,
+                         naive,
+                         dpor,
+                         "nontermination replay changed report");
         }
     }
 }
@@ -713,6 +749,8 @@ void check_program(std::uint64_t seed,
     }
     stats.naive_schedules += naive.schedules_explored;
     stats.dpor_schedules += dpor.schedules_explored;
+    stats.naive_cycles += naive.cycles_detected;
+    stats.dpor_cycles += dpor.cycles_detected;
 
     if (program_index % 20 == 0) {
         assert_round_trips(seed, program_index, mode, program);
@@ -727,6 +765,7 @@ void check_program(std::uint64_t seed,
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        cycle_exists(dpor) != cycle_exists(naive) ||
         hit_step_bound(dpor) != hit_step_bound(naive)) {
         fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "verdict mismatch");
     }
@@ -750,6 +789,9 @@ void check_program(std::uint64_t seed,
     }
     if (naive.first_assertion.has_value()) {
         ++stats.assertion;
+    }
+    if (cycle_exists(naive)) {
+        ++stats.cycle;
     }
     if (hit_step_bound(naive)) {
         ++stats.bound_hit;
@@ -786,7 +828,8 @@ int main(int argc, char** argv) {
 
     // Mode mix: deterministic mostly-well-formed coverage, adversarial
     // modeled-error coverage, and a value lane for registers, branches,
-    // CAS/fetch-add, assertions, and deliberate step-bound hits.
+    // CAS/fetch-add, assertions, exact cycles, and growing-state step-bound
+    // backstops.
     constexpr std::size_t kProgramsPerSeed = 750;
     FuzzStats stats;
     for (const std::uint64_t seed : seeds) {
@@ -811,12 +854,17 @@ int main(int argc, char** argv) {
               << " deadlocks=" << stats.deadlock
               << " errors=" << stats.error
               << " assertions=" << stats.assertion
+              << " cycle_programs=" << stats.cycle
               << " bound_hits=" << stats.bound_hit
               << " tso_programs=" << stats.tso
               << " naive_schedules=" << stats.naive_schedules
-              << " dpor_schedules=" << stats.dpor_schedules << '\n';
+              << " dpor_schedules=" << stats.dpor_schedules
+              << " naive_cycles=" << stats.naive_cycles
+              << " dpor_cycles=" << stats.dpor_cycles << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
     assert(stats.skipped * 10 < stats.total * 3);
+    assert(stats.cycle > 0);
+    assert(stats.bound_hit > 0);
     return 0;
 }

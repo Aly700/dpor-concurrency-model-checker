@@ -51,6 +51,7 @@ void assert_naive_dpor_agree(const model::Program& program) {
     assert(naive.first_deadlock.has_value() == dpor.first_deadlock.has_value());
     assert(naive.first_error.has_value() == dpor.first_error.has_value());
     assert(naive.first_assertion.has_value() == dpor.first_assertion.has_value());
+    assert((naive.cycles_detected > 0) == (dpor.cycles_detected > 0));
     assert((naive.bound_exceeded_executions > 0) == (dpor.bound_exceeded_executions > 0));
     assert(dpor.schedules_explored <= naive.schedules_explored);
 

@@ -21,6 +21,7 @@ enum class ExpectedVerdict {
     Race,
     Assertion,
     Deadlock,
+    NonTermination,
 };
 
 struct GalleryCase {
@@ -127,6 +128,8 @@ std::string expected_text(ExpectedVerdict verdict) {
         return "assertion";
     case ExpectedVerdict::Deadlock:
         return "deadlock";
+    case ExpectedVerdict::NonTermination:
+        return "nontermination";
     }
     fail("unknown expected verdict");
 }
@@ -148,6 +151,9 @@ ExpectedVerdict verdict_kind(const model::CheckResult& result) {
     if (verdict == "deadlock") {
         return ExpectedVerdict::Deadlock;
     }
+    if (verdict == "nontermination") {
+        return ExpectedVerdict::NonTermination;
+    }
     fail("unexpected verdict text: " + verdict);
 }
 
@@ -161,10 +167,16 @@ void require_expected_verdict(const GalleryCase& test_case,
     if (test_case.expected == ExpectedVerdict::Clean) {
         require(result.bound_exceeded_executions == 0,
                 test_case.file + " " + explorer + " should not hit the step bound");
+        require(result.cycles_detected == 0,
+                test_case.file + " " + explorer + " should not detect a cycle");
     }
     if (test_case.expected == ExpectedVerdict::CleanUpToBound) {
         require(result.bound_exceeded_executions > 0,
                 test_case.file + " " + explorer + " should hit the step bound");
+    }
+    if (test_case.expected == ExpectedVerdict::NonTermination) {
+        require(result.first_nontermination.has_value() && result.cycles_detected > 0,
+                test_case.file + " " + explorer + " should report a nontermination cycle");
     }
     if (test_case.assertion_exists.has_value()) {
         require(result.first_assertion.has_value() == *test_case.assertion_exists,
@@ -189,6 +201,8 @@ void require_naive_dpor_agree(const GalleryCase& test_case,
             test_case.file + " modeled-error existence disagrees");
     require(naive.first_assertion.has_value() == dpor.first_assertion.has_value(),
             test_case.file + " assertion existence disagrees");
+    require((naive.cycles_detected > 0) == (dpor.cycles_detected > 0),
+            test_case.file + " cycle existence disagrees");
     require((naive.bound_exceeded_executions > 0) == (dpor.bound_exceeded_executions > 0),
             test_case.file + " bound-hit existence disagrees");
     require(dpor.schedules_explored <= naive.schedules_explored,
@@ -218,6 +232,12 @@ void require_replays_report(const std::string& label,
         require(replay.first_assertion.has_value() && *replay.first_assertion == *result.first_assertion,
                 label + " assertion report did not replay identically");
     }
+    if (result.first_nontermination.has_value()) {
+        const auto replay = checker.replay(result.first_nontermination->schedule);
+        require(replay.first_nontermination.has_value() &&
+                    *replay.first_nontermination == *result.first_nontermination,
+                label + " nontermination report did not replay identically");
+    }
 }
 
 std::string first_line(const std::string& text) {
@@ -244,6 +264,7 @@ std::string details_for_round_trip(const std::string& report) {
     bool copying = true;
     while (copying && std::getline(input, line)) {
         if (line.rfind("schedules_explored:", 0) == 0 ||
+            line.rfind("cycles_detected:", 0) == 0 ||
             line.rfind("bound_exceeded_executions:", 0) == 0 ||
             line.rfind("exploration_capped:", 0) == 0 ||
             // also_found summarizes the WHOLE exploration; a replay of one
@@ -300,7 +321,7 @@ void require_cli_round_trip(const std::filesystem::path& binary,
 const std::vector<GalleryCase>& gallery_cases() {
     // Bounds are intentionally small and per-file:
     // - Peterson/Dekker counter models have enough room for completed critical
-    //   sections plus bounded spin prefixes.
+    //   sections and an exact repeated spin state.
     // - The spawned Peterson assertion model uses a prefix bound; reaching full
     //   completion under the naive oracle is much larger than this regression
     //   suite needs, and the verdict is explicitly "clean up to bound".
@@ -308,17 +329,25 @@ const std::vector<GalleryCase>& gallery_cases() {
     //   that the naive oracle exhausts before max_schedules.
     // - Treiber has no intended bound hit; failed-CAS handoff does.
     static const std::vector<GalleryCase> cases = {
-        {"peterson_counter.dpor", ExpectedVerdict::CleanUpToBound, 9, 300000, false, model::MemoryModel::SC, std::nullopt, false},
+        // Formerly clean up to bound: bound 10 is sufficient to close the
+        // waiting contender's exact Peterson spin cycle.
+        {"peterson_counter.dpor", ExpectedVerdict::NonTermination, 10, 300000, false, model::MemoryModel::SC, std::nullopt, false},
         {"peterson_counter_broken_wrong_flag.dpor", ExpectedVerdict::Race, 8, 100000, true, model::MemoryModel::SC, std::nullopt, false},
         {"peterson_inside_assert.dpor", ExpectedVerdict::CleanUpToBound, 9, 500000, false, model::MemoryModel::SC, std::nullopt, false},
         {"peterson_inside_assert_broken_wrong_flag.dpor", ExpectedVerdict::Race, 9, 1000000, true, model::MemoryModel::SC, std::nullopt, false},
-        {"dekker_counter.dpor", ExpectedVerdict::CleanUpToBound, 9, 300000, false, model::MemoryModel::SC, std::nullopt, false},
+        // Formerly clean up to bound: the existing bound already contains a
+        // complete repeated Dekker outer-wait cycle.
+        {"dekker_counter.dpor", ExpectedVerdict::NonTermination, 9, 300000, false, model::MemoryModel::SC, std::nullopt, false},
         {"dekker_counter_broken_drop_turn_wait.dpor", ExpectedVerdict::Race, 10, 500000, true, model::MemoryModel::SC, std::nullopt, false},
-        {"bakery_bounded_counter.dpor", ExpectedVerdict::CleanUpToBound, 10, 1000000, false, model::MemoryModel::SC, std::nullopt, false},
+        // Formerly clean up to bound: waiting for choosing1 exposes a stable
+        // two-step repeated state before the residual bound outcomes.
+        {"bakery_bounded_counter.dpor", ExpectedVerdict::NonTermination, 10, 1000000, false, model::MemoryModel::SC, std::nullopt, false},
         {"bakery_bounded_counter_broken_no_choosing_wait.dpor", ExpectedVerdict::Race, 10, 300000, true, model::MemoryModel::SC, std::nullopt, false},
         {"treiber_push.dpor", ExpectedVerdict::Clean, 12, 100000, false, model::MemoryModel::SC, std::nullopt, false},
         {"treiber_push_broken_load_store.dpor", ExpectedVerdict::Assertion, 12, 100000, true, model::MemoryModel::SC, std::nullopt, false},
-        {"failed_cas_handoff.dpor", ExpectedVerdict::CleanUpToBound, 10, 100000, false, model::MemoryModel::SC, std::nullopt, false},
+        // Formerly clean up to bound: indefinitely postponing ready's release
+        // closes the reader's failed-CAS retry cycle.
+        {"failed_cas_handoff.dpor", ExpectedVerdict::NonTermination, 10, 100000, false, model::MemoryModel::SC, std::nullopt, false},
         {"failed_cas_handoff_broken_no_retry.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, std::nullopt, false},
         {"peterson_tso.dpor", ExpectedVerdict::Race, 12, 300000, true, model::MemoryModel::TSO, true, true},
         {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::TSO, false, true},

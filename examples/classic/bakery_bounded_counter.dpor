@@ -1,6 +1,6 @@
 # Algorithm: Lamport bakery, simplified to two threads with bounded tickets.
 # Property: the plain critical-section counter touch has no data race.
-# Expected verdict: clean up to bound.
+# Expected verdict: nontermination (with no race or assertion).
 # Note: the ticket is issued by atomic_rmw next_ticket because .dpor has no
 # max(), addition on registers, or register-to-register comparison.
 thread:

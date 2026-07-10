@@ -122,10 +122,19 @@ void assert_replays_dpor_report(const ModelChecker& checker, const CheckResult& 
         const auto r = checker.replay(dpor.first_assertion->schedule);
         assert(r.first_assertion && *r.first_assertion == *dpor.first_assertion);
     }
+    if (dpor.first_nontermination) {
+        const auto r = checker.replay(dpor.first_nontermination->schedule);
+        assert(r.first_nontermination &&
+               *r.first_nontermination == *dpor.first_nontermination);
+    }
 }
 
 bool bound_hit(const CheckResult& result) {
     return result.bound_exceeded_executions > 0;
+}
+
+bool cycle_exists(const CheckResult& result) {
+    return result.cycles_detected > 0;
 }
 
 void cross_validate_program(const Program& p,
@@ -141,6 +150,7 @@ void cross_validate_program(const Program& p,
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        cycle_exists(dpor) != cycle_exists(naive) ||
         bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "MISMATCH in 3-thread sweep at checked index " << checked << "\n";
@@ -151,6 +161,7 @@ void cross_validate_program(const Program& p,
     assert(dpor.first_deadlock.has_value() == naive.first_deadlock.has_value());
     assert(dpor.first_error.has_value() == naive.first_error.has_value());
     assert(dpor.first_assertion.has_value() == naive.first_assertion.has_value());
+    assert(cycle_exists(dpor) == cycle_exists(naive));
     assert(bound_hit(dpor) == bound_hit(naive));
     assert(dpor.schedules_explored <= naive.schedules_explored);
     assert_replays_dpor_report(checker, dpor);

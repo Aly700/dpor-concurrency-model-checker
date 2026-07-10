@@ -1,6 +1,6 @@
 # Algorithm: Dekker's two-thread mutual exclusion.
 # Property: the plain critical-section counter touch has no data race.
-# Expected verdict: clean up to bound.
+# Expected verdict: nontermination (with no race or assertion).
 # Note: no-op CAS on turn is used as an equality test.
 thread:
   set r7 1

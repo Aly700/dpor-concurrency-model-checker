@@ -6,7 +6,9 @@ A deterministic model checker for concurrent programs. The hard boundary is
 the happens-before and independence analysis used by Dynamic Partial-Order
 Reduction: it must prune equivalent schedules without missing races or
 deadlocks. Every reported bug ships a minimal schedule that reproduces it
-exactly.
+exactly. Non-termination reports instead ship an intentionally unminimized
+lasso witness, because deleting steps cannot in general preserve the repeated
+state that proves the cycle.
 
 ## What it models
 
@@ -30,7 +32,10 @@ Two explorers share one execution semantics:
 Detection: happens-before data races (vector clocks), deadlocks across all
 three blocking kinds (with the wait cycle named), modeled API errors, assertion
 failures, and executions that exceed the configured per-thread step bound.
-Reports carry replay-validated, 1-minimal reproducing schedules.
+The checker also proves schedule-existence of non-termination when one
+execution revisits an exact behavioral state. Safety reports carry
+replay-validated, 1-minimal schedules; lasso reports carry an exact stem plus
+one cycle.
 
 ## Quick start
 
@@ -66,8 +71,8 @@ awk '/^schedule:$/ {copy=1; next} copy {print}' race.report > race.schedule
 
 `check` exits `0` for clean programs, including `verdict: clean up to bound`
 when at least one execution hit the step bound without a bug; it exits `1` for
-races/deadlocks/errors/assertions and `2` for usage, parse, or invalid-schedule
-errors. Reports are byte-identical across runs.
+races/deadlocks/errors/assertions/non-termination and `2` for usage, parse, or
+invalid-schedule errors. Reports are byte-identical across runs.
 
 ## Program format
 
@@ -121,8 +126,48 @@ fence                   # SC no-op; under TSO, enabled only after this thread's 
 backward branches can encode spin loops, a clean verdict is sound only relative
 to that bound. If any execution hits the bound, the CLI prints
 `verdict: clean up to bound` and `bound_exceeded_executions: N`. Independently,
-if exploration stops at the schedule cap (`--max-schedules`), the report says
+If a non-repeating execution instead consumes the budget (for example, a loop
+that increments a shared counter forever), the bound remains the backstop. If
+exploration stops at the schedule cap (`--max-schedules`), the report says
 `exploration_capped: true` — a capped verdict is not a verified one.
+
+## Proving divergence
+
+Cycle detection is per execution and path-local. After every transition, the
+checker compares an exact canonical byte encoding of the complete behavioral
+state: normalized thread PCs, started threads, wait phases and wait sets,
+registers, memory values, mutex owners, and ordered TSO store buffers. It never
+uses a lossy hash; a collision could fabricate a false proof of divergence.
+Vector clocks and race history are analysis instrumentation rather than program
+behavior, so they are excluded. The resulting witness claims non-termination
+only, not repeated race-analysis state.
+
+On a revisit, the report splits the executed schedule at the first occurrence:
+
+```text
+verdict: nontermination
+cycles_detected: 1
+nontermination:
+  stem:
+    0 0
+  cycle:
+    0 2
+schedule:
+  0 0
+  0 2
+```
+
+The standard `schedule:` block is `stem + one cycle` and replays directly with
+`dpor replay`. Replay validates that the end-of-stem and end-of-cycle canonical
+states are identical and rejects any schedule that continues after the cycle
+closes.
+
+This is an existential scheduling claim: at least one scheduler can repeat the
+cycle forever. A peer might remain enabled and, if scheduled, let the program
+finish. The report therefore does not claim starvation freedom, fairness, or a
+fairness violation. Verdict priority is race/deadlock/error/assertion, then
+non-termination, then clean up to bound, then clean; `also_found` preserves
+lower-priority findings from the same exploration.
 
 More in `examples/`: data race, AB-BA deadlock, lost wakeup, atomic message
 passing, spawn+join pipeline, clean locked counter, unlock error.
@@ -170,7 +215,7 @@ bounded verdict and any `.dpor` modeling limitation.
 
 DPOR is never trusted on faith. Four deterministic gates assert that
 `explore_dpor` and the exhaustive oracle agree on race/deadlock/error/assertion
-existence and on whether any execution hit the step bound, that DPOR never
+and cycle existence and on whether any execution hit the step bound, that DPOR never
 explores more schedules, that every DPOR report replays to an identical report,
 and how far DPOR is from one schedule per Mazurkiewicz class:
 
@@ -179,9 +224,10 @@ and how far DPOR is from one schedule per Mazurkiewicz class:
 2. **Strided 3-thread sweep** — 65,542 programs evenly sampled from the full
    15-action, 6-slot space.
 3. **Seeded differential fuzz** — 3,000 random 2–5-thread programs per run,
-   including spawn-shaped, value/branch/CAS/assertion programs, step-bound
-   programs, and deliberately malformed ones; failures print the seed and the
-   program in `.dpor` syntax for by-hand reproduction.
+   including spawn-shaped, value/branch/CAS/assertion programs, exact spin
+   cycles, growing-state bound backstops, and deliberately malformed ones;
+   failures print the seed and the program in `.dpor` syntax for by-hand
+   reproduction, and the summary prints naive/DPOR cycle counters.
 4. **Optimality meter** — collects naive schedules for small non-error,
    non-assertion programs, canonicalizes phase-aware Mazurkiewicz trace
    classes using the same transition predicate DPOR prunes with, asserts
@@ -193,8 +239,8 @@ All gates are deterministic and run in CI on Linux and macOS.
 ## Design records
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
-soundness-relevant decision in `adr/` (0001 architecture crux through 0013
-values/branches/CAS), including the exact vector-clock edge for each
+soundness-relevant decision in `adr/` (0001 architecture crux through 0016
+lasso detection), including the exact vector-clock edge for each
 synchronization kind and why each DPOR pruning step cannot lose a bug class.
 
 **[docs/case-study.md](docs/case-study.md)** tells the verification story:

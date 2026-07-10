@@ -209,7 +209,7 @@ void assertion_failure_is_minimized_and_replayable() {
     assert(*replay.first_assertion == *dpor.first_assertion);
 }
 
-void spin_loop_reports_bound_exceeded_but_completing_schedules_are_clean() {
+void spin_loop_reports_schedule_existence_of_nontermination() {
     const model::Program program{{
         {
             set(1, 1),
@@ -235,6 +235,15 @@ void spin_loop_reports_bound_exceeded_but_completing_schedules_are_clean() {
     assert(!dpor.first_error.has_value());
     assert(!naive.first_assertion.has_value());
     assert(!dpor.first_assertion.has_value());
+    // This formerly reported only the step-bound fallback. The unfair schedule
+    // that never runs thread 1 now closes an exact behavioral-state cycle, so
+    // the stronger schedule-existence verdict is present; this does not claim
+    // a fairness violation. At this deliberately tiny bound, other schedules
+    // still exhaust their budget before repeating and remain counted.
+    assert(naive.first_nontermination.has_value());
+    assert(dpor.first_nontermination.has_value());
+    assert(naive.cycles_detected > 0);
+    assert(dpor.cycles_detected > 0);
     assert(naive.bound_exceeded_executions > 0);
     assert(dpor.bound_exceeded_executions > 0);
 }
@@ -273,7 +282,7 @@ int main() {
     successful_cas_publishes_prior_plain_write_to_later_acquire_load();
     fetch_add_returns_old_value_and_two_joined_increments_sum_to_two();
     assertion_failure_is_minimized_and_replayable();
-    spin_loop_reports_bound_exceeded_but_completing_schedules_are_clean();
+    spin_loop_reports_schedule_existence_of_nontermination();
     capped_exploration_is_flagged_and_complete_exploration_is_not();
     return 0;
 }

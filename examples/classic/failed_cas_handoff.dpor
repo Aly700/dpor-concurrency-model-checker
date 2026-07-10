@@ -1,7 +1,7 @@
 # Algorithm: failed-CAS acquire handoff.
 # Property: the reader's plain payload read is ordered by a failed CAS that
 # observes the writer's release store.
-# Expected verdict: clean up to bound.
+# Expected verdict: nontermination (with no race or assertion).
 thread:
   write payload 1
   atomic_store ready 1

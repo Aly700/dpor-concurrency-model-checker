@@ -19,7 +19,10 @@ const model::Schedule& bug_schedule(const model::CheckResult& result) {
     if (result.first_error.has_value()) {
         return result.first_error->schedule;
     }
-    return result.first_assertion->schedule;
+    if (result.first_assertion.has_value()) {
+        return result.first_assertion->schedule;
+    }
+    return result.first_nontermination->schedule;
 }
 
 bool is_selected_error_endpoint(const model::CheckResult& result,
@@ -85,6 +88,7 @@ void print_also_found(std::ostream& output, const model::CheckResult& result) {
     consider(result.first_deadlock.has_value(), "deadlock");
     consider(result.first_error.has_value(), "error");
     consider(result.first_assertion.has_value(), "assertion");
+    consider(result.first_nontermination.has_value(), "nontermination");
     for (const char* name : also) {
         output << "also_found: " << name << '\n';
     }
@@ -117,6 +121,18 @@ void print_bug_details(std::ostream& output, const model::CheckResult& result) {
         output << "  endpoint: " << endpoint_text(result.first_assertion->endpoint) << '\n';
         output << "  register: r" << static_cast<unsigned>(result.first_assertion->reg) << '\n';
         output << "  value: " << result.first_assertion->value << '\n';
+        return;
+    }
+    if (result.first_nontermination.has_value()) {
+        output << "nontermination:\n";
+        output << "  stem:\n";
+        for (const model::ScheduleStep& step : result.first_nontermination->stem) {
+            output << "    " << step.thread << ' ' << step.action_index << '\n';
+        }
+        output << "  cycle:\n";
+        for (const model::ScheduleStep& step : result.first_nontermination->cycle) {
+            output << "    " << step.thread << ' ' << step.action_index << '\n';
+        }
     }
 }
 
@@ -191,6 +207,9 @@ std::string verdict_of(const model::CheckResult& result) {
     if (result.first_assertion.has_value()) {
         return "assertion";
     }
+    if (result.first_nontermination.has_value()) {
+        return "nontermination";
+    }
     if (result.bound_exceeded_executions > 0) {
         return "clean up to bound";
     }
@@ -201,7 +220,8 @@ bool has_bug(const model::CheckResult& result) {
     return result.first_race.has_value() ||
            result.first_deadlock.has_value() ||
            result.first_error.has_value() ||
-           result.first_assertion.has_value();
+           result.first_assertion.has_value() ||
+           result.first_nontermination.has_value();
 }
 
 void print_report(std::ostream& output, const model::Program& program, const model::CheckResult& result) {
@@ -218,6 +238,9 @@ void print_report(std::ostream& output,
         output << "memory_model: " << memory_model_text(memory_model) << '\n';
     }
     output << "schedules_explored: " << result.schedules_explored << '\n';
+    if (result.cycles_detected > 0) {
+        output << "cycles_detected: " << result.cycles_detected << '\n';
+    }
     if (result.bound_exceeded_executions > 0) {
         output << "bound_exceeded_executions: " << result.bound_exceeded_executions << '\n';
     }

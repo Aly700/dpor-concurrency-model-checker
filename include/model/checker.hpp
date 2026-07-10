@@ -56,8 +56,18 @@ struct AssertionFailureReport {
     bool operator==(const AssertionFailureReport&) const = default;
 };
 
+struct NonTerminationReport {
+    Schedule stem;
+    Schedule cycle;
+    // The replayable lasso witness is exactly stem followed by one cycle.
+    Schedule schedule;
+
+    bool operator==(const NonTerminationReport&) const = default;
+};
+
 struct CheckResult {
     std::size_t schedules_explored{0};
+    std::size_t cycles_detected{0};
     std::size_t bound_exceeded_executions{0};
     // True when exploration stopped at the max_schedules cap: the verdict may
     // be incomplete because unexplored schedules remain (or the space finished
@@ -68,6 +78,7 @@ struct CheckResult {
     std::optional<DeadlockReport> first_deadlock;
     std::optional<ModelErrorReport> first_error;
     std::optional<AssertionFailureReport> first_assertion;
+    std::optional<NonTerminationReport> first_nontermination;
 };
 
 struct EffectiveScheduleStep {
@@ -104,9 +115,12 @@ public:
     // - deadlock: same set of BlockedThread entries;
     // - modeled error: same (thread, action_index) endpoint.
     //
-    // minimize_schedule first replays schedule. If replay reports no race,
-    // deadlock, or modeled error, the input is returned unchanged. If replay
-    // rejects the input schedule, the replay exception is propagated.
+    // minimize_schedule first replays schedule. Non-termination lasso
+    // witnesses are returned unchanged: greedy step deletion cannot honestly
+    // promise to preserve equality between the end-of-stem and end-of-cycle
+    // states. If replay reports no race, deadlock, modeled error, or assertion,
+    // the input is returned unchanged. If replay rejects the input schedule,
+    // the replay exception is propagated.
     //
     // Otherwise the result is found by deterministic greedy fixed-point
     // deletion: for each thread in ascending id order, try removing the last

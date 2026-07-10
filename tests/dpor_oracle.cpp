@@ -92,6 +92,36 @@ model::Action yield() {
     return model::Action{model::ActionKind::Yield, "", ""};
 }
 
+model::ValueOperand imm(model::Value value) {
+    model::ValueOperand operand;
+    operand.kind = model::ValueOperandKind::Immediate;
+    operand.immediate = value;
+    return operand;
+}
+
+model::Action set(model::RegisterId reg, model::Value value) {
+    model::Action action;
+    action.kind = model::ActionKind::Set;
+    action.destination = reg;
+    action.value = imm(value);
+    return action;
+}
+
+model::Action label(std::string name) {
+    model::Action action;
+    action.kind = model::ActionKind::Label;
+    action.label = std::move(name);
+    return action;
+}
+
+model::Action bnz(model::RegisterId reg, std::string target) {
+    model::Action action;
+    action.kind = model::ActionKind::BranchNonzero;
+    action.source_register = reg;
+    action.label = std::move(target);
+    return action;
+}
+
 const std::array<model::Action, 17> kActions{
     read("x"),
     write("x"),
@@ -197,6 +227,10 @@ bool bound_hit(const model::CheckResult& result) {
     return result.bound_exceeded_executions > 0;
 }
 
+bool cycle_exists(const model::CheckResult& result) {
+    return result.cycles_detected > 0;
+}
+
 void print_program(const model::Program& program) {
     for (std::size_t tid = 0; tid < program.threads.size(); ++tid) {
         std::cerr << "  t" << tid << ':';
@@ -239,6 +273,11 @@ void assert_replays_dpor_report(const model::ModelChecker& checker, const model:
         assert(replay.first_assertion.has_value());
         assert(*replay.first_assertion == *dpor.first_assertion);
     }
+    if (dpor.first_nontermination.has_value()) {
+        const auto replay = checker.replay(dpor.first_nontermination->schedule);
+        assert(replay.first_nontermination.has_value());
+        assert(*replay.first_nontermination == *dpor.first_nontermination);
+    }
 }
 
 void cross_validate_program(const model::Program& program,
@@ -253,6 +292,7 @@ void cross_validate_program(const model::Program& program,
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        cycle_exists(dpor) != cycle_exists(naive) ||
         bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "oracle mismatch\n";
@@ -262,12 +302,14 @@ void cross_validate_program(const model::Program& program,
                   << " deadlock=" << naive.first_deadlock.has_value()
                   << " error=" << naive.first_error.has_value()
                   << " assertion=" << naive.first_assertion.has_value()
+                  << " cycle=" << cycle_exists(naive)
                   << " bound=" << bound_hit(naive) << '\n';
         std::cerr << "  dpor schedules=" << dpor.schedules_explored
                   << " race=" << dpor.first_race.has_value()
                   << " deadlock=" << dpor.first_deadlock.has_value()
                   << " error=" << dpor.first_error.has_value()
                   << " assertion=" << dpor.first_assertion.has_value()
+                  << " cycle=" << cycle_exists(dpor)
                   << " bound=" << bound_hit(dpor) << '\n';
     }
 
@@ -275,6 +317,7 @@ void cross_validate_program(const model::Program& program,
     assert(dpor.first_deadlock.has_value() == naive.first_deadlock.has_value());
     assert(dpor.first_error.has_value() == naive.first_error.has_value());
     assert(dpor.first_assertion.has_value() == naive.first_assertion.has_value());
+    assert(cycle_exists(dpor) == cycle_exists(naive));
     assert(bound_hit(dpor) == bound_hit(naive));
     assert(dpor.schedules_explored <= naive.schedules_explored);
     assert_replays_dpor_report(checker, dpor);
@@ -315,6 +358,7 @@ void assert_dpor_schedules_at_most(const model::Program& program, std::size_t up
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        cycle_exists(dpor) != cycle_exists(naive) ||
         bound_hit(dpor) != bound_hit(naive)) {
         std::cerr << "DPOR upper-bound fixture changed verdict or lost reduction\n";
         print_program(program);
@@ -326,6 +370,7 @@ void assert_dpor_schedules_at_most(const model::Program& program, std::size_t up
     assert(dpor.first_deadlock.has_value() == naive.first_deadlock.has_value());
     assert(dpor.first_error.has_value() == naive.first_error.has_value());
     assert(dpor.first_assertion.has_value() == naive.first_assertion.has_value());
+    assert(cycle_exists(dpor) == cycle_exists(naive));
     assert(bound_hit(dpor) == bound_hit(naive));
     assert_replays_dpor_report(checker, dpor);
 }
@@ -366,6 +411,11 @@ std::vector<model::Program> hand_picked_programs() {
         model::Program{{
             {lock("m"), wait("cv", "m"), read("x"), unlock("m")},
             {lock("m"), signal("cv"), unlock("m"), write("x")},
+        }},
+        // A cyclic fixture makes the oracle exercise cycle-existence and
+        // identical lasso replay rather than only agreeing on its absence.
+        model::Program{{
+            {set(1, 1), label("spin"), bnz(1, "spin")},
         }},
     };
 }

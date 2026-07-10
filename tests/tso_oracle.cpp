@@ -60,6 +60,36 @@ model::Action fence() {
     return action;
 }
 
+model::ValueOperand imm(model::Value value) {
+    model::ValueOperand operand;
+    operand.kind = model::ValueOperandKind::Immediate;
+    operand.immediate = value;
+    return operand;
+}
+
+model::Action set(model::RegisterId reg, model::Value value) {
+    model::Action action;
+    action.kind = model::ActionKind::Set;
+    action.destination = reg;
+    action.value = imm(value);
+    return action;
+}
+
+model::Action label(std::string name) {
+    model::Action action;
+    action.kind = model::ActionKind::Label;
+    action.label = std::move(name);
+    return action;
+}
+
+model::Action bnz(model::RegisterId reg, std::string target) {
+    model::Action action;
+    action.kind = model::ActionKind::BranchNonzero;
+    action.source_register = reg;
+    action.label = std::move(target);
+    return action;
+}
+
 const std::array<model::Action, 11> kActions{
     read("x"),
     read("y"),
@@ -100,6 +130,10 @@ bool bound_hit(const model::CheckResult& result) {
     return result.bound_exceeded_executions > 0;
 }
 
+bool cycle_exists(const model::CheckResult& result) {
+    return result.cycles_detected > 0;
+}
+
 void assert_replays_dpor_report(const model::ModelChecker& checker, const model::CheckResult& dpor) {
     if (dpor.first_race.has_value()) {
         const auto replay = checker.replay(dpor.first_race->schedule);
@@ -120,6 +154,11 @@ void assert_replays_dpor_report(const model::ModelChecker& checker, const model:
         const auto replay = checker.replay(dpor.first_assertion->schedule);
         assert(replay.first_assertion.has_value());
         assert(*replay.first_assertion == *dpor.first_assertion);
+    }
+    if (dpor.first_nontermination.has_value()) {
+        const auto replay = checker.replay(dpor.first_nontermination->schedule);
+        assert(replay.first_nontermination.has_value());
+        assert(*replay.first_nontermination == *dpor.first_nontermination);
     }
 }
 
@@ -163,6 +202,7 @@ void cross_validate_program(const model::Program& program,
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
+        cycle_exists(dpor) != cycle_exists(naive) ||
         bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "TSO oracle mismatch\n";
@@ -172,12 +212,14 @@ void cross_validate_program(const model::Program& program,
                   << " deadlock=" << naive.first_deadlock.has_value()
                   << " error=" << naive.first_error.has_value()
                   << " assertion=" << naive.first_assertion.has_value()
+                  << " cycle=" << cycle_exists(naive)
                   << " bound=" << bound_hit(naive) << '\n';
         std::cerr << "  dpor schedules=" << dpor.schedules_explored
                   << " race=" << dpor.first_race.has_value()
                   << " deadlock=" << dpor.first_deadlock.has_value()
                   << " error=" << dpor.first_error.has_value()
                   << " assertion=" << dpor.first_assertion.has_value()
+                  << " cycle=" << cycle_exists(dpor)
                   << " bound=" << bound_hit(dpor) << '\n';
         assert(false && "TSO oracle mismatch");
     }
@@ -210,6 +252,15 @@ int main() {
             }
         }
     }
+
+    // Ensure the TSO oracle exercises positive cycle existence and replay,
+    // not only agreement on acyclic generated programs.
+    cross_validate_program(model::Program{{
+                               {set(1, 1), label("spin"), bnz(1, "spin")},
+                           }},
+                           programs_checked,
+                           naive_total,
+                           dpor_total);
 
     std::cout << "tso_oracle: programs checked=" << programs_checked
               << " alphabet=" << kActions.size()

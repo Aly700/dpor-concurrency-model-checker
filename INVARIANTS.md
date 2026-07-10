@@ -6,9 +6,23 @@
 - Independence may only be claimed for actions whose ordering cannot affect future enabledness or observable state.
 - A report of safe means no explored state and no pruned equivalent class contains a bug under the modeled semantics.
 - With backward branches, safety is relative to the configured per-thread step
-  bound. A result with no race/deadlock/error/assertion but a nonzero
+  bound for executions that do not repeat a behavioral state. A result with no
+  race/deadlock/error/assertion/non-termination but a nonzero
   `bound_exceeded_executions` count is clean only up to that bound, never
   unconditionally clean.
+- A non-termination report must come from exact equality of canonical complete
+  behavioral states on one execution path. A lossy hash is forbidden because a
+  collision would fabricate a false divergence proof. Fingerprint history is
+  reset on backtrack and must never deduplicate states across executions.
+- The behavioral state includes normalized per-thread PCs, startedness, wait
+  phases, registers, memory values, mutex owners, condition-variable wait sets,
+  and ordered TSO store buffers. Vector clocks, atomic/mutex clocks, race
+  metadata, step counters, and schedule history are analysis/budget/history
+  state and are excluded. Consequently a lasso proves schedule-existence of
+  non-termination only, not repetition of analysis instrumentation.
+- A cycle witness is `stem + one cycle`, split at the first occurrence of the
+  revisited state. The claim is existential and makes no scheduler-fairness or
+  starvation-freedom claim.
 
 ## Replay
 
@@ -20,6 +34,9 @@
   reserved action index `kFlushActionIndex`. Replay must reject that sentinel
   unless the selected memory model is TSO and the thread's store buffer is
   nonempty at that exact step.
+- Replaying a non-termination witness must reproduce the identical stem/cycle
+  report by exact equality between the end-of-stem and end-of-cycle behavioral
+  states. Replay rejects schedules that continue after the cycle closes.
 - Test programs must not depend on OS thread scheduling.
 
 ## Happens-before
@@ -82,3 +99,8 @@
 - Under TSO, a started thread with pc done but a nonempty store buffer is not
   finished. The nonempty buffer always enables a flush transition, so buffered
   writes alone do not create deadlocks.
+- Cycle cutting is a terminal execution outcome like the step bound. DPOR must
+  conservatively retain enabled siblings and must not sleep the cycle-closing
+  transition across a sibling whose swapped prefix was not explored beyond the
+  cut. Differential gates compare naive/DPOR cycle existence as a boolean;
+  cycle counts may differ because DPOR explores class representatives.

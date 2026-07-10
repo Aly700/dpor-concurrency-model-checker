@@ -57,6 +57,138 @@ struct ExecutionState {
     Schedule schedule;
 };
 
+using StateFingerprint = std::string;
+using StateHistory = std::map<StateFingerprint, std::size_t>;
+
+void append_u64(StateFingerprint& fingerprint, std::uint64_t value) {
+    // A fixed little-endian encoding avoids object-layout, padding, locale,
+    // and host-endianness dependencies. Equality compares every byte; this is
+    // deliberately not a hash because a collision could fabricate a cycle.
+    for (std::size_t byte = 0; byte < sizeof(value); ++byte) {
+        fingerprint.push_back(static_cast<char>((value >> (byte * 8U)) & 0xffU));
+    }
+}
+
+void append_string(StateFingerprint& fingerprint, const std::string& value) {
+    append_u64(fingerprint, static_cast<std::uint64_t>(value.size()));
+    fingerprint.append(value);
+}
+
+StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
+    StateFingerprint fingerprint;
+    append_string(fingerprint, "dpor-behavioral-state-v1");
+    append_u64(fingerprint, static_cast<std::uint64_t>(state.memory_model));
+
+    append_u64(fingerprint, static_cast<std::uint64_t>(state.pc.size()));
+    for (const std::uint32_t pc : state.pc) {
+        append_u64(fingerprint, pc);
+    }
+
+    append_u64(fingerprint, static_cast<std::uint64_t>(state.started.size()));
+    for (const bool started : state.started) {
+        append_u64(fingerprint, started ? 1U : 0U);
+    }
+
+    append_u64(fingerprint, static_cast<std::uint64_t>(state.mutex_owner.size()));
+    for (const auto& [mutex, owner] : state.mutex_owner) {
+        append_string(fingerprint, mutex);
+        append_u64(fingerprint, owner);
+    }
+
+    // Empty waiter-map entries are observationally identical to absence:
+    // Signal/Broadcast treat both as no waiters. Canonicalize them away while
+    // preserving each nonempty wait set's deterministic wake order.
+    std::size_t nonempty_wait_sets = 0;
+    for (const auto& [_, waiters] : state.condition_waiters) {
+        if (!waiters.empty()) {
+            ++nonempty_wait_sets;
+        }
+    }
+    append_u64(fingerprint, static_cast<std::uint64_t>(nonempty_wait_sets));
+    for (const auto& [condition, waiters] : state.condition_waiters) {
+        if (waiters.empty()) {
+            continue;
+        }
+        append_string(fingerprint, condition);
+        append_u64(fingerprint, static_cast<std::uint64_t>(waiters.size()));
+        for (const ThreadId waiter : waiters) {
+            append_u64(fingerprint, waiter);
+        }
+    }
+
+    append_u64(fingerprint, static_cast<std::uint64_t>(state.registers.size()));
+    for (const auto& thread_registers : state.registers) {
+        for (const Value value : thread_registers) {
+            append_u64(fingerprint, static_cast<std::uint64_t>(value));
+        }
+    }
+
+    append_u64(fingerprint, static_cast<std::uint64_t>(state.wait_phase.size()));
+    for (const WaitPhase phase : state.wait_phase) {
+        append_u64(fingerprint, static_cast<std::uint64_t>(phase));
+    }
+
+    // Missing cells read as zero everywhere in the interpreter. Encoding only
+    // nonzero values gives absent and explicitly materialized zero cells one
+    // canonical behavioral representation without losing exact value data.
+    std::size_t nonzero_cells = 0;
+    for (const auto& [_, value] : state.memory_values) {
+        if (value != 0) {
+            ++nonzero_cells;
+        }
+    }
+    append_u64(fingerprint, static_cast<std::uint64_t>(nonzero_cells));
+    for (const auto& [address, value] : state.memory_values) {
+        if (value == 0) {
+            continue;
+        }
+        append_string(fingerprint, address);
+        append_u64(fingerprint, static_cast<std::uint64_t>(value));
+    }
+
+    append_u64(fingerprint, static_cast<std::uint64_t>(state.store_buffers.size()));
+    for (const auto& buffer : state.store_buffers) {
+        append_u64(fingerprint, static_cast<std::uint64_t>(buffer.size()));
+        for (const StoreBufferEntry& entry : buffer) {
+            append_string(fingerprint, entry.address);
+            append_u64(fingerprint, static_cast<std::uint64_t>(entry.value));
+        }
+    }
+
+    // Excluded deliberately: mutex/thread/atomic vector clocks and AddressState
+    // race metadata are monotone analysis instrumentation; thread_steps is the
+    // exploration budget; schedule is history. None changes program control,
+    // enabledness, or modeled values. A repeated fingerprint therefore proves
+    // schedule-existence of non-termination only, not repetition of HB/race
+    // instrumentation and not a fairness property.
+    return fingerprint;
+}
+
+StateHistory initial_state_history(const ExecutionState& state) {
+    StateHistory history;
+    history.emplace(behavioral_state_fingerprint(state), state.schedule.size());
+    return history;
+}
+
+std::optional<NonTerminationReport> observe_behavioral_state(const ExecutionState& state,
+                                                              StateHistory& history) {
+    StateFingerprint fingerprint = behavioral_state_fingerprint(state);
+    const auto first = history.find(fingerprint);
+    if (first == history.end()) {
+        history.emplace(std::move(fingerprint), state.schedule.size());
+        return std::nullopt;
+    }
+
+    const std::size_t cycle_start = first->second;
+    assert(cycle_start < state.schedule.size());
+    NonTerminationReport report;
+    report.stem.assign(state.schedule.begin(), state.schedule.begin() + cycle_start);
+    report.cycle.assign(state.schedule.begin() + cycle_start, state.schedule.end());
+    report.schedule = state.schedule;
+    assert(!report.cycle.empty());
+    return report;
+}
+
 struct StepReport {
     std::optional<RaceReport> race;
     std::optional<ModelErrorReport> error;
@@ -1562,6 +1694,14 @@ void record_bound_exceeded(CheckResult& result) {
     ++result.bound_exceeded_executions;
 }
 
+void record_nontermination(CheckResult& result, const NonTerminationReport& report) {
+    ++result.schedules_explored;
+    ++result.cycles_detected;
+    if (!result.first_nontermination.has_value()) {
+        result.first_nontermination = report;
+    }
+}
+
 void dpor_dfs(const Program& program,
               ExecutionState state,
               CheckResult& result,
@@ -1569,7 +1709,8 @@ void dpor_dfs(const Program& program,
               std::size_t step_bound,
               std::vector<DporNode>& nodes,
               std::vector<ExecutedTransition>& trace,
-              std::vector<ScheduleStep> sleep_set) {
+              std::vector<ScheduleStep> sleep_set,
+              StateHistory state_history) {
     if (result.schedules_explored >= max_schedules) {
         return;
     }
@@ -1645,6 +1786,7 @@ void dpor_dfs(const Program& program,
         }
 
         const Action effective_action = effective_action_for_step(program, state, *next_step);
+        bool cycle_cut = false;
 
         ExecutionState next = state;
         const StepReport step_report = execute_enabled_step(program, next, *next_step);
@@ -1674,25 +1816,44 @@ void dpor_dfs(const Program& program,
             }
             ++result.schedules_explored;
         } else {
-            // INVARIANTS.md Soundness/Independence: enabled transitions not in
-            // this node's backtrack set are the only schedules pruned here.
-            // The initial persistent set and dynamic backtrack additions above
-            // omit an alternative solely after the transition predicate
-            // justifies commuting it with the representative transition.
-            std::vector<ScheduleStep> child_sleep =
-                inherited_sleep_set(program, next, nodes.at(depth), transition);
-            dpor_dfs(program,
-                     std::move(next),
-                     result,
-                     max_schedules,
-                     step_bound,
-                     nodes,
-                     trace,
-                     std::move(child_sleep));
+            StateHistory next_history = state_history;
+            const auto nontermination = observe_behavioral_state(next, next_history);
+            if (nontermination.has_value()) {
+                cycle_cut = true;
+                // Cycle-cut outcomes are terminal exploration leaves like
+                // step-bound outcomes. Preserve every enabled sibling at the
+                // parent so truncating this representative cannot sleep-prune
+                // a distinct safety or cycle-existence class.
+                nodes.at(depth).sleep.clear();
+                for (const ScheduleStep& enabled : nodes.at(depth).enabled) {
+                    insert_step(nodes.at(depth).backtrack, enabled);
+                }
+                record_nontermination(result, *nontermination);
+            } else {
+                // INVARIANTS.md Soundness/Independence: enabled transitions not
+                // in this node's backtrack set are the only schedules pruned
+                // here. The initial persistent set and dynamic backtrack
+                // additions above omit an alternative solely after the
+                // transition predicate justifies commuting it with the
+                // representative transition.
+                std::vector<ScheduleStep> child_sleep =
+                    inherited_sleep_set(program, next, nodes.at(depth), transition);
+                dpor_dfs(program,
+                         std::move(next),
+                         result,
+                         max_schedules,
+                         step_bound,
+                         nodes,
+                         trace,
+                         std::move(child_sleep),
+                         std::move(next_history));
+            }
         }
 
         trace.pop_back();
-        insert_step(nodes.at(depth).sleep, *next_step);
+        if (!cycle_cut) {
+            insert_step(nodes.at(depth).sleep, *next_step);
+        }
     }
 
     nodes.pop_back();
@@ -1702,7 +1863,8 @@ void dfs(const Program& program,
          ExecutionState state,
          CheckResult& result,
          std::size_t max_schedules,
-         std::size_t step_bound) {
+         std::size_t step_bound,
+         StateHistory state_history) {
     if (result.schedules_explored >= max_schedules) {
         return;
     }
@@ -1724,7 +1886,18 @@ void dfs(const Program& program,
         if (step_report.error.has_value() || step_report.assertion.has_value()) {
             ++result.schedules_explored;
         } else {
-            dfs(program, std::move(next), result, max_schedules, step_bound);
+            StateHistory next_history = state_history;
+            const auto nontermination = observe_behavioral_state(next, next_history);
+            if (nontermination.has_value()) {
+                record_nontermination(result, *nontermination);
+            } else {
+                dfs(program,
+                    std::move(next),
+                    result,
+                    max_schedules,
+                    step_bound,
+                    std::move(next_history));
+            }
         }
 
         if (result.schedules_explored >= max_schedules) {
@@ -1746,7 +1919,8 @@ void collect_naive_schedules_dfs(const Program& program,
                                  ExecutionState state,
                                  std::vector<Schedule>& schedules,
                                  std::size_t max_schedules,
-                                 std::size_t step_bound) {
+                                 std::size_t step_bound,
+                                 StateHistory state_history) {
     if (schedules.size() >= max_schedules) {
         return;
     }
@@ -1769,7 +1943,17 @@ void collect_naive_schedules_dfs(const Program& program,
         if (step_report.error.has_value() || step_report.assertion.has_value()) {
             schedules.push_back(next.schedule);
         } else {
-            collect_naive_schedules_dfs(program, std::move(next), schedules, max_schedules, step_bound);
+            StateHistory next_history = state_history;
+            if (observe_behavioral_state(next, next_history).has_value()) {
+                schedules.push_back(next.schedule);
+            } else {
+                collect_naive_schedules_dfs(program,
+                                            std::move(next),
+                                            schedules,
+                                            max_schedules,
+                                            step_bound,
+                                            std::move(next_history));
+            }
         }
 
         if (schedules.size() >= max_schedules) {
@@ -1833,6 +2017,7 @@ CheckResult replay_schedule(const Program& program,
                             MemoryModel memory_model) {
     CheckResult result;
     ExecutionState state = initial_state(program, memory_model);
+    StateHistory state_history = initial_state_history(state);
 
     for (std::size_t i = 0; i < schedule.size(); ++i) {
         validate_replay_step(program, state, schedule[i], i);
@@ -1850,6 +2035,15 @@ CheckResult replay_schedule(const Program& program,
                 throw invalid_schedule(i + 1, "schedule continues after a terminal execution report");
             }
             ++result.schedules_explored;
+            return result;
+        }
+
+        const auto nontermination = observe_behavioral_state(state, state_history);
+        if (nontermination.has_value()) {
+            if (i + 1 < schedule.size()) {
+                throw invalid_schedule(i + 1, "schedule continues after a nontermination cycle");
+            }
+            record_nontermination(result, *nontermination);
             return result;
         }
     }
@@ -1870,6 +2064,7 @@ std::vector<EffectiveScheduleStep> replay_effective_trace(const Program& program
                                                           MemoryModel memory_model) {
     std::vector<EffectiveScheduleStep> trace;
     ExecutionState state = initial_state(program, memory_model);
+    StateHistory state_history = initial_state_history(state);
 
     for (std::size_t i = 0; i < schedule.size(); ++i) {
         validate_replay_step(program, state, schedule[i], i);
@@ -1889,6 +2084,13 @@ std::vector<EffectiveScheduleStep> replay_effective_trace(const Program& program
         if (step_report.error.has_value() || step_report.assertion.has_value()) {
             if (i + 1 < schedule.size()) {
                 throw invalid_schedule(i + 1, "schedule continues after a terminal execution report");
+            }
+            return trace;
+        }
+
+        if (observe_behavioral_state(state, state_history).has_value()) {
+            if (i + 1 < schedule.size()) {
+                throw invalid_schedule(i + 1, "schedule continues after a nontermination cycle");
             }
             return trace;
         }
@@ -2193,7 +2395,13 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
 
 CheckResult ModelChecker::explore_naive(std::size_t max_schedules) const {
     CheckResult result;
-    dfs(program_, initial_state(program_, memory_model_), result, max_schedules, step_bound_);
+    ExecutionState state = initial_state(program_, memory_model_);
+    dfs(program_,
+        state,
+        result,
+        max_schedules,
+        step_bound_,
+        initial_state_history(state));
     result.exploration_capped = result.schedules_explored >= max_schedules;
     minimize_result_reports(program_, result, step_bound_, memory_model_);
     return result;
@@ -2203,7 +2411,16 @@ CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
     CheckResult result;
     std::vector<DporNode> nodes;
     std::vector<ExecutedTransition> trace;
-    dpor_dfs(program_, initial_state(program_, memory_model_), result, max_schedules, step_bound_, nodes, trace, {});
+    ExecutionState state = initial_state(program_, memory_model_);
+    dpor_dfs(program_,
+             state,
+             result,
+             max_schedules,
+             step_bound_,
+             nodes,
+             trace,
+             {},
+             initial_state_history(state));
     result.exploration_capped = result.schedules_explored >= max_schedules;
     minimize_result_reports(program_, result, step_bound_, memory_model_);
     return result;
@@ -2215,8 +2432,13 @@ CheckResult ModelChecker::replay(const Schedule& schedule) const {
 
 std::vector<Schedule> ModelChecker::collect_naive_schedules(std::size_t max_schedules) const {
     std::vector<Schedule> schedules;
-    collect_naive_schedules_dfs(
-        program_, initial_state(program_, memory_model_), schedules, max_schedules, step_bound_);
+    ExecutionState state = initial_state(program_, memory_model_);
+    collect_naive_schedules_dfs(program_,
+                                state,
+                                schedules,
+                                max_schedules,
+                                step_bound_,
+                                initial_state_history(state));
     return schedules;
 }
 
@@ -2233,6 +2455,9 @@ bool ModelChecker::dpor_transitions_independent(ThreadId lhs_thread,
 
 Schedule ModelChecker::minimize_schedule(const Schedule& schedule) const {
     const CheckResult replayed = replay_schedule(program_, schedule, step_bound_, memory_model_);
+    if (replayed.first_nontermination.has_value()) {
+        return schedule;
+    }
     const BugIdentitySet target = identities_of(replayed);
     if (empty(target)) {
         return schedule;
