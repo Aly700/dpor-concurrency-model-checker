@@ -14,6 +14,7 @@
 #include <random>
 #include <set>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -41,6 +42,29 @@ struct AggregateStats {
     std::size_t optimal_programs{0};
 };
 
+bool same_thread_steps_ordered(model::MemoryModel memory_model,
+                               const model::EffectiveScheduleStep& lhs,
+                               const model::EffectiveScheduleStep& rhs) {
+    if (lhs.endpoint.thread != rhs.endpoint.thread) {
+        return false;
+    }
+
+    const bool both_flushes =
+        lhs.effective_action.kind == model::ActionKind::Flush &&
+        rhs.effective_action.kind == model::ActionKind::Flush;
+    if (!both_flushes || memory_model != model::MemoryModel::PSO) {
+        return true;
+    }
+
+    return lhs.effective_action.address == rhs.effective_action.address;
+}
+
+void require(bool condition, const char* message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
 model::Action read(std::string address) {
     model::Action action;
     action.kind = model::ActionKind::Read;
@@ -53,6 +77,89 @@ model::Action write(std::string address) {
     action.kind = model::ActionKind::Write;
     action.address = std::move(address);
     return action;
+}
+
+model::EffectiveScheduleStep effective_step(model::ThreadId thread,
+                                            std::uint32_t action_index,
+                                            model::Action action,
+                                            std::optional<std::uint32_t> flush_address = std::nullopt) {
+    return model::EffectiveScheduleStep{
+        model::ScheduleStep{thread, action_index, flush_address},
+        std::move(action),
+    };
+}
+
+model::Action flush(std::string address) {
+    model::Action action;
+    action.kind = model::ActionKind::Flush;
+    action.address = std::move(address);
+    return action;
+}
+
+void test_same_thread_flush_correspondence() {
+    const auto source_x = effective_step(0, 0, write("x"));
+    const auto source_y = effective_step(0, 1, write("y"));
+    const auto tso_flush_x = effective_step(0, model::kFlushActionIndex, flush("x"));
+    const auto tso_flush_y = effective_step(0, model::kFlushActionIndex, flush("y"));
+    const auto pso_flush_x = effective_step(0, model::kFlushActionIndex, flush("x"), 0);
+    const auto pso_flush_x_again =
+        effective_step(0, model::kFlushActionIndex, flush("x"), 0);
+    const auto pso_flush_y = effective_step(0, model::kFlushActionIndex, flush("y"), 1);
+    const auto other_thread_flush_y =
+        effective_step(1, model::kFlushActionIndex, flush("y"), 1);
+
+    require(same_thread_steps_ordered(model::MemoryModel::SC, source_x, source_y),
+            "same-thread program actions must remain ordered");
+    require(same_thread_steps_ordered(model::MemoryModel::TSO, source_x, tso_flush_x),
+            "same-thread source/flush pairs must remain ordered");
+    require(same_thread_steps_ordered(model::MemoryModel::TSO, tso_flush_x, tso_flush_y),
+            "TSO same-thread flushes must remain single-FIFO ordered");
+    require(same_thread_steps_ordered(
+                model::MemoryModel::PSO, pso_flush_x, pso_flush_x_again),
+            "PSO same-thread same-address flushes must remain FIFO ordered");
+    require(!same_thread_steps_ordered(model::MemoryModel::PSO, pso_flush_x, pso_flush_y),
+            "PSO same-thread different-address flushes must remain unordered");
+    require(!same_thread_steps_ordered(
+                model::MemoryModel::PSO, pso_flush_x, other_thread_flush_y),
+            "same-thread ordering must not constrain different threads");
+}
+
+void test_replay_exposes_pso_flush_identity() {
+    const model::Program program{{{write("x"), write("y")}}};
+    const model::ModelChecker checker(program, 20, model::MemoryModel::PSO);
+    const model::Schedule schedule{
+        {0, 0, std::nullopt},
+        {0, 1, std::nullopt},
+        {0, model::kFlushActionIndex, 1},
+        {0, model::kFlushActionIndex, 0},
+    };
+    const auto trace = checker.replay_effective_trace(schedule);
+    require(trace.size() == schedule.size(), "PSO effective replay lost a flush transition");
+    require(trace.at(2).endpoint.flush_address == 1 &&
+                trace.at(2).effective_action.kind == model::ActionKind::Flush &&
+                trace.at(2).effective_action.address == "y",
+            "PSO flush(y) identity was not preserved by effective replay");
+    require(trace.at(3).endpoint.flush_address == 0 &&
+                trace.at(3).effective_action.kind == model::ActionKind::Flush &&
+                trace.at(3).effective_action.address == "x",
+            "PSO flush(x) identity was not preserved by effective replay");
+}
+
+std::size_t class_count_for(const model::Program& program, model::MemoryModel memory_model);
+
+void test_pso_flush_reordering_changes_class_count() {
+    const model::Program program{{
+        {write("x"), write("y")},
+        {read("y"), read("x")},
+    }};
+    const std::size_t tso_classes = class_count_for(program, model::MemoryModel::TSO);
+    const std::size_t pso_classes = class_count_for(program, model::MemoryModel::PSO);
+    if (tso_classes != 11 || pso_classes != 12) {
+        std::ostringstream message;
+        message << "PSO different-address flush reordering class baseline changed: TSO="
+                << tso_classes << " PSO=" << pso_classes;
+        throw std::runtime_error(message.str());
+    }
 }
 
 model::Action atomic_load(std::string address) {
@@ -157,6 +264,12 @@ model::Action yield() {
     return action;
 }
 
+model::Action fence() {
+    model::Action action;
+    action.kind = model::ActionKind::Fence;
+    return action;
+}
+
 const std::array<model::Action, 17> kTwoThreadActions{
     read("x"),
     write("x"),
@@ -175,6 +288,40 @@ const std::array<model::Action, 17> kTwoThreadActions{
     join(0),
     join(1),
     yield(),
+};
+
+// The buffered-model corpus is a small restriction of the common 11-action
+// family used by tso_oracle and pso_oracle. It deliberately includes plain
+// writes on two addresses so both concrete flush identities are exercised.
+const std::array<model::Action, 11> kBufferedActions{
+    read("x"),
+    read("y"),
+    write("x"),
+    write("y"),
+    atomic_load("x"),
+    atomic_load("y"),
+    atomic_store("x"),
+    atomic_store("y"),
+    lock("m"),
+    unlock("m"),
+    fence(),
+};
+
+const std::array<model::Action, 14> kBufferedFuzzActions{
+    read("x"),
+    read("y"),
+    write("x"),
+    write("y"),
+    atomic_load("x"),
+    atomic_load("y"),
+    atomic_store("x"),
+    atomic_store("y"),
+    lock("m"),
+    unlock("m"),
+    fence(),
+    yield(),
+    set(0, 1),
+    assert_nonzero(0),
 };
 
 model::Program two_thread_program(std::uint64_t encoded,
@@ -197,6 +344,30 @@ std::uint64_t pow_actions(std::size_t exponent) {
     std::uint64_t result = 1;
     for (std::size_t i = 0; i < exponent; ++i) {
         result *= kTwoThreadActions.size();
+    }
+    return result;
+}
+
+model::Program buffered_two_thread_program(std::uint64_t encoded,
+                                           std::size_t lhs_length,
+                                           std::size_t rhs_length) {
+    model::Program program;
+    program.threads.resize(2);
+    for (std::size_t index = 0; index < lhs_length; ++index) {
+        program.threads[0].push_back(kBufferedActions.at(encoded % kBufferedActions.size()));
+        encoded /= kBufferedActions.size();
+    }
+    for (std::size_t index = 0; index < rhs_length; ++index) {
+        program.threads[1].push_back(kBufferedActions.at(encoded % kBufferedActions.size()));
+        encoded /= kBufferedActions.size();
+    }
+    return program;
+}
+
+std::uint64_t pow_buffered_actions(std::size_t exponent) {
+    std::uint64_t result = 1;
+    for (std::size_t index = 0; index < exponent; ++index) {
+        result *= kBufferedActions.size();
     }
     return result;
 }
@@ -316,6 +487,18 @@ model::Program generate_fuzz_program(std::mt19937_64& rng) {
     return program;
 }
 
+model::Program generate_buffered_fuzz_program(std::mt19937_64& rng) {
+    model::Program program;
+    program.threads.resize(2);
+    for (auto& thread : program.threads) {
+        const std::size_t action_count = 1 + bounded(rng, 3);
+        for (std::size_t index = 0; index < action_count; ++index) {
+            thread.push_back(kBufferedFuzzActions.at(bounded(rng, kBufferedFuzzActions.size())));
+        }
+    }
+    return program;
+}
+
 std::string operand_key(const std::optional<model::ValueOperand>& operand) {
     if (!operand.has_value()) {
         return "-";
@@ -372,6 +555,7 @@ std::vector<std::string> transition_labels(const std::vector<model::EffectiveSch
 }
 
 std::vector<std::string> canonical_form(const model::ModelChecker& checker,
+                                        model::MemoryModel memory_model,
                                         const std::vector<model::EffectiveScheduleStep>& trace) {
     const std::vector<std::string> labels = transition_labels(trace);
     std::vector<std::vector<std::size_t>> outgoing(trace.size());
@@ -379,14 +563,16 @@ std::vector<std::string> canonical_form(const model::ModelChecker& checker,
 
     for (std::size_t i = 0; i < trace.size(); ++i) {
         for (std::size_t j = i + 1; j < trace.size(); ++j) {
-            // This gate measures optimality against the same transition
-            // predicate DPOR actually prunes with: same-thread transitions are
-            // ordered, enabled valid Join gets the checker-local ADR 0011
-            // refinement, and all other pairs fall back to action-level
-            // independent(). A stricter relation would inflate the class count
-            // beyond the pruner's stated equivalence relation.
+            // This gate measures optimality against the same correspondence
+            // DPOR may exploit. Program-ordered pairs and source/flush pairs
+            // stay ordered. TSO flushes stay ordered by its single FIFO, while
+            // PSO flushes from one thread are ordered only at the same address;
+            // different-address drains may commute unless another dependence
+            // path orders them. Enabled valid Join gets the checker-local ADR
+            // 0011 refinement, and all other pairs fall back to action-level
+            // independent(). A stricter relation would inflate the class count.
             const bool dependent =
-                trace[i].endpoint.thread == trace[j].endpoint.thread ||
+                same_thread_steps_ordered(memory_model, trace[i], trace[j]) ||
                 !checker.dpor_transitions_independent(
                     trace[i].endpoint.thread,
                     trace[i].effective_action,
@@ -435,6 +621,23 @@ std::vector<std::string> canonical_form(const model::ModelChecker& checker,
 
     assert(canonical.size() == trace.size());
     return canonical;
+}
+
+std::size_t class_count_for(const model::Program& program, model::MemoryModel memory_model) {
+    const model::ModelChecker checker(
+        program, model::ModelChecker::kDefaultStepBound, memory_model);
+    const model::CheckResult naive = checker.explore_naive(kNoScheduleCap);
+    const std::vector<model::Schedule> schedules =
+        checker.collect_naive_schedules(naive.schedules_explored + 1);
+    require(schedules.size() == naive.schedules_explored,
+            "class-count fixture did not collect every naive schedule");
+
+    std::set<std::vector<std::string>> classes;
+    for (const model::Schedule& schedule : schedules) {
+        classes.insert(canonical_form(
+            checker, memory_model, checker.replay_effective_trace(schedule)));
+    }
+    return classes.size();
 }
 
 VerdictKind verdict_kind(const model::CheckResult& result) {
@@ -562,10 +765,10 @@ bool eligible_for_meter(const model::CheckResult& naive, bool enforce_small_sche
     // the measured class minimum stays comparable to DPOR's bug-existence
     // pruning of independent preludes before terminal reports.
     return !naive.exploration_capped &&
+           naive.cycles_detected == 0 &&
            naive.bound_exceeded_executions == 0 &&
            !naive.first_error.has_value() &&
            !naive.first_assertion.has_value() &&
-           !naive.first_nontermination.has_value() &&
            (!enforce_small_schedule_limit ||
             naive.schedules_explored <= kMaxMeteredNaiveSchedules);
 }
@@ -587,14 +790,28 @@ void add_source_count(AggregateStats& stats, ProgramSource source) {
 std::size_t measure_program(const model::Program& program,
                             ProgramSource source,
                             AggregateStats& stats,
-                            bool enforce_small_schedule_limit) {
-    const model::ModelChecker checker(program);
-    const model::CheckResult naive = checker.explore_naive(kNoScheduleCap);
+                            bool enforce_small_schedule_limit,
+                            model::MemoryModel memory_model = model::MemoryModel::SC) {
+    const model::ModelChecker checker(
+        program, model::ModelChecker::kDefaultStepBound, memory_model);
+    // Buffered schedules gain internal flush transitions and can grow quickly.
+    // A 25th leaf is sufficient to reject a candidate whose eligibility limit
+    // is 24; only eligible spaces are then collected and replayed exhaustively.
+    const std::size_t probe_cap =
+        enforce_small_schedule_limit && memory_model != model::MemoryModel::SC
+            ? kMaxMeteredNaiveSchedules + 1
+            : kNoScheduleCap;
+    const model::CheckResult naive = checker.explore_naive(probe_cap);
     if (!eligible_for_meter(naive, enforce_small_schedule_limit)) {
         return 0;
     }
 
     const model::CheckResult dpor = checker.explore_dpor(kNoScheduleCap);
+    if (dpor.cycles_detected != 0 || dpor.bound_exceeded_executions != 0) {
+        std::cerr << "DPOR left the zero-cycle/zero-bound meter scope\n";
+        print_program(program);
+        std::abort();
+    }
     const std::vector<model::Schedule> schedules =
         checker.collect_naive_schedules(naive.schedules_explored + 1);
     if (schedules.size() != naive.schedules_explored) {
@@ -608,7 +825,8 @@ std::size_t measure_program(const model::Program& program,
     for (const model::Schedule& schedule : schedules) {
         const std::vector<model::EffectiveScheduleStep> effective_trace =
             checker.replay_effective_trace(schedule);
-        const std::vector<std::string> canonical = canonical_form(checker, effective_trace);
+        const std::vector<std::string> canonical =
+            canonical_form(checker, memory_model, effective_trace);
         const VerdictKind verdict = verdict_kind(checker.replay(schedule));
         const auto [position, inserted] = class_verdicts.emplace(canonical, verdict);
         if (!inserted && position->second != verdict) {
@@ -677,6 +895,42 @@ void measure_fuzz_sample(AggregateStats& stats) {
     }
 }
 
+void measure_buffered_model(model::MemoryModel memory_model, AggregateStats& stats) {
+    require(memory_model == model::MemoryModel::TSO ||
+                memory_model == model::MemoryModel::PSO,
+            "buffered optimality corpus requires TSO or PSO");
+
+    constexpr std::uint64_t kProgramsPerLengthPairCap = 128;
+    for (std::size_t lhs_length = 0; lhs_length <= 2; ++lhs_length) {
+        for (std::size_t rhs_length = 0; rhs_length <= 2; ++rhs_length) {
+            const std::uint64_t count = pow_buffered_actions(lhs_length + rhs_length);
+            const std::uint64_t samples =
+                std::min<std::uint64_t>(count, kProgramsPerLengthPairCap);
+            for (std::uint64_t sample = 0; sample < samples; ++sample) {
+                const std::uint64_t encoded =
+                    count == samples ? sample : (sample * count) / samples;
+                measure_program(
+                    buffered_two_thread_program(encoded, lhs_length, rhs_length),
+                    ProgramSource::TwoThreadFamily,
+                    stats,
+                    true,
+                    memory_model);
+            }
+        }
+    }
+
+    std::mt19937_64 rng(0x7b83d52fa9614c0dull);
+    constexpr std::size_t kFuzzCandidates = 128;
+    for (std::size_t index = 0; index < kFuzzCandidates; ++index) {
+        measure_program(
+            generate_buffered_fuzz_program(rng),
+            ProgramSource::Fuzz,
+            stats,
+            true,
+            memory_model);
+    }
+}
+
 void print_summary(const AggregateStats& stats) {
     const double redundancy_ratio =
         stats.total_classes == 0
@@ -703,13 +957,62 @@ void print_summary(const AggregateStats& stats) {
               << " within_class_same_verdict=held\n";
 }
 
+void print_buffered_summary(model::MemoryModel memory_model, const AggregateStats& stats) {
+    const double redundancy_ratio =
+        stats.total_classes == 0
+            ? 0.0
+            : static_cast<double>(stats.total_dpor_schedules) /
+                  static_cast<double>(stats.total_classes);
+    const double optimal_percent =
+        stats.programs_metered == 0
+            ? 0.0
+            : 100.0 * static_cast<double>(stats.optimal_programs) /
+                  static_cast<double>(stats.programs_metered);
+    const char* prefix = memory_model == model::MemoryModel::TSO
+                             ? "dpor_optimality_tso:"
+                             : "dpor_optimality_pso:";
+
+    std::cout << prefix
+              << " programs metered=" << stats.programs_metered
+              << " total_classes=" << stats.total_classes
+              << " total_dpor_schedules=" << stats.total_dpor_schedules
+              << " total_naive_schedules=" << stats.total_naive_schedules
+              << std::fixed << std::setprecision(3)
+              << " redundancy_ratio=" << redundancy_ratio
+              << std::setprecision(1)
+              << " optimal_programs_percent=" << optimal_percent
+              << " source_enumerated=" << stats.two_thread.metered
+              << " source_fuzz=" << stats.fuzz.metered
+              << " within_class_same_verdict=held\n";
+}
+
 } // namespace
 
 int main() {
+    test_same_thread_flush_correspondence();
+    test_replay_exposes_pso_flush_identity();
+    test_pso_flush_reordering_changes_class_count();
+
     AggregateStats stats;
     measure_two_thread_family(stats);
     measure_hand_picked(stats);
     measure_fuzz_sample(stats);
     print_summary(stats);
+
+    AggregateStats tso_stats;
+    measure_buffered_model(model::MemoryModel::TSO, tso_stats);
+    require(tso_stats.two_thread.metered > 0,
+            "TSO optimality corpus has no eligible oracle-family programs");
+    require(tso_stats.fuzz.metered > 0,
+            "TSO optimality corpus has no eligible fixed-seed fuzz programs");
+    print_buffered_summary(model::MemoryModel::TSO, tso_stats);
+
+    AggregateStats pso_stats;
+    measure_buffered_model(model::MemoryModel::PSO, pso_stats);
+    require(pso_stats.two_thread.metered > 0,
+            "PSO optimality corpus has no eligible oracle-family programs");
+    require(pso_stats.fuzz.metered > 0,
+            "PSO optimality corpus has no eligible fixed-seed fuzz programs");
+    print_buffered_summary(model::MemoryModel::PSO, pso_stats);
     return 0;
 }

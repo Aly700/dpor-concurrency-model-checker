@@ -277,11 +277,14 @@ schedule per Mazurkiewicz class:
    reproduction. Deterministic fractions run under TSO and PSO, and the summary
    prints both model counts plus naive/DPOR total, fair, and unfair cycle
    counters.
-4. **Optimality meter** — collects naive schedules for small non-error,
-   non-assertion programs, canonicalizes phase-aware Mazurkiewicz trace
-   classes using the same transition predicate DPOR prunes with, asserts
-   `classes <= dpor <= naive`, and prints the aggregate DPOR/classes
-   redundancy ratio.
+4. **SC/TSO/PSO optimality meter** — collects naive schedules for small
+   non-error, non-assertion, zero-cycle, zero-bound-hit programs, canonicalizes
+   phase-aware Mazurkiewicz trace classes using the same transition predicate
+   DPOR prunes with, asserts `classes <= dpor <= naive`, and prints one
+   aggregate DPOR/classes redundancy ratio per memory model. Program actions,
+   source/flush pairs, TSO flushes, and same-address PSO flushes retain
+   same-thread order; different-address PSO flushes do not receive an extra
+   same-thread edge unless another dependence path orders them.
 5. **Buffered-model oracles** — capped TSO and PSO program sweeps compare
    naive and DPOR verdict/total-cycle/fair-cycle/unfair-cycle existence,
    schedule dominance, and exact replay.
@@ -294,9 +297,10 @@ All gates are deterministic and run in CI on Linux and macOS.
 ## Design records
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
-soundness-relevant decision in `adr/` (0001 architecture crux through 0018
-fairness classification), including the exact vector-clock edge for each
-synchronization kind and why each DPOR pruning step cannot lose a bug class.
+soundness-relevant decision in `adr/` (0001 architecture crux through ADR
+0019's all-model optimality meter), including the exact vector-clock edge for
+each synchronization kind and why each DPOR pruning step cannot lose a bug
+class.
 
 **[docs/case-study.md](docs/case-study.md)** tells the verification story:
 how the differential gates caught two real DPOR soundness bugs that had
