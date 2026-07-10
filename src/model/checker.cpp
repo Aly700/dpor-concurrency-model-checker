@@ -195,8 +195,8 @@ StateHistory initial_state_history(const ExecutionState& state) {
     return history;
 }
 
-std::optional<NonTerminationReport> observe_behavioral_state(const ExecutionState& state,
-                                                              StateHistory& history) {
+std::optional<std::size_t> observe_behavioral_state(const ExecutionState& state,
+                                                    StateHistory& history) {
     StateFingerprint fingerprint = behavioral_state_fingerprint(state);
     const auto first = history.find(fingerprint);
     if (first == history.end()) {
@@ -204,14 +204,8 @@ std::optional<NonTerminationReport> observe_behavioral_state(const ExecutionStat
         return std::nullopt;
     }
 
-    const std::size_t cycle_start = first->second;
-    assert(cycle_start < state.schedule.size());
-    NonTerminationReport report;
-    report.stem.assign(state.schedule.begin(), state.schedule.begin() + cycle_start);
-    report.cycle.assign(state.schedule.begin() + cycle_start, state.schedule.end());
-    report.schedule = state.schedule;
-    assert(!report.cycle.empty());
-    return report;
+    assert(first->second < state.schedule.size());
+    return first->second;
 }
 
 struct StepReport {
@@ -1825,10 +1819,20 @@ void record_bound_exceeded(CheckResult& result) {
 void record_nontermination(CheckResult& result, const NonTerminationReport& report) {
     ++result.schedules_explored;
     ++result.cycles_detected;
+    if (report.fairness == Fairness::FairDivergence) {
+        ++result.fair_cycles;
+    } else {
+        ++result.unfair_cycles;
+    }
     if (!result.first_nontermination.has_value()) {
         result.first_nontermination = report;
     }
 }
+
+NonTerminationReport make_nontermination_report(const Program& program,
+                                                 const Schedule& schedule,
+                                                 std::size_t cycle_start,
+                                                 MemoryModel memory_model);
 
 void dpor_dfs(const Program& program,
               ExecutionState state,
@@ -1946,8 +1950,8 @@ void dpor_dfs(const Program& program,
             ++result.schedules_explored;
         } else {
             StateHistory next_history = state_history;
-            const auto nontermination = observe_behavioral_state(next, next_history);
-            if (nontermination.has_value()) {
+            const auto cycle_start = observe_behavioral_state(next, next_history);
+            if (cycle_start.has_value()) {
                 cycle_cut = true;
                 // Cycle-cut outcomes are terminal exploration leaves like
                 // step-bound outcomes. Preserve every enabled sibling at the
@@ -1957,7 +1961,10 @@ void dpor_dfs(const Program& program,
                 for (const ScheduleStep& enabled : nodes.at(depth).enabled) {
                     insert_step(nodes.at(depth).backtrack, enabled);
                 }
-                record_nontermination(result, *nontermination);
+                record_nontermination(
+                    result,
+                    make_nontermination_report(
+                        program, next.schedule, *cycle_start, next.memory_model));
             } else {
                 // INVARIANTS.md Soundness/Independence: enabled transitions not
                 // in this node's backtrack set are the only schedules pruned
@@ -2016,9 +2023,12 @@ void dfs(const Program& program,
             ++result.schedules_explored;
         } else {
             StateHistory next_history = state_history;
-            const auto nontermination = observe_behavioral_state(next, next_history);
-            if (nontermination.has_value()) {
-                record_nontermination(result, *nontermination);
+            const auto cycle_start = observe_behavioral_state(next, next_history);
+            if (cycle_start.has_value()) {
+                record_nontermination(
+                    result,
+                    make_nontermination_report(
+                        program, next.schedule, *cycle_start, next.memory_model));
             } else {
                 dfs(program,
                     std::move(next),
@@ -2149,6 +2159,73 @@ void validate_replay_step(const Program& program,
     }
 }
 
+NonTerminationReport make_nontermination_report(const Program& program,
+                                                 const Schedule& schedule,
+                                                 std::size_t cycle_start,
+                                                 MemoryModel memory_model) {
+    assert(cycle_start < schedule.size());
+
+    std::vector<bool> participant(program.threads.size(), false);
+    for (std::size_t index = cycle_start; index < schedule.size(); ++index) {
+        participant.at(schedule.at(index).thread) = true;
+    }
+
+    ExecutionState state = initial_state(program, memory_model);
+    for (std::size_t index = 0; index < cycle_start; ++index) {
+        validate_replay_step(program, state, schedule.at(index), index);
+        const StepReport step_report = execute_enabled_step(program, state, schedule.at(index));
+        if (step_report.error.has_value() || step_report.assertion.has_value()) {
+            throw std::logic_error("nontermination stem replay reached a terminal report");
+        }
+    }
+
+    const StateFingerprint start_fingerprint = behavioral_state_fingerprint(state);
+    std::vector<bool> continuously_enabled(program.threads.size(), true);
+    const auto observe_enabledness = [&]() {
+        for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+            if (participant.at(tid) || !continuously_enabled.at(tid)) {
+                continue;
+            }
+            if (enabled_steps_for_thread(program, state, tid).empty()) {
+                continuously_enabled.at(tid) = false;
+            }
+        }
+    };
+
+    // Weak fairness protects a non-participant only when at least one of its
+    // source or flush transitions is enabled continuously. Check the cycle
+    // start and every successor state; the closing state intentionally repeats
+    // the start and provides an internal exact-closure validation.
+    observe_enabledness();
+    for (std::size_t index = cycle_start; index < schedule.size(); ++index) {
+        validate_replay_step(program, state, schedule.at(index), index);
+        const StepReport step_report = execute_enabled_step(program, state, schedule.at(index));
+        if (step_report.error.has_value() || step_report.assertion.has_value()) {
+            throw std::logic_error("nontermination cycle replay reached a terminal report");
+        }
+        observe_enabledness();
+    }
+    if (behavioral_state_fingerprint(state) != start_fingerprint) {
+        throw std::logic_error("nontermination cycle replay did not close exactly");
+    }
+
+    Fairness fairness = Fairness::FairDivergence;
+    for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+        if (!participant.at(tid) && continuously_enabled.at(tid)) {
+            fairness = Fairness::UnfairScheduleWitness;
+            break;
+        }
+    }
+
+    NonTerminationReport report;
+    report.fairness = fairness;
+    report.stem.assign(schedule.begin(), schedule.begin() + cycle_start);
+    report.cycle.assign(schedule.begin() + cycle_start, schedule.end());
+    report.schedule = schedule;
+    assert(!report.cycle.empty());
+    return report;
+}
+
 CheckResult replay_schedule(const Program& program,
                             const Schedule& schedule,
                             std::size_t step_bound,
@@ -2176,12 +2253,15 @@ CheckResult replay_schedule(const Program& program,
             return result;
         }
 
-        const auto nontermination = observe_behavioral_state(state, state_history);
-        if (nontermination.has_value()) {
+        const auto cycle_start = observe_behavioral_state(state, state_history);
+        if (cycle_start.has_value()) {
             if (i + 1 < schedule.size()) {
                 throw invalid_schedule(i + 1, "schedule continues after a nontermination cycle");
             }
-            record_nontermination(result, *nontermination);
+            record_nontermination(
+                result,
+                make_nontermination_report(
+                    program, state.schedule, *cycle_start, state.memory_model));
             return result;
         }
     }

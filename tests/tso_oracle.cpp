@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <iostream>
 #include <sstream>
 #include <string>
@@ -134,6 +135,21 @@ bool cycle_exists(const model::CheckResult& result) {
     return result.cycles_detected > 0;
 }
 
+bool fair_cycle_exists(const model::CheckResult& result) {
+    return result.fair_cycles > 0;
+}
+
+bool unfair_cycle_exists(const model::CheckResult& result) {
+    return result.unfair_cycles > 0;
+}
+
+struct CycleCounts {
+    std::size_t naive_fair{0};
+    std::size_t dpor_fair{0};
+    std::size_t naive_unfair{0};
+    std::size_t dpor_unfair{0};
+};
+
 void assert_replays_dpor_report(const model::ModelChecker& checker, const model::CheckResult& dpor) {
     if (dpor.first_race.has_value()) {
         const auto replay = checker.replay(dpor.first_race->schedule);
@@ -187,7 +203,8 @@ void print_program(const model::Program& program) {
 void cross_validate_program(const model::Program& program,
                             std::size_t& programs_checked,
                             std::size_t& naive_total,
-                            std::size_t& dpor_total) {
+                            std::size_t& dpor_total,
+                            CycleCounts& cycle_counts) {
     constexpr std::size_t kStepBound = 20;
     constexpr std::size_t kMaxSchedules = 50000;
     const model::ModelChecker checker(program, kStepBound, model::MemoryModel::TSO);
@@ -203,6 +220,8 @@ void cross_validate_program(const model::Program& program,
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
         cycle_exists(dpor) != cycle_exists(naive) ||
+        fair_cycle_exists(dpor) != fair_cycle_exists(naive) ||
+        unfair_cycle_exists(dpor) != unfair_cycle_exists(naive) ||
         bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "TSO oracle mismatch\n";
@@ -213,6 +232,8 @@ void cross_validate_program(const model::Program& program,
                   << " error=" << naive.first_error.has_value()
                   << " assertion=" << naive.first_assertion.has_value()
                   << " cycle=" << cycle_exists(naive)
+                  << " fair_cycle=" << fair_cycle_exists(naive)
+                  << " unfair_cycle=" << unfair_cycle_exists(naive)
                   << " bound=" << bound_hit(naive) << '\n';
         std::cerr << "  dpor schedules=" << dpor.schedules_explored
                   << " race=" << dpor.first_race.has_value()
@@ -220,14 +241,20 @@ void cross_validate_program(const model::Program& program,
                   << " error=" << dpor.first_error.has_value()
                   << " assertion=" << dpor.first_assertion.has_value()
                   << " cycle=" << cycle_exists(dpor)
+                  << " fair_cycle=" << fair_cycle_exists(dpor)
+                  << " unfair_cycle=" << unfair_cycle_exists(dpor)
                   << " bound=" << bound_hit(dpor) << '\n';
-        assert(false && "TSO oracle mismatch");
+        std::abort();
     }
 
     assert_replays_dpor_report(checker, dpor);
     ++programs_checked;
     naive_total += naive.schedules_explored;
     dpor_total += dpor.schedules_explored;
+    cycle_counts.naive_fair += naive.fair_cycles;
+    cycle_counts.dpor_fair += dpor.fair_cycles;
+    cycle_counts.naive_unfair += naive.unfair_cycles;
+    cycle_counts.dpor_unfair += dpor.unfair_cycles;
 }
 
 } // namespace
@@ -236,6 +263,7 @@ int main() {
     std::size_t programs_checked = 0;
     std::size_t naive_total = 0;
     std::size_t dpor_total = 0;
+    CycleCounts cycle_counts;
 
     constexpr std::uint64_t kProgramsPerLengthPairCap = 1024;
     for (std::size_t lhs_length = 0; lhs_length <= 3; ++lhs_length) {
@@ -248,24 +276,33 @@ int main() {
                     two_thread_program(encoded, lhs_length, rhs_length),
                     programs_checked,
                     naive_total,
-                    dpor_total);
+                    dpor_total,
+                    cycle_counts);
             }
         }
     }
 
-    // Ensure the TSO oracle exercises positive cycle existence and replay,
-    // not only agreement on acyclic generated programs.
+    // Before thread 1 publishes and flushes x, it is continuously enabled and
+    // the spin witness is unfair. After its buffer drains and it finishes, the
+    // spinner supplies a fair-divergence witness. This exercises both class
+    // existence gates as well as exact replay.
     cross_validate_program(model::Program{{
                                {set(1, 1), label("spin"), bnz(1, "spin")},
+                               {atomic_store("x")},
                            }},
                            programs_checked,
                            naive_total,
-                           dpor_total);
+                           dpor_total,
+                           cycle_counts);
 
     std::cout << "tso_oracle: programs checked=" << programs_checked
               << " alphabet=" << kActions.size()
               << " cap_per_length_pair=" << kProgramsPerLengthPairCap
               << " naive schedules total=" << naive_total
-              << " dpor schedules total=" << dpor_total << '\n';
+              << " dpor schedules total=" << dpor_total
+              << " naive_fair_cycles=" << cycle_counts.naive_fair
+              << " dpor_fair_cycles=" << cycle_counts.dpor_fair
+              << " naive_unfair_cycles=" << cycle_counts.naive_unfair
+              << " dpor_unfair_cycles=" << cycle_counts.dpor_unfair << '\n';
     return 0;
 }

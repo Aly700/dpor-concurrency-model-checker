@@ -411,7 +411,9 @@ void assert_spin_cycle_reports_nontermination_and_round_trips(const std::filesys
     assert(check.stderr_text.empty());
     assert(first_line(check.stdout_text) == "verdict: nontermination");
     assert(check.stdout_text.find("cycles_detected: ") != std::string::npos);
-    assert(check.stdout_text.find("nontermination:\n  stem:\n") != std::string::npos);
+    assert(check.stdout_text.find("nontermination:\n"
+                                  "  fairness: unfair-schedule witness\n"
+                                  "  stem:\n") != std::string::npos);
     assert(check.stdout_text.find("  cycle:\n") != std::string::npos);
     assert(check.stdout_text.find("bound_exceeded_executions: ") != std::string::npos);
 

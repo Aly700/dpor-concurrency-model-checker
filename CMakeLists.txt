@@ -87,6 +87,9 @@ target_link_libraries(model_inclusion PRIVATE model_checker)
 add_executable(nontermination_tests tests/nontermination.cpp)
 target_link_libraries(nontermination_tests PRIVATE dpor_cli_lib)
 
+add_executable(fairness_tests tests/fairness.cpp)
+target_link_libraries(fairness_tests PRIVATE dpor_cli_lib)
+
 add_executable(spawn_tests tests/spawn.cpp)
 target_link_libraries(spawn_tests PRIVATE dpor_cli_lib)
 
@@ -122,6 +125,7 @@ add_test(NAME tso_oracle COMMAND tso_oracle)
 add_test(NAME pso_oracle COMMAND pso_oracle)
 add_test(NAME model_inclusion COMMAND model_inclusion)
 add_test(NAME nontermination_tests COMMAND nontermination_tests)
+add_test(NAME fairness_tests COMMAND fairness_tests)
 add_test(NAME spawn_tests COMMAND spawn_tests)
 add_test(NAME cli_tests COMMAND cli_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})
 add_test(NAME classic_gallery_tests COMMAND classic_gallery_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})

@@ -22,8 +22,19 @@
   lasso proves schedule-existence of non-termination only, not repetition of
   analysis instrumentation.
 - A cycle witness is `stem + one cycle`, split at the first occurrence of the
-  revisited state. The claim is existential and makes no scheduler-fairness or
-  starvation-freedom claim.
+  revisited state. The claim is existential. Its fairness field classifies only
+  that witness and makes no system-level scheduler-fairness,
+  starvation-freedom, or universal-liveness claim.
+- Lasso fairness uses weak fairness. Cycle participants are the owners of all
+  source and flush transitions in the cycle. A witness is an
+  `unfair-schedule witness` exactly when some non-participant has at least one
+  enabled source or flush transition at every replayed cycle state; otherwise
+  it is `fair divergence`. Enabled at only some states is insufficient under
+  weak fairness. TSO and PSO pending flushes count as enabledness, and a flush
+  executed in the cycle makes its owner a participant.
+- `fair_cycles + unfair_cycles == cycles_detected`. The first non-termination
+  report remains first-found; its class does not imply the other class is absent
+  elsewhere in the explored space.
 
 ## Replay
 
@@ -41,8 +52,10 @@
   canonical numeric ID. Replay must require the ID and reject the step unless
   that exact address FIFO is nonempty; SC/TSO source schedules remain unchanged.
 - Replaying a non-termination witness must reproduce the identical stem/cycle
-  report by exact equality between the end-of-stem and end-of-cycle behavioral
-  states. Replay rejects schedules that continue after the cycle closes.
+  report, including its fairness field, by exact equality between the
+  end-of-stem and end-of-cycle behavioral states and by recomputing enabledness
+  at every cycle state. Replay rejects schedules that continue after the cycle
+  closes.
 - Test programs must not depend on OS thread scheduling.
 
 ## Happens-before
@@ -121,3 +134,7 @@
   transition across a sibling whose swapped prefix was not explored beyond the
   cut. Differential gates compare naive/DPOR cycle existence as a boolean;
   cycle counts may differ because DPOR explores class representatives.
+- Complete naive/DPOR gates compare fair-cycle and unfair-cycle existence
+  independently. Raw per-class cycle counts may differ because DPOR explores
+  representatives; a missing class is a soundness failure, not an expectation
+  to weaken silently.

@@ -132,6 +132,21 @@ bool cycle_exists(const model::CheckResult& result) {
     return result.first_nontermination.has_value();
 }
 
+bool fair_cycle_exists(const model::CheckResult& result) {
+    return result.fair_cycles > 0;
+}
+
+bool unfair_cycle_exists(const model::CheckResult& result) {
+    return result.unfair_cycles > 0;
+}
+
+struct CycleCounts {
+    std::size_t naive_fair{0};
+    std::size_t dpor_fair{0};
+    std::size_t naive_unfair{0};
+    std::size_t dpor_unfair{0};
+};
+
 bool bound_hit(const model::CheckResult& result) {
     return result.bound_exceeded_executions > 0;
 }
@@ -170,6 +185,8 @@ void print_program(const model::Program& program) {
               << " error=" << naive.first_error.has_value()
               << " assertion=" << naive.first_assertion.has_value()
               << " cycle=" << cycle_exists(naive)
+              << " fair_cycle=" << fair_cycle_exists(naive)
+              << " unfair_cycle=" << unfair_cycle_exists(naive)
               << " bound=" << bound_hit(naive) << '\n';
     std::cerr << "  dpor schedules=" << dpor.schedules_explored
               << " race=" << dpor.first_race.has_value()
@@ -177,6 +194,8 @@ void print_program(const model::Program& program) {
               << " error=" << dpor.first_error.has_value()
               << " assertion=" << dpor.first_assertion.has_value()
               << " cycle=" << cycle_exists(dpor)
+              << " fair_cycle=" << fair_cycle_exists(dpor)
+              << " unfair_cycle=" << unfair_cycle_exists(dpor)
               << " bound=" << bound_hit(dpor) << '\n';
     throw std::runtime_error("PSO oracle mismatch");
 }
@@ -212,7 +231,8 @@ void cross_validate_program(const model::Program& program,
                             std::size_t& programs_checked,
                             std::size_t& skipped_capped,
                             std::size_t& naive_total,
-                            std::size_t& dpor_total) {
+                            std::size_t& dpor_total,
+                            CycleCounts& cycle_counts) {
     constexpr std::size_t kStepBound = 20;
     constexpr std::size_t kMaxSchedules = 100000;
     const model::ModelChecker checker(program, kStepBound, model::MemoryModel::PSO);
@@ -229,6 +249,8 @@ void cross_validate_program(const model::Program& program,
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
         cycle_exists(dpor) != cycle_exists(naive) ||
+        fair_cycle_exists(dpor) != fair_cycle_exists(naive) ||
+        unfair_cycle_exists(dpor) != unfair_cycle_exists(naive) ||
         bound_hit(dpor) != bound_hit(naive)) {
         fail("verdict existence", program, naive, dpor);
     }
@@ -240,6 +262,10 @@ void cross_validate_program(const model::Program& program,
     ++programs_checked;
     naive_total += naive.schedules_explored;
     dpor_total += dpor.schedules_explored;
+    cycle_counts.naive_fair += naive.fair_cycles;
+    cycle_counts.dpor_fair += dpor.fair_cycles;
+    cycle_counts.naive_unfair += naive.unfair_cycles;
+    cycle_counts.dpor_unfair += dpor.unfair_cycles;
 }
 
 } // namespace
@@ -249,6 +275,7 @@ int main() {
     std::size_t skipped_capped = 0;
     std::size_t naive_total = 0;
     std::size_t dpor_total = 0;
+    CycleCounts cycle_counts;
 
     constexpr std::uint64_t kProgramsPerLengthPairCap = 512;
     for (std::size_t lhs_length = 0; lhs_length <= 3; ++lhs_length) {
@@ -264,29 +291,39 @@ int main() {
                     programs_checked,
                     skipped_capped,
                     naive_total,
-                    dpor_total);
+                    dpor_total,
+                    cycle_counts);
             }
         }
     }
 
     cross_validate_program(
-        model::Program{{{set(1, 1), label("spin"), bnz(1, "spin")}}},
+        model::Program{{
+            {set(1, 1), label("spin"), bnz(1, "spin")},
+            {atomic_store("x")},
+        }},
         programs_checked,
         skipped_capped,
         naive_total,
-        dpor_total);
+        dpor_total,
+        cycle_counts);
     cross_validate_program(
         model::Program{{{write("x"), write("y")}, {read("y"), read("x")}}},
         programs_checked,
         skipped_capped,
         naive_total,
-        dpor_total);
+        dpor_total,
+        cycle_counts);
 
     std::cout << "pso_oracle: programs checked=" << programs_checked
               << " skipped_capped=" << skipped_capped
               << " alphabet=" << kActions.size()
               << " cap_per_length_pair=" << kProgramsPerLengthPairCap
               << " naive schedules total=" << naive_total
-              << " dpor schedules total=" << dpor_total << '\n';
+              << " dpor schedules total=" << dpor_total
+              << " naive_fair_cycles=" << cycle_counts.naive_fair
+              << " dpor_fair_cycles=" << cycle_counts.dpor_fair
+              << " naive_unfair_cycles=" << cycle_counts.naive_unfair
+              << " dpor_unfair_cycles=" << cycle_counts.dpor_unfair << '\n';
     return 0;
 }

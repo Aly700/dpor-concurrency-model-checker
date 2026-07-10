@@ -76,6 +76,16 @@ void print_deadlock_blocker(std::ostream& output, const model::BlockedThread& bl
     output << '\n';
 }
 
+const char* fairness_text(model::Fairness fairness) {
+    switch (fairness) {
+    case model::Fairness::UnfairScheduleWitness:
+        return "unfair-schedule witness";
+    case model::Fairness::FairDivergence:
+        return "fair divergence";
+    }
+    return "unknown";
+}
+
 // The verdict and detail block show only the highest-priority bug kind, but
 // a program can exhibit several kinds at once (e.g. the weak-memory litmus programs
 // race by construction AND reach the relaxed-outcome assertion). Listing the
@@ -135,6 +145,7 @@ void print_bug_details(std::ostream& output, const model::CheckResult& result) {
     }
     if (result.first_nontermination.has_value()) {
         output << "nontermination:\n";
+        output << "  fairness: " << fairness_text(result.first_nontermination->fairness) << '\n';
         output << "  stem:\n";
         for (const model::ScheduleStep& step : result.first_nontermination->stem) {
             print_numeric_step(output, "    ", step);

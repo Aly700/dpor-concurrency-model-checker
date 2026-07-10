@@ -59,6 +59,10 @@ struct FuzzStats {
     std::size_t dpor_schedules{0};
     std::size_t naive_cycles{0};
     std::size_t dpor_cycles{0};
+    std::size_t naive_fair_cycles{0};
+    std::size_t dpor_fair_cycles{0};
+    std::size_t naive_unfair_cycles{0};
+    std::size_t dpor_unfair_cycles{0};
 };
 
 model::Action read(std::string address) {
@@ -601,6 +605,14 @@ bool cycle_exists(const model::CheckResult& result) {
     return result.cycles_detected > 0;
 }
 
+bool fair_cycle_exists(const model::CheckResult& result) {
+    return result.fair_cycles > 0;
+}
+
+bool unfair_cycle_exists(const model::CheckResult& result) {
+    return result.unfair_cycles > 0;
+}
+
 void print_failure(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
@@ -621,6 +633,10 @@ void print_failure(std::uint64_t seed,
               << " assertion=" << naive.first_assertion.has_value()
               << " cycle=" << cycle_exists(naive)
               << " cycles_detected=" << naive.cycles_detected
+              << " fair_cycle=" << fair_cycle_exists(naive)
+              << " fair_cycles=" << naive.fair_cycles
+              << " unfair_cycle=" << unfair_cycle_exists(naive)
+              << " unfair_cycles=" << naive.unfair_cycles
               << " bound=" << hit_step_bound(naive) << '\n';
     std::cerr << "dpor schedules=" << dpor.schedules_explored
               << " race=" << dpor.first_race.has_value()
@@ -629,6 +645,10 @@ void print_failure(std::uint64_t seed,
               << " assertion=" << dpor.first_assertion.has_value()
               << " cycle=" << cycle_exists(dpor)
               << " cycles_detected=" << dpor.cycles_detected
+              << " fair_cycle=" << fair_cycle_exists(dpor)
+              << " fair_cycles=" << dpor.fair_cycles
+              << " unfair_cycle=" << unfair_cycle_exists(dpor)
+              << " unfair_cycles=" << dpor.unfair_cycles
               << " bound=" << hit_step_bound(dpor) << '\n';
     std::cerr << "program.dpor:\n" << cli::render_program(program);
 }
@@ -642,7 +662,7 @@ void fail_program(std::uint64_t seed,
                   const model::CheckResult& dpor,
                   const std::string& reason) {
     print_failure(seed, program_index, mode, memory_model, program, naive, dpor, reason);
-    assert(false && "differential fuzz mismatch");
+    std::abort();
 }
 
 void assert_replays_dpor_report(std::uint64_t seed,
@@ -756,6 +776,10 @@ void check_program(std::uint64_t seed,
     stats.dpor_schedules += dpor.schedules_explored;
     stats.naive_cycles += naive.cycles_detected;
     stats.dpor_cycles += dpor.cycles_detected;
+    stats.naive_fair_cycles += naive.fair_cycles;
+    stats.dpor_fair_cycles += dpor.fair_cycles;
+    stats.naive_unfair_cycles += naive.unfair_cycles;
+    stats.dpor_unfair_cycles += dpor.unfair_cycles;
 
     if (program_index % 20 == 0) {
         assert_round_trips(seed, program_index, mode, program);
@@ -771,6 +795,8 @@ void check_program(std::uint64_t seed,
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
         cycle_exists(dpor) != cycle_exists(naive) ||
+        fair_cycle_exists(dpor) != fair_cycle_exists(naive) ||
+        unfair_cycle_exists(dpor) != unfair_cycle_exists(naive) ||
         hit_step_bound(dpor) != hit_step_bound(naive)) {
         fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "verdict mismatch");
     }
@@ -872,7 +898,11 @@ int main(int argc, char** argv) {
               << " naive_schedules=" << stats.naive_schedules
               << " dpor_schedules=" << stats.dpor_schedules
               << " naive_cycles=" << stats.naive_cycles
-              << " dpor_cycles=" << stats.dpor_cycles << '\n';
+              << " dpor_cycles=" << stats.dpor_cycles
+              << " naive_fair_cycles=" << stats.naive_fair_cycles
+              << " dpor_fair_cycles=" << stats.dpor_fair_cycles
+              << " naive_unfair_cycles=" << stats.naive_unfair_cycles
+              << " dpor_unfair_cycles=" << stats.dpor_unfair_cycles << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
     assert(stats.skipped * 10 < stats.total * 3);

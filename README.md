@@ -149,6 +149,7 @@ On a revisit, the report splits the executed schedule at the first occurrence:
 verdict: nontermination
 cycles_detected: 1
 nontermination:
+  fairness: fair divergence
   stem:
     0 0
   cycle:
@@ -163,10 +164,20 @@ The standard `schedule:` block is `stem + one cycle` and replays directly with
 states are identical and rejects any schedule that continues after the cycle
 closes.
 
-This is an existential scheduling claim: at least one scheduler can repeat the
-cycle forever. A peer might remain enabled and, if scheduled, let the program
-finish. The report therefore does not claim starvation freedom, fairness, or a
-fairness violation. Verdict priority is race/deadlock/error/assertion, then
+The `fairness` field applies weak scheduler fairness to this exact witness. An
+`unfair-schedule witness` continuously postpones some enabled non-participant,
+so weak fairness would break this cycle as witnessed. `fair divergence` means
+every non-participant is disabled somewhere in the cycle (or all unfinished
+threads participate), so the cycle can repeat under weak fairness. TSO/PSO
+flushes count both as thread steps and as enabled transitions.
+
+This remains an existential, witness-quality claim—not a system-level liveness
+verdict. Scheduling the postponed peer may lead to another cycle, and an unfair
+first report does not imply that no fair-divergence witness exists elsewhere.
+The checker deliberately keeps the deterministic first-found witness and tracks
+`fair_cycles`/`unfair_cycles` separately for exploration gates. Strong fairness,
+which protects transitions enabled infinitely often but not continuously, is
+future work. Verdict priority is race/deadlock/error/assertion, then
 non-termination, then clean up to bound, then clean; `also_found` preserves
 lower-priority findings from the same exploration.
 
@@ -249,10 +260,11 @@ bounded verdict and any `.dpor` modeling limitation.
 ## Verification gates
 
 DPOR is never trusted on faith. Deterministic gates assert that
-`explore_dpor` and the exhaustive oracle agree on race/deadlock/error/assertion
-and cycle existence and on whether any execution hit the step bound, that DPOR never
-explores more schedules, that every DPOR report replays to an identical report,
-and how far DPOR is from one schedule per Mazurkiewicz class:
+`explore_dpor` and the exhaustive oracle agree on race/deadlock/error/assertion,
+cycle existence, fair-cycle existence, unfair-cycle existence, and whether any
+execution hit the step bound; that DPOR never explores more schedules; that
+every DPOR report replays to an identical report; and how far DPOR is from one
+schedule per Mazurkiewicz class:
 
 1. **Exhaustive 2-thread sweep** — every program over a 17-action alphabet
    (capped per length pair; ~21k programs).
@@ -263,14 +275,16 @@ and how far DPOR is from one schedule per Mazurkiewicz class:
    cycles, growing-state bound backstops, and deliberately malformed ones;
    failures print the seed and the program in `.dpor` syntax for by-hand
    reproduction. Deterministic fractions run under TSO and PSO, and the summary
-   prints both model counts plus naive/DPOR cycle counters.
+   prints both model counts plus naive/DPOR total, fair, and unfair cycle
+   counters.
 4. **Optimality meter** — collects naive schedules for small non-error,
    non-assertion programs, canonicalizes phase-aware Mazurkiewicz trace
    classes using the same transition predicate DPOR prunes with, asserts
    `classes <= dpor <= naive`, and prints the aggregate DPOR/classes
    redundancy ratio.
 5. **Buffered-model oracles** — capped TSO and PSO program sweeps compare
-   naive and DPOR verdict/cycle existence, schedule dominance, and exact replay.
+   naive and DPOR verdict/total-cycle/fair-cycle/unfair-cycle existence,
+   schedule dominance, and exact replay.
 6. **Cross-model inclusion** — a deterministic two-thread corpus plus
    fixed-seed samples checks per-kind bug existence is monotone
    `SC => TSO => PSO`, skipping and reporting any truncated exploration.
@@ -280,8 +294,8 @@ All gates are deterministic and run in CI on Linux and macOS.
 ## Design records
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
-soundness-relevant decision in `adr/` (0001 architecture crux through 0017
-PSO), including the exact vector-clock edge for each
+soundness-relevant decision in `adr/` (0001 architecture crux through 0018
+fairness classification), including the exact vector-clock edge for each
 synchronization kind and why each DPOR pruning step cannot lose a bug class.
 
 **[docs/case-study.md](docs/case-study.md)** tells the verification story:

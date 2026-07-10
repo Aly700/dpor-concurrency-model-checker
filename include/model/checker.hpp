@@ -56,7 +56,10 @@ struct AssertionFailureReport {
     bool operator==(const AssertionFailureReport&) const = default;
 };
 
+enum class Fairness { UnfairScheduleWitness, FairDivergence };
+
 struct NonTerminationReport {
+    Fairness fairness{Fairness::UnfairScheduleWitness};
     Schedule stem;
     Schedule cycle;
     // The replayable lasso witness is exactly stem followed by one cycle.
@@ -68,6 +71,8 @@ struct NonTerminationReport {
 struct CheckResult {
     std::size_t schedules_explored{0};
     std::size_t cycles_detected{0};
+    std::size_t fair_cycles{0};
+    std::size_t unfair_cycles{0};
     std::size_t bound_exceeded_executions{0};
     // True when exploration stopped at the max_schedules cap: the verdict may
     // be incomplete because unexplored schedules remain (or the space finished

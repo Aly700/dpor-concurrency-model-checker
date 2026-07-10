@@ -33,6 +33,26 @@ struct GalleryCase {
     model::MemoryModel memory_model{model::MemoryModel::SC};
     std::optional<bool> assertion_exists;
     bool dpor_only{false};
+    std::optional<model::Fairness> expected_fairness;
+
+    GalleryCase(std::string file_value,
+                ExpectedVerdict expected_value,
+                std::size_t step_bound_value,
+                std::size_t max_schedules_value,
+                bool broken_value,
+                model::MemoryModel memory_model_value = model::MemoryModel::SC,
+                std::optional<bool> assertion_exists_value = std::nullopt,
+                bool dpor_only_value = false,
+                std::optional<model::Fairness> expected_fairness_value = std::nullopt)
+        : file(std::move(file_value)),
+          expected(expected_value),
+          step_bound(step_bound_value),
+          max_schedules(max_schedules_value),
+          broken(broken_value),
+          memory_model(memory_model_value),
+          assertion_exists(assertion_exists_value),
+          dpor_only(dpor_only_value),
+          expected_fairness(expected_fairness_value) {}
 };
 
 struct CommandResult {
@@ -190,6 +210,11 @@ void require_expected_verdict(const GalleryCase& test_case,
         require(result.first_nontermination.has_value() && result.cycles_detected > 0,
                 test_case.file + " " + explorer + " should report a nontermination cycle");
     }
+    if (test_case.expected_fairness.has_value()) {
+        require(result.first_nontermination.has_value() &&
+                    result.first_nontermination->fairness == *test_case.expected_fairness,
+                test_case.file + " " + explorer + " fairness classification mismatch");
+    }
     if (test_case.assertion_exists.has_value()) {
         require(result.first_assertion.has_value() == *test_case.assertion_exists,
                 test_case.file + " " + explorer + " assertion-existence mismatch");
@@ -215,6 +240,10 @@ void require_naive_dpor_agree(const GalleryCase& test_case,
             test_case.file + " assertion existence disagrees");
     require((naive.cycles_detected > 0) == (dpor.cycles_detected > 0),
             test_case.file + " cycle existence disagrees");
+    require((naive.fair_cycles > 0) == (dpor.fair_cycles > 0),
+            test_case.file + " fair-cycle existence disagrees");
+    require((naive.unfair_cycles > 0) == (dpor.unfair_cycles > 0),
+            test_case.file + " unfair-cycle existence disagrees");
     require((naive.bound_exceeded_executions > 0) == (dpor.bound_exceeded_executions > 0),
             test_case.file + " bound-hit existence disagrees");
     require(dpor.schedules_explored <= naive.schedules_explored,
@@ -343,23 +372,23 @@ const std::vector<GalleryCase>& gallery_cases() {
     static const std::vector<GalleryCase> cases = {
         // Formerly clean up to bound: bound 10 is sufficient to close the
         // waiting contender's exact Peterson spin cycle.
-        {"peterson_counter.dpor", ExpectedVerdict::NonTermination, 10, 300000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"peterson_counter.dpor", ExpectedVerdict::NonTermination, 10, 300000, false, model::MemoryModel::SC, std::nullopt, false, model::Fairness::UnfairScheduleWitness},
         {"peterson_counter_broken_wrong_flag.dpor", ExpectedVerdict::Race, 8, 100000, true, model::MemoryModel::SC, std::nullopt, false},
         {"peterson_inside_assert.dpor", ExpectedVerdict::CleanUpToBound, 9, 500000, false, model::MemoryModel::SC, std::nullopt, false},
         {"peterson_inside_assert_broken_wrong_flag.dpor", ExpectedVerdict::Race, 9, 1000000, true, model::MemoryModel::SC, std::nullopt, false},
         // Formerly clean up to bound: the existing bound already contains a
         // complete repeated Dekker outer-wait cycle.
-        {"dekker_counter.dpor", ExpectedVerdict::NonTermination, 9, 300000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"dekker_counter.dpor", ExpectedVerdict::NonTermination, 9, 300000, false, model::MemoryModel::SC, std::nullopt, false, model::Fairness::UnfairScheduleWitness},
         {"dekker_counter_broken_drop_turn_wait.dpor", ExpectedVerdict::Race, 10, 500000, true, model::MemoryModel::SC, std::nullopt, false},
         // Formerly clean up to bound: waiting for choosing1 exposes a stable
         // two-step repeated state before the residual bound outcomes.
-        {"bakery_bounded_counter.dpor", ExpectedVerdict::NonTermination, 10, 1000000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"bakery_bounded_counter.dpor", ExpectedVerdict::NonTermination, 10, 1000000, false, model::MemoryModel::SC, std::nullopt, false, model::Fairness::UnfairScheduleWitness},
         {"bakery_bounded_counter_broken_no_choosing_wait.dpor", ExpectedVerdict::Race, 10, 300000, true, model::MemoryModel::SC, std::nullopt, false},
         {"treiber_push.dpor", ExpectedVerdict::Clean, 12, 100000, false, model::MemoryModel::SC, std::nullopt, false},
         {"treiber_push_broken_load_store.dpor", ExpectedVerdict::Assertion, 12, 100000, true, model::MemoryModel::SC, std::nullopt, false},
         // Formerly clean up to bound: indefinitely postponing ready's release
         // closes the reader's failed-CAS retry cycle.
-        {"failed_cas_handoff.dpor", ExpectedVerdict::NonTermination, 10, 100000, false, model::MemoryModel::SC, std::nullopt, false},
+        {"failed_cas_handoff.dpor", ExpectedVerdict::NonTermination, 10, 100000, false, model::MemoryModel::SC, std::nullopt, false, model::Fairness::UnfairScheduleWitness},
         {"failed_cas_handoff_broken_no_retry.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, std::nullopt, false},
         {"peterson_tso.dpor", ExpectedVerdict::Race, 12, 300000, true, model::MemoryModel::TSO, true, true},
         {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::TSO, false, true},

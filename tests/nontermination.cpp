@@ -110,6 +110,9 @@ void pure_spin_has_a_one_step_cycle_and_replays_identically() {
     assert(dpor.first_nontermination->cycle == (model::Schedule{{0, 2}}));
     assert(dpor.first_nontermination->schedule ==
            (model::Schedule{{0, 0}, {0, 2}}));
+    assert(dpor.first_nontermination->fairness == model::Fairness::FairDivergence);
+    assert(dpor.fair_cycles == 1);
+    assert(dpor.unfair_cycles == 0);
 
     const model::CheckResult replayed = checker.replay(dpor.first_nontermination->schedule);
     require_same_nontermination(dpor, replayed);
@@ -150,6 +153,10 @@ void unfair_spin_cycle_exists_even_though_a_peer_can_complete_it() {
     const model::CheckResult dpor = checker.explore_dpor();
     assert(naive.first_nontermination.has_value());
     assert(dpor.first_nontermination.has_value());
+    assert(naive.first_nontermination->fairness ==
+           model::Fairness::UnfairScheduleWitness);
+    assert(dpor.first_nontermination->fairness ==
+           model::Fairness::UnfairScheduleWitness);
     assert(naive.bound_exceeded_executions == 0);
     assert(dpor.bound_exceeded_executions == 0);
 
@@ -213,6 +220,7 @@ void tso_cycle_closes_only_after_the_store_buffer_repeats() {
     assert(dpor.first_nontermination->cycle ==
            (model::Schedule{{0, 3}, {0, 4}, {0, 2}, {0, model::kFlushActionIndex}}));
     assert(dpor.first_nontermination->cycle.back().action_index == model::kFlushActionIndex);
+    assert(dpor.first_nontermination->fairness == model::Fairness::FairDivergence);
     require_same_nontermination(
         dpor, checker.replay(dpor.first_nontermination->schedule));
 }
@@ -230,7 +238,8 @@ void cli_renders_nontermination_stem_cycle_and_replay_schedule() {
     const std::string text = output.str();
     assert(text.find("verdict: nontermination\n") == 0);
     assert(text.find("cycles_detected: 1\n") != std::string::npos);
-    assert(text.find("nontermination:\n  stem:\n    0 0\n  cycle:\n    0 2\n") !=
+    assert(text.find("nontermination:\n  fairness: fair divergence\n  stem:\n"
+                     "    0 0\n  cycle:\n    0 2\n") !=
            std::string::npos);
     assert(text.find("schedule:\n  0 0\n  0 2\n") != std::string::npos);
 }

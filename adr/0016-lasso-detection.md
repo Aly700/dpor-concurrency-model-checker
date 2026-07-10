@@ -65,7 +65,8 @@ computes the next fingerprint:
 
 - a new fingerprint is recorded with the current schedule length;
 - a repeated fingerprint terminates that execution and records
-  `NonTerminationReport { stem, cycle, schedule }`;
+  `NonTerminationReport { fairness, stem, cycle, schedule }` (the witness-level
+  weak-fairness field was added by ADR 0018);
 - `stem` ends at the first occurrence, `cycle` runs from that occurrence to the
   revisit, and `schedule` is exactly `stem + cycle`.
 
@@ -86,10 +87,11 @@ Verdict priority is race, deadlock, modeled error, assertion, non-termination,
 clean up to bound, then clean. Lower-priority report kinds remain visible through
 `also_found` where applicable.
 
-`nontermination` is a schedule-existence claim. An enabled peer may be
-postponed forever by the witnessing schedule even when scheduling that peer
-would allow termination. The result is not a fairness violation and makes no
-fairness, starvation-freedom, or universal-termination claim.
+`nontermination` is a schedule-existence claim. ADR 0018 later classifies
+whether this exact witness postpones a continuously enabled peer under weak
+fairness. That witness-quality field is not a system-level fairness violation
+or liveness verdict and makes no starvation-freedom or universal-termination
+claim.
 
 ### Replay and minimization
 
