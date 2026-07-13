@@ -180,6 +180,43 @@ beyond bounded verdicts:
   within ~10% of the theoretical minimum across the family, and the gap
   is recorded as quantified headroom, not tuned away.
 
+## The sixth campaign: private enqueues and a moving denominator
+
+- **Buffered enqueue independence** — under TSO/PSO, a source `Write` is
+  not yet a shared write: it advances its owner's PC and clock and appends
+  to that owner's private buffer. Against another thread's transition the
+  two execution orders leave identical buffers, shared state, race metadata,
+  and enabled sets. The checker now uses that commuting diamond after the
+  existing spawn/join safeguards; the later `Flush` keeps every same-address
+  visibility dependency and remains the race-recording write.
+- **The denominator moved too** — widening the checker's independence
+  relation also widened the meter's Mazurkiewicz relation, collapsing each
+  buffered corpus from 1,187 classes to 984. The old headline had therefore
+  understated the pruner's redundancy:
+
+  | Model | ADR 0019 baseline | Honest widened baseline | Shipped ratio | Shipped / old classes |
+  |---|---:|---:|---:|---:|
+  | TSO | 1.096 | 1.322 | 1.152 | 0.955 |
+  | PSO | 1.098 | 1.324 | 1.154 | 0.957 |
+
+  The below-one historical ratios prove that 1,187 was no longer a class
+  lower bound. The predeclared 1.086/1.088 bar had aimed for a 0.010 gain in
+  the old units; on a like-for-like denominator the change gained 0.170.
+- **The first release disagreement** — the implementing agent recommended
+  revert under the stop clause because 1.152/1.154 missed the literal bar.
+  The orchestrator shipped: the commuting proof survived adversarial review,
+  all gates stayed green, and the bar's denominator had been invalidated by
+  the diagnosis itself. ADR 0020 preserves both positions. The disagreement
+  is part of the instrument: implementation and release authority remained
+  separate, and the losing argument stayed in the record instead of being
+  edited away.
+- **The shipped effect and remaining headroom** — `tso_oracle` fell from
+  51,878 to 33,618 DPOR schedules and `pso_oracle` from 26,455 to 17,188,
+  about 35% each, with verdicts unchanged and all 23 suites green. The honest
+  meter leaves 150 TSO and 152 PSO excess representatives. Removing those
+  requires weak initials or wakeup trees — ADR 0012 territory, not another
+  local flush clause.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
@@ -187,4 +224,6 @@ is not evidence.** Both bugs above were reviewed and rated sound. The
 mechanism that actually protected soundness was structural — an oracle
 that never went away, gates wide enough that new semantics kept re-testing
 old pruning, and finally an instrument that measures the pruner against
-the theoretical optimum on every CI run.
+the theoretical optimum on every CI run. The sixth campaign adds one
+constraint on that instrument: when a semantic refinement changes its class
+relation, the denominator must be re-proved rather than treated as fixed.
