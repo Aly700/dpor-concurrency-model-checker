@@ -952,6 +952,7 @@ bool join_independent_from_transition(const Program& program,
 }
 
 bool transitions_independent(const Program& program,
+                             MemoryModel memory_model,
                              ThreadId lhs_thread,
                              const Action& lhs,
                              ThreadId rhs_thread,
@@ -982,6 +983,21 @@ bool transitions_independent(const Program& program,
             !join_independent_from_transition(program, rhs_thread, rhs, lhs_thread, lhs)) {
             return false;
         }
+        return true;
+    }
+
+    if (memory_model != MemoryModel::SC &&
+        (lhs.kind == ActionKind::Write || rhs.kind == ActionKind::Write) &&
+        lhs.kind != ActionKind::Spawn &&
+        rhs.kind != ActionKind::Spawn) {
+        // Under TSO/PSO a source Write is only a private enqueue: it advances
+        // its owner's pc/clock and appends to that owner's buffer, which the
+        // other thread cannot touch. Executing the two enabled transitions in
+        // either order therefore leaves identical buffers, shared state, race
+        // metadata, and enabledness. The later Flush remains the globally
+        // visible write and retains same-address dependencies with reads,
+        // atomics, and visible flushes. SC and same-thread pairs cannot reach
+        // this clause, while Spawn retains its conservative enabledness edge.
         return true;
     }
 
@@ -1560,7 +1576,6 @@ void record_step_report(CheckResult& result, const StepReport& report) {
 }
 
 void initialize_dpor_backtrack(const Program& program, const ExecutionState& state, DporNode& node) {
-    (void)state;
     if (!node.backtrack.empty() || node.enabled.empty()) {
         return;
     }
@@ -1605,6 +1620,7 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
                     break;
                 }
                 if (!transitions_independent(program,
+                                             state.memory_model,
                                              candidate.thread,
                                              candidate_action,
                                              selected.thread,
@@ -1625,6 +1641,7 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
 }
 
 void add_backtracks_for_transition_against_prefix(const Program& program,
+                                                  MemoryModel memory_model,
                                                   std::vector<DporNode>& nodes,
                                                   const std::vector<ExecutedTransition>& trace,
                                                   const ExecutedTransition& current,
@@ -1650,6 +1667,7 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
         }
 
         if (transitions_independent(program,
+                                    memory_model,
                                     previous.thread,
                                     previous.effective_action,
                                     current.thread,
@@ -1733,13 +1751,15 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
 }
 
 void add_backtracks_for_transition(const Program& program,
+                                   MemoryModel memory_model,
                                    std::vector<DporNode>& nodes,
                                    const std::vector<ExecutedTransition>& trace) {
     if (trace.empty()) {
         return;
     }
 
-    add_backtracks_for_transition_against_prefix(program, nodes, trace, trace.back(), trace.size() - 1);
+    add_backtracks_for_transition_against_prefix(
+        program, memory_model, nodes, trace, trace.back(), trace.size() - 1);
 }
 
 void add_disabled_backtracks(const Program& program,
@@ -1771,7 +1791,8 @@ void add_disabled_backtracks(const Program& program,
         // the Independence invariant permits commuting them. effective_next_action()
         // makes the woken-Wait case a mutex reacquire, not a cv wait, while a
         // still-sleeping waiter remains condition-dependent for wakeup order.
-        add_backtracks_for_transition_against_prefix(program, nodes, trace, blocked, trace.size());
+        add_backtracks_for_transition_against_prefix(
+            program, state.memory_model, nodes, trace, blocked, trace.size());
     }
 }
 
@@ -1792,6 +1813,7 @@ std::vector<ScheduleStep> inherited_sleep_set(const Program& program,
 
         const Action& slept_action = child->second.effective_action;
         if (transitions_independent(program,
+                                    state_after_transition.memory_model,
                                     slept.thread,
                                     slept_action,
                                     transition.thread,
@@ -1931,7 +1953,7 @@ void dpor_dfs(const Program& program,
             step_report.spawned_thread,
         };
         trace.push_back(transition);
-        add_backtracks_for_transition(program, nodes, trace);
+        add_backtracks_for_transition(program, state.memory_model, nodes, trace);
         record_step_report(result, step_report);
 
         if (step_report.error.has_value() || step_report.assertion.has_value()) {
@@ -2668,7 +2690,8 @@ bool ModelChecker::dpor_transitions_independent(ThreadId lhs_thread,
                                                 const Action& lhs,
                                                 ThreadId rhs_thread,
                                                 const Action& rhs) const {
-    return transitions_independent(program_, lhs_thread, lhs, rhs_thread, rhs);
+    return transitions_independent(
+        program_, memory_model_, lhs_thread, lhs, rhs_thread, rhs);
 }
 
 Schedule ModelChecker::minimize_schedule(const Schedule& schedule) const {

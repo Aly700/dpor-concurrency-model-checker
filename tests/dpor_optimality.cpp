@@ -26,6 +26,7 @@ constexpr std::size_t kNoScheduleCap = std::numeric_limits<std::size_t>::max();
 
 enum class ProgramSource { TwoThreadFamily, HandPicked, Fuzz };
 enum class VerdictKind { Clean, Race, Deadlock, Error, Assertion, NonTermination, Bound };
+enum class ClassRelation { Current, OriginalBufferedWriteVisibility };
 
 struct SourceStats {
     std::size_t metered{0};
@@ -37,6 +38,7 @@ struct AggregateStats {
     SourceStats fuzz;
     std::size_t programs_metered{0};
     std::size_t total_classes{0};
+    std::size_t total_original_relation_classes{0};
     std::size_t total_dpor_schedules{0};
     std::size_t total_naive_schedules{0};
     std::size_t optimal_programs{0};
@@ -145,7 +147,10 @@ void test_replay_exposes_pso_flush_identity() {
             "PSO flush(x) identity was not preserved by effective replay");
 }
 
-std::size_t class_count_for(const model::Program& program, model::MemoryModel memory_model);
+std::size_t class_count_for(
+    const model::Program& program,
+    model::MemoryModel memory_model,
+    ClassRelation relation = ClassRelation::Current);
 
 void test_pso_flush_reordering_changes_class_count() {
     const model::Program program{{
@@ -154,7 +159,7 @@ void test_pso_flush_reordering_changes_class_count() {
     }};
     const std::size_t tso_classes = class_count_for(program, model::MemoryModel::TSO);
     const std::size_t pso_classes = class_count_for(program, model::MemoryModel::PSO);
-    if (tso_classes != 11 || pso_classes != 12) {
+    if (tso_classes != 6 || pso_classes != 7) {
         std::ostringstream message;
         message << "PSO different-address flush reordering class baseline changed: TSO="
                 << tso_classes << " PSO=" << pso_classes;
@@ -556,7 +561,8 @@ std::vector<std::string> transition_labels(const std::vector<model::EffectiveSch
 
 std::vector<std::string> canonical_form(const model::ModelChecker& checker,
                                         model::MemoryModel memory_model,
-                                        const std::vector<model::EffectiveScheduleStep>& trace) {
+                                        const std::vector<model::EffectiveScheduleStep>& trace,
+                                        ClassRelation relation = ClassRelation::Current) {
     const std::vector<std::string> labels = transition_labels(trace);
     std::vector<std::vector<std::size_t>> outgoing(trace.size());
     std::vector<std::size_t> indegree(trace.size(), 0);
@@ -571,13 +577,29 @@ std::vector<std::string> canonical_form(const model::ModelChecker& checker,
             // path orders them. Enabled valid Join gets the checker-local ADR
             // 0011 refinement, and all other pairs fall back to action-level
             // independent(). A stricter relation would inflate the class count.
+            bool transition_independent = checker.dpor_transitions_independent(
+                trace[i].endpoint.thread,
+                trace[i].effective_action,
+                trace[j].endpoint.thread,
+                trace[j].effective_action);
+            if (relation == ClassRelation::OriginalBufferedWriteVisibility &&
+                memory_model != model::MemoryModel::SC &&
+                trace[i].endpoint.thread != trace[j].endpoint.thread &&
+                (trace[i].effective_action.kind == model::ActionKind::Write ||
+                 trace[j].effective_action.kind == model::ActionKind::Write) &&
+                trace[i].effective_action.kind != model::ActionKind::Join &&
+                trace[j].effective_action.kind != model::ActionKind::Join) {
+                // Historical accounting only: before buffered source writes
+                // were distinguished from globally visible writes, this pair
+                // fell through to the action-level predicate. The resulting
+                // stricter classes are not a sound lower bound for the widened
+                // checker relation; retain them only to compare with ADR 0019.
+                transition_independent = model::independent(
+                    trace[i].effective_action, trace[j].effective_action);
+            }
             const bool dependent =
                 same_thread_steps_ordered(memory_model, trace[i], trace[j]) ||
-                !checker.dpor_transitions_independent(
-                    trace[i].endpoint.thread,
-                    trace[i].effective_action,
-                    trace[j].endpoint.thread,
-                    trace[j].effective_action);
+                !transition_independent;
             if (!dependent) {
                 continue;
             }
@@ -623,7 +645,9 @@ std::vector<std::string> canonical_form(const model::ModelChecker& checker,
     return canonical;
 }
 
-std::size_t class_count_for(const model::Program& program, model::MemoryModel memory_model) {
+std::size_t class_count_for(const model::Program& program,
+                            model::MemoryModel memory_model,
+                            ClassRelation relation) {
     const model::ModelChecker checker(
         program, model::ModelChecker::kDefaultStepBound, memory_model);
     const model::CheckResult naive = checker.explore_naive(kNoScheduleCap);
@@ -635,7 +659,7 @@ std::size_t class_count_for(const model::Program& program, model::MemoryModel me
     std::set<std::vector<std::string>> classes;
     for (const model::Schedule& schedule : schedules) {
         classes.insert(canonical_form(
-            checker, memory_model, checker.replay_effective_trace(schedule)));
+            checker, memory_model, checker.replay_effective_trace(schedule), relation));
     }
     return classes.size();
 }
@@ -822,11 +846,17 @@ std::size_t measure_program(const model::Program& program,
     }
 
     std::map<std::vector<std::string>, VerdictKind> class_verdicts;
+    std::set<std::vector<std::string>> original_relation_classes;
     for (const model::Schedule& schedule : schedules) {
         const std::vector<model::EffectiveScheduleStep> effective_trace =
             checker.replay_effective_trace(schedule);
         const std::vector<std::string> canonical =
             canonical_form(checker, memory_model, effective_trace);
+        original_relation_classes.insert(canonical_form(
+            checker,
+            memory_model,
+            effective_trace,
+            ClassRelation::OriginalBufferedWriteVisibility));
         const VerdictKind verdict = verdict_kind(checker.replay(schedule));
         const auto [position, inserted] = class_verdicts.emplace(canonical, verdict);
         if (!inserted && position->second != verdict) {
@@ -850,6 +880,7 @@ std::size_t measure_program(const model::Program& program,
     ++stats.programs_metered;
     add_source_count(stats, source);
     stats.total_classes += class_count;
+    stats.total_original_relation_classes += original_relation_classes.size();
     stats.total_dpor_schedules += dpor.schedules_explored;
     stats.total_naive_schedules += naive.schedules_explored;
     if (dpor.schedules_explored == class_count) {
@@ -968,6 +999,11 @@ void print_buffered_summary(model::MemoryModel memory_model, const AggregateStat
             ? 0.0
             : 100.0 * static_cast<double>(stats.optimal_programs) /
                   static_cast<double>(stats.programs_metered);
+    const double original_relation_ratio =
+        stats.total_original_relation_classes == 0
+            ? 0.0
+            : static_cast<double>(stats.total_dpor_schedules) /
+                  static_cast<double>(stats.total_original_relation_classes);
     const char* prefix = memory_model == model::MemoryModel::TSO
                              ? "dpor_optimality_tso:"
                              : "dpor_optimality_pso:";
@@ -979,11 +1015,33 @@ void print_buffered_summary(model::MemoryModel memory_model, const AggregateStat
               << " total_naive_schedules=" << stats.total_naive_schedules
               << std::fixed << std::setprecision(3)
               << " redundancy_ratio=" << redundancy_ratio
+              << " original_relation_classes=" << stats.total_original_relation_classes
+              << " original_relation_ratio=" << original_relation_ratio
               << std::setprecision(1)
               << " optimal_programs_percent=" << optimal_percent
               << " source_enumerated=" << stats.two_thread.metered
               << " source_fuzz=" << stats.fuzz.metered
               << " within_class_same_verdict=held\n";
+}
+
+void print_refinement_representative(const char* name,
+                                     const model::Program& program,
+                                     model::MemoryModel memory_model) {
+    const model::ModelChecker checker(
+        program, model::ModelChecker::kDefaultStepBound, memory_model);
+    const model::CheckResult naive = checker.explore_naive(kNoScheduleCap);
+    const model::CheckResult dpor = checker.explore_dpor(kNoScheduleCap);
+    std::cout << "dpor_refinement_representative: name=" << name
+              << " model="
+              << (memory_model == model::MemoryModel::TSO ? "TSO" : "PSO")
+              << " current_classes=" << class_count_for(program, memory_model)
+              << " original_relation_classes="
+              << class_count_for(
+                     program,
+                     memory_model,
+                     ClassRelation::OriginalBufferedWriteVisibility)
+              << " dpor_schedules=" << dpor.schedules_explored
+              << " naive_schedules=" << naive.schedules_explored << '\n';
 }
 
 } // namespace
@@ -992,6 +1050,22 @@ int main() {
     test_same_thread_flush_correspondence();
     test_replay_exposes_pso_flush_identity();
     test_pso_flush_reordering_changes_class_count();
+
+    const model::Program enqueue_read_repair{{
+        {write("y")},
+        {read("x"), read("y")},
+    }};
+    print_refinement_representative(
+        "enqueue_read_repair", enqueue_read_repair, model::MemoryModel::TSO);
+    print_refinement_representative(
+        "enqueue_read_repair", enqueue_read_repair, model::MemoryModel::PSO);
+    print_refinement_representative(
+        "pso_flush_siblings",
+        model::Program{{
+            {write("y"), write("x")},
+            {atomic_load("x")},
+        }},
+        model::MemoryModel::PSO);
 
     AggregateStats stats;
     measure_two_thread_family(stats);

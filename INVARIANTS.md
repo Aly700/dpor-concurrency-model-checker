@@ -111,6 +111,12 @@
   different-address flushes of one thread commute, but every co-enabled address
   must remain an explicit persistent-set choice so another thread can run
   between the two drains.
+- Under TSO/PSO a source `Write` is a private enqueue: it touches only its
+  owner's pc, clock, and store buffer, so it is independent of every other
+  thread's transition (Spawn and Join keep their conservative edges). The
+  later `Flush` is the globally visible write and must retain all same-address
+  dependencies and race bookkeeping. Under SC, and for all same-thread pairs,
+  `Write` dependence is unchanged (adr/0020).
 - Assertion failures are first-class terminal reports with replayable,
   minimized schedules. They must not be downgraded to modeled errors.
 - Deadlock detection must distinguish a true cycle from a voluntarily finished

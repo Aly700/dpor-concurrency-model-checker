@@ -2,17 +2,39 @@
 #include "model/checker.hpp"
 
 #include <cassert>
+#include <stdexcept>
 #include <string>
 #include <vector>
 
 namespace {
 
+void require(bool condition, const char* message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
 model::Action read(std::string address) {
     return model::Action{model::ActionKind::Read, std::move(address), ""};
 }
 
+model::Action read_into(std::string address, model::RegisterId reg) {
+    model::Action action = read(std::move(address));
+    action.destination = reg;
+    return action;
+}
+
 model::Action write(std::string address) {
     return model::Action{model::ActionKind::Write, std::move(address), ""};
+}
+
+model::Action write_value(std::string address, model::Value value) {
+    model::Action action = write(std::move(address));
+    model::ValueOperand operand;
+    operand.kind = model::ValueOperandKind::Immediate;
+    operand.immediate = value;
+    action.value = operand;
+    return action;
 }
 
 model::Action lock(std::string mutex) {
@@ -107,6 +129,40 @@ void assert_pair_commutes_when_independent(const model::Action& lhs, const model
     assert(!rhs_then_lhs.first_error.has_value());
 }
 
+void assert_buffered_enqueue_reduction(model::MemoryModel memory_model) {
+    const model::Program program{{
+        {write("y")},
+        {read("x"), read("y")},
+    }};
+    const model::ModelChecker checker(program, 20, memory_model);
+
+    const auto naive = checker.explore_naive();
+    const auto dpor = checker.explore_dpor();
+    require(naive.schedules_explored == 6,
+            "buffered enqueue reduction fixture changed its naive schedule count");
+    require(dpor.schedules_explored == 3,
+            "buffered source Write did not reduce as a private enqueue");
+    require(naive.first_race.has_value(),
+            "buffered enqueue reduction fixture lost its naive race");
+    require(dpor.first_race.has_value(),
+            "buffered enqueue reduction fixture lost its DPOR race");
+}
+
+void assert_flush_visibility_dependency_preserves_assertion(model::MemoryModel memory_model) {
+    const model::Program program{{
+        {write_value("x", 1)},
+        {read_into("x", 0), assert_nonzero(0)},
+    }};
+    const model::ModelChecker checker(program, 20, memory_model);
+
+    const auto naive = checker.explore_naive();
+    const auto dpor = checker.explore_dpor();
+    require(naive.first_assertion.has_value(),
+            "flush visibility trap lost its naive assertion witness");
+    require(dpor.first_assertion.has_value(),
+            "flush visibility dependency was pruned and lost the assertion witness");
+}
+
 } // namespace
 
 int main() {
@@ -126,6 +182,35 @@ int main() {
     assert(model::independent(assert_nonzero(0), spawn(1)));
     assert(model::independent(flush("x"), read("y")));
     assert(model::independent(flush("x"), set(0, 1)));
+
+    const model::Program relation_program{{
+        {write("x")},
+        {read("x")},
+    }};
+    const model::ModelChecker sc_checker(relation_program, 20, model::MemoryModel::SC);
+    const model::ModelChecker tso_checker(relation_program, 20, model::MemoryModel::TSO);
+    const model::ModelChecker pso_checker(relation_program, 20, model::MemoryModel::PSO);
+    require(!sc_checker.dpor_transitions_independent(0, write("x"), 1, read("x")),
+            "SC source Write/Read dependence changed");
+    require(tso_checker.dpor_transitions_independent(0, write("x"), 1, read("x")),
+            "TSO source Write was not classified as a private enqueue");
+    require(pso_checker.dpor_transitions_independent(0, write("x"), 1, read("x")),
+            "PSO source Write was not classified as a private enqueue");
+    require(!tso_checker.dpor_transitions_independent(0, flush("x"), 1, read("x")),
+            "TSO Flush/Read visibility dependence changed");
+    require(!pso_checker.dpor_transitions_independent(0, flush("x"), 1, flush("x")),
+            "PSO same-address Flush/Flush dependence changed");
+    require(!tso_checker.dpor_transitions_independent(0, write("x"), 0, flush("x")),
+            "same-thread source/Flush ordering changed");
+    require(!tso_checker.dpor_transitions_independent(0, write("x"), 1, spawn(0)),
+            "buffered enqueue bypassed the Spawn safeguard");
+    require(!tso_checker.dpor_transitions_independent(0, write("x"), 1, join(0)),
+            "buffered enqueue bypassed the target-Join safeguard");
+
+    assert_buffered_enqueue_reduction(model::MemoryModel::TSO);
+    assert_buffered_enqueue_reduction(model::MemoryModel::PSO);
+    assert_flush_visibility_dependency_preserves_assertion(model::MemoryModel::TSO);
+    assert_flush_visibility_dependency_preserves_assertion(model::MemoryModel::PSO);
 
     assert_pair_commutes_when_independent(read("x"), read("x"));
     assert_pair_commutes_when_independent(read("x"), write("y"));
