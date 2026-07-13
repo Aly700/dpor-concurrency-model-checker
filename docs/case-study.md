@@ -217,6 +217,40 @@ beyond bounded verdicts:
   requires weak initials or wakeup trees — ADR 0012 territory, not another
   local flush clause.
 
+## The seventh campaign: reader-writer locks without invented order
+
+- **The synchronization primitive was designed gate-first** — each rwlock
+  carries a writer-release clock plus an accumulator joining every reader
+  release. `RLock` consumes only the writer clock; `RUnlock` contributes to
+  the accumulator; `WLock` consumes both and resets the reader epoch; and
+  `WUnlock` publishes the writer clock. There is deliberately no
+  reader-release-to-reader-acquire edge: read-lock holders may overlap, so
+  their unprotected writes elsewhere must remain unordered and race. Four
+  verdict-flipping probes pin writer-to-reader, writer-to-writer, every
+  reader-to-writer edge, and the absence of reader-to-reader ordering. An
+  independent writer-free CLI adversary still found that last race in three
+  DPOR schedules.
+- **Reader commutation has two proof boundaries** — co-enabled
+  `RLock(m)`/`RLock(m)` actions form a direct commuting diamond: both orders
+  leave the same holder set, clocks, race metadata, and enabled set, including
+  identical `WLock(m)` disabledness after either first reader. A narrower
+  checker-local rule commutes all reader-mode actions only when the whole
+  program contains neither `WLock(m)` nor `WUnlock(m)`. That static exclusion
+  removes the middle-writer witness; writer-bearing programs keep the other
+  same-lock pairs dependent. The three-reader discriminator has
+  `9! / (3!^3) = 1,680` naive leaves and exactly one DPOR leaf.
+- **The gates widened rather than weakened** — the two-thread oracle now
+  checks 21,856 programs over 21 actions; the three-thread sweep checks 65,543
+  programs over 19. Fixed-seed fuzz generated each of the four rwlock actions
+  more than 600 times, and cross-model monotonicity completed 17,040 inclusion
+  checks with zero skips. The optimality corpus was deliberately untouched:
+  its output remained byte-identical at SC 1.067, TSO 1.152, and PSO 1.154.
+  All 24 suites passed after the extension.
+- **The gallery closes the loop** — `readers_writers.dpor` is clean at seven
+  naive schedules and two DPOR representatives. Its broken pair omits the
+  reader lock, making both the payload race and the overlap assertion
+  reachable: 56 naive schedules, six under DPOR.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
