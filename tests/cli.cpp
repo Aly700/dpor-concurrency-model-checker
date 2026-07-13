@@ -84,7 +84,8 @@ std::filesystem::path example(const std::filesystem::path& source_dir, const std
     return source_dir / "examples" / name;
 }
 
-std::filesystem::path golden(const std::filesystem::path& source_dir, const std::string& name) {
+[[maybe_unused]] std::filesystem::path golden(const std::filesystem::path& source_dir,
+                                              const std::string& name) {
     return source_dir / "tests" / "golden" / name;
 }
 
@@ -96,7 +97,7 @@ std::string first_line(const std::string& text) {
     return text.substr(0, newline);
 }
 
-std::string details_for_round_trip(const std::string& report) {
+[[maybe_unused]] std::string details_for_round_trip(const std::string& report) {
     std::istringstream input(report);
     std::ostringstream details;
     std::string line;
@@ -459,7 +460,7 @@ void require_cli(bool condition, const std::string& message) {
     }
 }
 
-void assert_rwlock_check_replay_byte_identity(
+void assert_check_replay_byte_identity(
     const std::filesystem::path& binary,
     const std::filesystem::path& work_dir,
     const std::string& stem,
@@ -502,7 +503,7 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
     // This assertion witness exercises both parsing and report rendering for
     // all four strict spellings. A one-thread trace also makes the entire
     // check and replay reports byte-identical, including exploration counts.
-    assert_rwlock_check_replay_byte_identity(
+    assert_check_replay_byte_identity(
         binary,
         work_dir,
         "cli_rwlock_spellings",
@@ -515,7 +516,7 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
         "assertion",
         {"rlock rw", "runlock rw", "wlock rw", "wunlock rw"});
 
-    assert_rwlock_check_replay_byte_identity(
+    assert_check_replay_byte_identity(
         binary,
         work_dir,
         "cli_runlock_error",
@@ -523,7 +524,7 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
         "  runlock rw\n",
         "error",
         {"rwlock 'rw'", "runlock rw"});
-    assert_rwlock_check_replay_byte_identity(
+    assert_check_replay_byte_identity(
         binary,
         work_dir,
         "cli_wunlock_error",
@@ -532,7 +533,7 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
         "error",
         {"rwlock 'rw'", "wunlock rw"});
 
-    assert_rwlock_check_replay_byte_identity(
+    assert_check_replay_byte_identity(
         binary,
         work_dir,
         "cli_rwlock_waiting_writer",
@@ -544,7 +545,7 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
         "  rlock rw\n",
         "deadlock",
         {"rwlock rw waiting_for_writer owned_by 0"});
-    assert_rwlock_check_replay_byte_identity(
+    assert_check_replay_byte_identity(
         binary,
         work_dir,
         "cli_rwlock_waiting_readers",
@@ -556,7 +557,7 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
         "  wlock rw\n",
         "deadlock",
         {"rwlock rw waiting_for_readers_to_drain"});
-    assert_rwlock_check_replay_byte_identity(
+    assert_check_replay_byte_identity(
         binary,
         work_dir,
         "cli_rwlock_self_wait",
@@ -619,10 +620,146 @@ void assert_rwlock_parser_is_strict_and_namespaces_are_distinct(
     }
 }
 
+void assert_semaphore_syntax_and_witnesses_round_trip_byte_identically(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    // The assertion witness exercises parsing and canonical trace rendering
+    // for both semaphore actions. With one thread, check and replay reports
+    // are byte-identical, including the exploration count.
+    assert_check_replay_byte_identity(
+        binary,
+        work_dir,
+        "cli_semaphore_spellings",
+        "thread:\n"
+        "  sem_post permits\n"
+        "  sem_wait permits\n"
+        "  assert r0\n",
+        "assertion",
+        {"sem_post permits", "sem_wait permits"});
+
+    assert_check_replay_byte_identity(
+        binary,
+        work_dir,
+        "cli_semaphore_zero_permit",
+        "thread:\n"
+        "  sem_wait permits\n",
+        "deadlock",
+        {"semaphore permits waiting_for_post"});
+}
+
+void assert_semaphore_parser_is_strict_and_namespace_is_distinct(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    const std::vector<std::pair<std::string, std::string>> uppercase_cases = {
+        {"SemPost", "SemPost permits"},
+        {"SemWait", "SemWait permits"},
+    };
+    for (const auto& [keyword, action] : uppercase_cases) {
+        const auto program_path = work_dir / ("cli_" + keyword + ".dpor");
+        write_file(program_path, "thread:\n  " + action + "\n");
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_" + keyword + ".out"),
+            work_dir / ("cli_" + keyword + ".err"));
+        require_cli(result.exit_code == 2, keyword + " should be rejected");
+        require_cli(result.stdout_text.empty(), keyword + " wrote stdout");
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    keyword + " error omitted its line");
+        require_cli(result.stderr_text.find("unknown keyword '" + keyword + "'") !=
+                        std::string::npos,
+                    keyword + " was not reported as unknown");
+    }
+
+    const std::vector<std::pair<std::string, std::string>> arity_cases = {
+        {"sem_post_missing", "sem_post"},
+        {"sem_post_extra", "sem_post permits extra"},
+        {"sem_wait_missing", "sem_wait"},
+        {"sem_wait_extra", "sem_wait permits extra"},
+    };
+    for (const auto& [stem, action] : arity_cases) {
+        const auto program_path = work_dir / ("cli_" + stem + ".dpor");
+        write_file(program_path, "thread:\n  " + action + "\n");
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_" + stem + ".out"),
+            work_dir / ("cli_" + stem + ".err"));
+        require_cli(result.exit_code == 2, stem + " should be rejected");
+        require_cli(result.stdout_text.empty(), stem + " wrote stdout");
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    stem + " error omitted its line");
+        const std::string keyword = stem.rfind("sem_post", 0) == 0
+            ? "sem_post"
+            : "sem_wait";
+        require_cli(result.stderr_text.find("keyword '" + keyword +
+                                            "' expects 1 operand") != std::string::npos,
+                    stem + " did not report strict arity");
+    }
+
+    struct CollisionCase {
+        std::string stem;
+        std::string program_text;
+        std::string other_namespace;
+    };
+    const std::vector<CollisionCase> collisions = {
+        {
+            "semaphore_then_mutex",
+            "thread:\n"
+            "  sem_post shared\n"
+            "  lock shared\n",
+            "mutex",
+        },
+        {
+            "mutex_then_semaphore",
+            "thread:\n"
+            "  lock shared\n"
+            "  sem_wait shared\n",
+            "mutex",
+        },
+        {
+            "semaphore_then_rwlock",
+            "thread:\n"
+            "  sem_wait shared\n"
+            "  rlock shared\n",
+            "rwlock",
+        },
+        {
+            "rwlock_then_semaphore",
+            "thread:\n"
+            "  wlock shared\n"
+            "  sem_post shared\n",
+            "rwlock",
+        },
+    };
+    for (const CollisionCase& collision : collisions) {
+        const auto program_path = work_dir / ("cli_" + collision.stem + ".dpor");
+        write_file(program_path, collision.program_text);
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_" + collision.stem + ".out"),
+            work_dir / ("cli_" + collision.stem + ".err"));
+        require_cli(result.exit_code == 2,
+                    collision.stem + " namespace collision should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    collision.stem + " namespace collision wrote stdout");
+        require_cli(result.stderr_text.find("line 3") != std::string::npos,
+                    collision.stem + " collision omitted the conflict line");
+        require_cli(result.stderr_text.find("semaphore") != std::string::npos,
+                    collision.stem + " collision omitted semaphore");
+        require_cli(result.stderr_text.find(collision.other_namespace) != std::string::npos,
+                    collision.stem + " collision omitted " + collision.other_namespace);
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    collision.stem + " collision omitted the first-use line");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
     assert(argc == 3);
+    (void)argc;
     const std::filesystem::path binary = argv[1];
     const std::filesystem::path source_dir = argv[2];
     const std::filesystem::path work_dir = std::filesystem::current_path();
@@ -642,5 +779,7 @@ int main(int argc, char** argv) {
     assert_growing_loop_reports_clean_up_to_bound(binary, work_dir);
     assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
     assert_rwlock_parser_is_strict_and_namespaces_are_distinct(binary, work_dir);
+    assert_semaphore_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
+    assert_semaphore_parser_is_strict_and_namespace_is_distinct(binary, work_dir);
     return 0;
 }

@@ -92,6 +92,21 @@ model::Action wunlock(std::string rwlock) {
     return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
 }
 
+model::Action semaphore_action(model::ActionKind kind, std::string semaphore) {
+    model::Action action;
+    action.kind = kind;
+    action.semaphore = std::move(semaphore);
+    return action;
+}
+
+model::Action sem_post(std::string semaphore) {
+    return semaphore_action(model::ActionKind::SemPost, std::move(semaphore));
+}
+
+model::Action sem_wait(std::string semaphore) {
+    return semaphore_action(model::ActionKind::SemWait, std::move(semaphore));
+}
+
 model::Action join(model::ThreadId target) {
     model::Action action;
     action.kind = model::ActionKind::Join;
@@ -141,7 +156,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 16> kEnumeratedActions{
+const std::array<model::Action, 18> kEnumeratedActions{
     read("x"),
     write("x"),
     write("y"),
@@ -158,9 +173,11 @@ const std::array<model::Action, 16> kEnumeratedActions{
     runlock("rw"),
     wlock("rw"),
     wunlock("rw"),
+    sem_post("sem"),
+    sem_wait("sem"),
 };
 
-const std::array<model::Action, 20> kFuzzActions{
+const std::array<model::Action, 22> kFuzzActions{
     read("x", 0),
     read("y", 1),
     write("x", 1),
@@ -181,6 +198,8 @@ const std::array<model::Action, 20> kFuzzActions{
     runlock("rw"),
     wlock("rw"),
     wunlock("rw"),
+    sem_post("sem"),
+    sem_wait("sem"),
 };
 
 using BugVector = std::array<bool, static_cast<std::size_t>(BugKind::Count)>;
@@ -225,6 +244,9 @@ std::string action_text(const model::Action& action) {
     }
     if (!action.rwlock.empty()) {
         out << " rwlock=" << action.rwlock;
+    }
+    if (!action.semaphore.empty()) {
+        out << " semaphore=" << action.semaphore;
     }
     if (!action.label.empty()) {
         out << " label=" << action.label;
@@ -392,6 +414,12 @@ std::vector<model::Program> hand_picked_programs() {
                         {read("flag", 0), read("data", 1)}}},
         model::Program{{{wlock("rw"), write("data", 1), wunlock("rw")},
                         {rlock("rw"), read("data", 0), runlock("rw")}}},
+        model::Program{{{sem_wait("sem")}, {yield()}}},
+        model::Program{{{write("data", 1), sem_post("sem")},
+                        {sem_wait("sem"), read("data", 0)}}},
+        model::Program{{{write("x", 1), sem_post("sem")},
+                        {sem_post("sem")},
+                        {sem_wait("sem"), read("x", 0)}}},
     };
 }
 

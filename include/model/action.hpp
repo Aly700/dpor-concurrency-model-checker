@@ -50,7 +50,9 @@ enum class ActionKind {
     RLock,
     RUnlock,
     WLock,
-    WUnlock
+    WUnlock,
+    SemPost,
+    SemWait
 };
 
 struct Action {
@@ -58,6 +60,7 @@ struct Action {
     std::string address;
     std::string mutex;
     std::string rwlock;
+    std::string semaphore;
     std::string condition;
     ThreadId target{0};
     std::optional<RegisterId> destination;

@@ -20,6 +20,7 @@ state that proves the cycle.
 | Atomics | `atomic_load`, `atomic_store`, `atomic_rmw`, `cas` | Acquire/release/acq-rel, SC-per-location; atomic-atomic never races, mixed plain/atomic does |
 | Mutexes | `lock`, `unlock` | Blocking; release/acquire vector-clock edges; non-owner unlock is a modeled error |
 | Reader-writer locks | `rlock`, `runlock`, `wlock`, `wunlock` | Parallel readers, exclusive writers, writer-to-reader and reader/writer-to-writer HB; reentrancy errors and read-to-write upgrades self-deadlock |
+| Counting semaphores | `sem_post`, `sem_wait` | Zero-initialized anonymous permits; posts accumulate release clocks and successful waits acquire the lifetime accumulator (the documented strong model) |
 | Condition variables | `wait`, `signal`, `broadcast` | Mesa semantics, two-phase wait (release+sleep, then reacquire); no permit queuing, so lost wakeups deadlock |
 | Threads | `spawn`, `join`, `yield` | Static thread bodies with dynamic start; spawn starts a target and creates a happens-before edge, join blocks until a started target finishes and inherits its clock |
 
@@ -31,8 +32,8 @@ Two explorers share one execution semantics:
   relation proves commutes (~95% of schedules on deeper programs).
 
 Detection: happens-before data races (vector clocks), deadlocks across mutex,
-join, condition-variable, waiting-for-writer, and readers-to-drain blockers,
-modeled API errors, assertion
+join, condition-variable, waiting-for-writer, readers-to-drain, and semaphore
+blockers, modeled API errors, assertion
 failures, and executions that exceed the configured per-thread step bound.
 The checker also proves schedule-existence of non-termination when one
 execution revisits an exact behavioral state. Safety reports carry
@@ -127,6 +128,8 @@ rlock rw
 runlock rw
 wlock rw
 wunlock rw
+sem_post sem
+sem_wait sem
 wait cv m
 signal cv
 broadcast cv
@@ -135,10 +138,19 @@ join THREAD_ID
 yield
 ```
 
-Mutex and reader-writer lock names occupy distinct namespaces: a program may
-not use the same name with both action families. Under TSO/PSO, every lock and
-unlock action is a full ordered point and waits for that thread's pending stores
-to drain.
+Mutex, reader-writer-lock, and semaphore names occupy distinct namespaces: a
+program may not use one name in more than one of those action families. Every
+semaphore starts with zero permits; there is no declaration or initialization
+action, so initial permits are explicit `sem_post` steps. Under TSO/PSO, every
+lock, unlock, post, and wait action is a full ordered point and waits for that
+thread's pending stores to drain.
+
+Semaphore happens-before is intentionally strong and deterministic. Each post
+release-joins its clock into a lifetime accumulator, and every successful wait
+acquire-joins the whole accumulator without clearing it. A wait can therefore
+be ordered after posts whose anonymous permit it did not consume. Safe verdicts
+for semaphore programs are relative to this model; exact permit matching would
+require another replayable nondeterministic choice.
 
 `dpor check` accepts `--memory-model sc|tso|pso` (default `sc`) and
 `--step-bound N` to set the per-thread step bound. Because
@@ -155,8 +167,8 @@ exploration stops at the schedule cap (`--max-schedules`), the report says
 Cycle detection is per execution and path-local. After every transition, the
 checker compares an exact canonical byte encoding of the complete behavioral
 state: normalized thread PCs, started threads, wait phases and wait sets,
-registers, memory values, mutex owners, reader-writer lock holders, ordered TSO
-store buffers, and
+registers, memory values, mutex owners, reader-writer lock holders, nonzero
+semaphore permit counts, ordered TSO store buffers, and
 canonical per-address PSO FIFO maps. It never
 uses a lossy hash; a collision could fabricate a false proof of divergence.
 Vector clocks and race history are analysis instrumentation rather than program
@@ -272,8 +284,8 @@ gallery uses atomic coordination variables instead.
 
 `examples/classic/` contains a checked gallery of classic mutual-exclusion and
 lock-free patterns: Peterson, Dekker, a bounded two-thread Bakery
-simplification, a Treiber push skeleton, a failed-CAS handoff, and reader-writer
-lock publication. Each model is
+simplification, a Treiber push skeleton, a failed-CAS handoff, reader-writer
+lock publication, and a three-thread dining-philosophers pair. Each model is
 paired with a deliberately broken variant and documented in
 [`examples/classic/README.md`](examples/classic/README.md), including the exact
 bounded verdict and any `.dpor` modeling limitation.
@@ -287,18 +299,18 @@ execution hit the step bound; that DPOR never explores more schedules; that
 every DPOR report replays to an identical report; and how far DPOR is from one
 schedule per Mazurkiewicz class:
 
-1. **Exhaustive 2-thread sweep** — every program over a 21-action alphabet
-   (capped per length pair; 21,856 programs including hand-picked fixtures).
-2. **Strided 3-thread sweep** — 65,543 programs evenly sampled from the full
-   19-action, 6-slot space, plus an asserted three-reader discriminator with
+1. **Exhaustive 2-thread sweep** — every program over a 23-action alphabet
+   (capped per length pair; 22,126 programs including hand-picked fixtures).
+2. **Strided 3-thread sweep** — 65,544 programs evenly sampled from the full
+   21-action, 6-slot space, plus an asserted three-reader discriminator with
    1,680 naive schedules and one DPOR representative.
 3. **Seeded differential fuzz** — 3,000 random 2–5-thread programs per run,
-   including rwlocks, spawn-shaped, value/branch/CAS/assertion programs, exact
-   spin cycles, growing-state bound backstops, and deliberately malformed ones;
-   failures print the seed and the program in `.dpor` syntax for by-hand
-   reproduction. Deterministic fractions run under TSO and PSO, and the summary
-   prints both model counts plus naive/DPOR total, fair, and unfair cycle
-   counters.
+   including rwlocks, semaphores, spawn-shaped, value/branch/CAS/assertion
+   programs, exact spin cycles, growing-state bound backstops, and deliberately
+   malformed ones; failures print the seed and the program in `.dpor` syntax
+   for by-hand reproduction. Deterministic fractions run under TSO and PSO,
+   and the summary prints both model counts plus naive/DPOR total, fair, and
+   unfair cycle counters.
 4. **SC/TSO/PSO optimality meter** — collects naive schedules for small
    non-error, non-assertion, zero-cycle, zero-bound-hit programs, canonicalizes
    phase-aware Mazurkiewicz trace classes using the same transition predicate
@@ -310,10 +322,10 @@ schedule per Mazurkiewicz class:
 5. **Buffered-model oracles** — capped TSO and PSO program sweeps compare
    naive and DPOR verdict/total-cycle/fair-cycle/unfair-cycle existence,
    schedule dominance, and exact replay.
-6. **Cross-model inclusion** — a deterministic two-thread corpus plus
-   fixed-seed samples checks per-kind bug existence is monotone
-   `SC => TSO => PSO`, including all four rwlock actions, while skipping and
-   reporting any truncated exploration.
+6. **Cross-model inclusion** — 1,711 deterministic two-thread and hand-picked
+   programs perform 17,110 per-kind checks that bug existence is monotone
+   `SC => TSO => PSO`, including all four rwlock and both semaphore actions,
+   while skipping and reporting any truncated exploration.
 
 All gates are deterministic and run in CI on Linux and macOS.
 
@@ -321,7 +333,7 @@ All gates are deterministic and run in CI on Linux and macOS.
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
 soundness-relevant decision in `adr/` (0001 architecture crux through ADR
-0021's reader-writer locks), including the exact vector-clock edge for
+0022's counting semaphores), including the exact vector-clock edge for
 each synchronization kind and why each DPOR pruning step cannot lose a bug
 class.
 

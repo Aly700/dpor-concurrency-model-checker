@@ -3,6 +3,7 @@
 
 #include <array>
 #include <cassert>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -63,6 +64,21 @@ model::Action wlock(std::string rwlock) {
 
 model::Action wunlock(std::string rwlock) {
     return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
+}
+
+model::Action semaphore_action(model::ActionKind kind, std::string semaphore) {
+    model::Action action;
+    action.kind = kind;
+    action.semaphore = std::move(semaphore);
+    return action;
+}
+
+model::Action sem_post(std::string semaphore) {
+    return semaphore_action(model::ActionKind::SemPost, std::move(semaphore));
+}
+
+model::Action sem_wait(std::string semaphore) {
+    return semaphore_action(model::ActionKind::SemWait, std::move(semaphore));
 }
 
 model::Action join(model::ThreadId target) {
@@ -153,6 +169,43 @@ void assert_pair_commutes_when_independent(const model::Action& lhs, const model
     assert(!rhs_then_lhs.first_error.has_value());
 }
 
+void assert_semaphore_pair_commutes_when_independent(const model::Action& lhs,
+                                                     const model::Action& rhs) {
+    require(model::independent(lhs, rhs),
+            "semaphore commutation fixture requires an independent pair");
+
+    model::Program program;
+    program.threads = {{lhs}, {rhs}, {}};
+    if (lhs.kind == model::ActionKind::SemWait) {
+        program.threads[2].push_back(sem_post(lhs.semaphore));
+    }
+    if (rhs.kind == model::ActionKind::SemWait) {
+        program.threads[2].push_back(sem_post(rhs.semaphore));
+    }
+
+    model::Schedule seed_prefix;
+    for (std::size_t index = 0; index < program.threads[2].size(); ++index) {
+        seed_prefix.push_back(
+            {2, static_cast<std::uint32_t>(index), std::nullopt});
+    }
+    model::Schedule lhs_then_rhs = seed_prefix;
+    lhs_then_rhs.push_back({0, 0, std::nullopt});
+    lhs_then_rhs.push_back({1, 0, std::nullopt});
+    model::Schedule rhs_then_lhs = seed_prefix;
+    rhs_then_lhs.push_back({1, 0, std::nullopt});
+    rhs_then_lhs.push_back({0, 0, std::nullopt});
+
+    const model::ModelChecker checker(program);
+    const auto first = checker.replay(lhs_then_rhs);
+    const auto second = checker.replay(rhs_then_lhs);
+    require(!first.first_race.has_value() && !second.first_race.has_value(),
+            "independent semaphore pair changed a race verdict by order");
+    require(!first.first_deadlock.has_value() && !second.first_deadlock.has_value(),
+            "independent semaphore pair changed enabledness by order");
+    require(!first.first_error.has_value() && !second.first_error.has_value(),
+            "independent semaphore pair changed an error verdict by order");
+}
+
 void assert_buffered_enqueue_reduction(model::MemoryModel memory_model) {
     const model::Program program{{
         {write("y")},
@@ -206,6 +259,9 @@ int main() {
     assert(model::independent(assert_nonzero(0), spawn(1)));
     assert(model::independent(flush("x"), read("y")));
     assert(model::independent(flush("x"), set(0, 1)));
+    assert(!model::independent(sem_post("sem"), spawn(1)));
+    assert(!model::independent(sem_wait("sem"), join(0)));
+    assert(model::independent(sem_post("sem"), write("x")));
 
     const std::array<model::Action, 4> same_rwlock_actions{
         rlock("rw"), runlock("rw"), wlock("rw"), wunlock("rw")};
@@ -224,6 +280,27 @@ int main() {
         for (const model::Action& rhs : other_rwlock_actions) {
             require(model::independent(lhs, rhs),
                     "different-rwlock actions must remain independent");
+        }
+    }
+
+    const std::array<model::Action, 2> same_semaphore_actions{
+        sem_post("sem"), sem_wait("sem")};
+    for (std::size_t lhs = 0; lhs < same_semaphore_actions.size(); ++lhs) {
+        for (std::size_t rhs = 0; rhs < same_semaphore_actions.size(); ++rhs) {
+            const bool two_posts = lhs == 0 && rhs == 0;
+            require(model::independent(
+                        same_semaphore_actions.at(lhs),
+                        same_semaphore_actions.at(rhs)) == two_posts,
+                    "same-semaphore action-level independence matrix changed");
+        }
+    }
+    const std::array<model::Action, 2> other_semaphore_actions{
+        sem_post("other-sem"), sem_wait("other-sem")};
+    for (const model::Action& lhs : same_semaphore_actions) {
+        for (const model::Action& rhs : other_semaphore_actions) {
+            require(model::independent(lhs, rhs),
+                    "different-semaphore actions must remain independent");
+            assert_semaphore_pair_commutes_when_independent(lhs, rhs);
         }
     }
 
@@ -250,6 +327,12 @@ int main() {
             "buffered enqueue bypassed the Spawn safeguard");
     require(!tso_checker.dpor_transitions_independent(0, write("x"), 1, join(0)),
             "buffered enqueue bypassed the target-Join safeguard");
+    require(!sc_checker.dpor_transitions_independent(
+                0, sem_post("left-sem"), 0, sem_post("right-sem")),
+            "same-thread semaphore program order was commuted");
+    require(tso_checker.dpor_transitions_independent(
+                0, write("x"), 1, sem_wait("sem")),
+            "buffered enqueue did not remain private against semaphore synchronization");
 
     assert_buffered_enqueue_reduction(model::MemoryModel::TSO);
     assert_buffered_enqueue_reduction(model::MemoryModel::PSO);
@@ -261,6 +344,9 @@ int main() {
     assert_pair_commutes_when_independent(write("x"), lock("m"));
     assert_pair_commutes_when_independent(lock("m"), lock("n"));
     assert_pair_commutes_when_independent(rlock("rw"), rlock("rw"));
+    assert_pair_commutes_when_independent(sem_post("sem"), sem_post("sem"));
+    assert_semaphore_pair_commutes_when_independent(
+        sem_post("left-sem"), sem_post("right-sem"));
     assert_pair_commutes_when_independent(signal("cv0"), signal("cv1"));
     assert_pair_commutes_when_independent(broadcast("cv0"), signal("cv1"));
     assert_pair_commutes_when_independent(yield(), write("x"));

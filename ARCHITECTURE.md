@@ -45,6 +45,9 @@ The checker interprets a program as a small-step state machine:
 - `rwlocks[name]` records a canonical reader-holder set, an optional writer,
   the last writer-release clock, and the accumulated reader-release clock for
   that reader epoch.
+- `semaphores[name]` records a zero-initialized unbounded modeled permit count
+  and the lifetime componentwise join of every post-release clock. Zero-count
+  entries are behaviorally equivalent to absence.
 - `atomic_location_clock[address]` records the per-address release sequence for
   modeled atomic operations. The model supports acquire loads, release stores,
   acquire-release RMWs, and SC-per-location; it does not model relaxed atomics.
@@ -72,7 +75,7 @@ At each DFS state, the naive oracle enumerates exactly the enabled transitions
 in deterministic schedule-step order. Not-started threads are disabled. `Read`, `Write`,
 `AtomicLoad`, `AtomicStore`, `AtomicRmw`, `CompareExchange`, `Set`,
 `BranchNonzero`, `Assert`, `Fence`, `Yield`, `Unlock`, `RUnlock`, `WUnlock`,
-`Spawn`, `Signal`, and
+`SemPost`, `Spawn`, `Signal`, and
 `Broadcast` are enabled for started unfinished threads; invalid `Unlock`,
 invalid rwlock unlock/reentrancy, invalid `Wait`, invalid `Spawn`, and invalid
 `Join` steps are reported as modeled errors. `Lock` is enabled only when its
@@ -81,12 +84,16 @@ thread's writer; `WLock` is enabled only with no writer and no readers, except
 that a current writer's recursive acquisition remains executable as an error.
 A read holder's attempted `WLock` stays disabled on its own hold and therefore
 forms a tagged self-wait deadlock.
+`SemWait(name)` is enabled exactly when the named semaphore has a positive
+permit count; it consumes one permit. `SemPost(name)` always increments and
+queues a permit even when no waiter exists. There is no declaration or hidden
+initial permit.
 `Join(target)` is enabled only when `target` has started and finished.
 `Wait(cv, mutex)` is one IR action with two schedule steps at the same action
 index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
 started unfinished threads and no enabled action is a deadlock; the report
 tags each started blocked thread as waiting on a mutex, join target, condition
-variable, rwlock writer, or rwlock reader set. A state where all started
+variable, rwlock writer, rwlock reader set, or semaphore. A state where all started
 threads are finished is normal
 termination, even if some static thread bodies were never spawned. If an
 enabled choice names a thread that has already executed its per-thread step
@@ -94,7 +101,7 @@ bound, that execution terminates with a bound outcome and increments
 `bound_exceeded_executions`.
 
 Under TSO and PSO, atomics, CAS, mutex/condition-variable operations, all four
-rwlock operations, spawn, join, and `Fence` are ordered points: they are
+rwlock operations, both semaphore operations, spawn, join, and `Fence` are ordered points: they are
 disabled until all of the
 executing thread's buffers are empty. A nonempty buffer always enables a flush for that thread,
 including after the source pc is done, so buffered completion is not deadlock.
@@ -112,6 +119,11 @@ joins its post-tick clock into the rwlock's reader-release accumulator.
 release, then clears the reader accumulator for the next epoch. `WUnlock`
 replaces the writer-release clock with its post-tick clock. In particular,
 readers never acquire one another's release clocks.
+`SemPost` joins its post-tick clock into the named semaphore's lifetime release
+accumulator without acquiring it. A successful `SemWait` joins that entire
+accumulator into the waiter and never clears it. This deterministic strong
+model can order a waiter after posts whose anonymous permit it did not consume;
+ADR 0022 makes that verification-model caveat explicit.
 `Spawn(target)` marks the target started and joins the target thread's clock
 with the spawner's post-tick clock, so pre-spawn actions happen-before all
 target actions.
@@ -225,6 +237,14 @@ no writer-mode action on that name. The static absence of a writer removes the
 middle witness in which the last `RUnlock` enables a third thread's `WLock`
 between two otherwise commuting reader transitions.
 
+Two cross-thread `SemPost` operations on one name commute because count
+addition and vector-clock join are commutative and neither poster acquires the
+other. Every same-name pair involving `SemWait` remains dependent. A wait that
+was disabled at a zero-count prefix deliberately uses the all-enabled repair;
+this retains both alternate-poster middle-wait traces when posts commute.
+Different semaphore names use the ordinary disjoint-resource independence
+rule.
+
 Spawn adds dynamic enabledness. Not-started threads are absent from enabled
 sets and sleep sets, and replay rejects target-thread steps before the
 corresponding spawn. At terminal leaves, a not-started thread with a non-empty
@@ -242,35 +262,34 @@ because it was previously slept.
 
 ## Verification Gates
 
-The DPOR implementation is checked against deterministic gates. The
-2-thread oracle sweep enumerates small programs by length pair over a 21-action
-alphabet and compares naive vs. DPOR race/deadlock/error/assertion existence,
-the bound-hit boolean, schedule dominance, and report replay identity. The
+The DPOR implementation is checked against deterministic gates. The 2-thread
+oracle sweep enumerates small programs by length pair over a 23-action alphabet
+and compares naive vs. DPOR race/deadlock/error/assertion existence, the
+bound-hit boolean, schedule dominance, and report replay identity. The
 3-thread oracle sweep uses an evenly strided deterministic sample of the larger
-19-action, 6-slot space, plus hand-picked disabled-transition cases, to
-exercise spawn, join, condition-variable, and rwlock enabledness. A separate
-three-reader fixture pins 1680 naive leaves and one DPOR representative. The
-seeded
-differential fuzz gate generates 3000 fixed-seed programs across 2-5 threads,
-1-6 actions per thread, plain and atomic memory, mutexes, rwlocks, condition
-variables,
-joins, yields, spawn-shaped programs, and modeled-error cases, plus a
-value-mode lane with registers, branches, CAS, fetch-add, assertions, and
-deliberate bound hits; capped explorations are counted but excluded from
-verdict equality because truncation can legitimately hide a later endpoint.
+21-action, 6-slot space, plus hand-picked disabled-transition cases, to
+exercise spawn, join, condition-variable, rwlock, and semaphore enabledness. A
+separate three-reader fixture pins 1680 naive leaves and one DPOR
+representative. The seeded differential fuzz gate generates 3000 fixed-seed
+programs across 2-5 threads, 1-6 actions per thread, plain and atomic memory,
+mutexes, rwlocks, semaphores, condition variables, joins, yields, spawn-shaped
+programs, and modeled-error cases, plus a value-mode lane with registers,
+branches, CAS, fetch-add, assertions, and deliberate bound hits; capped
+explorations are counted but excluded from verdict equality because truncation
+can legitimately hide a later endpoint.
 
-The optimality meter is the fourth gate and remains SC-only. It collects all naive maximal
-schedules for small non-error/non-assertion programs, replays them into
+The optimality meter is the fourth gate. Its SC corpus collects all naive
+maximal schedules for small non-error/non-assertion programs, replays them into
 phase-aware effective traces, canonicalizes each Mazurkiewicz trace class by
 the lexicographically minimal topological order of the checker's DPOR
 dependence DAG, and asserts `class_count <= dpor <= naive`. It also checks that
 every schedule in a canonical class replays to the same public verdict kind,
-which re-validates the independence relation behind the pruning argument.
-TSO and PSO have separate differential oracles because internal flush
-transitions change the transition alphabet and class-count argument. The
-cross-model `model_inclusion` gate checks the separate semantic theorem that
-per-kind bug existence is monotone from SC to TSO to PSO, excluding capped or
-residual-bound runs where truncation would invalidate the implication.
+which re-validates the independence relation behind the pruning argument. TSO
+and PSO use dedicated meter corpora because internal flush transitions change
+the transition alphabet and class-count argument. The cross-model
+`model_inclusion` gate checks the separate semantic theorem that per-kind bug
+existence is monotone from SC to TSO to PSO, excluding capped or residual-bound
+runs where truncation would invalidate the implication.
 
 ## Design bias
 

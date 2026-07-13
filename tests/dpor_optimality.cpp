@@ -527,6 +527,7 @@ std::string action_key(const model::Action& action) {
         << "|a=" << action.address
         << "|m=" << action.mutex
         << "|rw=" << action.rwlock
+        << "|sem=" << action.semaphore
         << "|c=" << action.condition
         << "|t=" << action.target
         << "|d=" << optional_reg_key(action.destination)
@@ -781,6 +782,12 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::WUnlock:
         out << "WUnlock " << action.rwlock;
+        break;
+    case model::ActionKind::SemPost:
+        out << "SemPost " << action.semaphore;
+        break;
+    case model::ActionKind::SemWait:
+        out << "SemWait " << action.semaphore;
         break;
     }
     return out.str();

@@ -194,6 +194,13 @@ model::Action rwlock_action(model::ActionKind kind, const std::string& rwlock) {
     return action;
 }
 
+model::Action semaphore_action(model::ActionKind kind, const std::string& semaphore) {
+    model::Action action;
+    action.kind = kind;
+    action.semaphore = semaphore;
+    return action;
+}
+
 model::Action condition_action(model::ActionKind kind, const std::string& condition) {
     model::Action action;
     action.kind = kind;
@@ -389,6 +396,14 @@ model::Action parse_action(const std::vector<std::string>& words, std::size_t li
         require_arity(words, 2, line, keyword);
         return rwlock_action(model::ActionKind::WUnlock, words[1]);
     }
+    if (keyword == "sem_post") {
+        require_arity(words, 2, line, keyword);
+        return semaphore_action(model::ActionKind::SemPost, words[1]);
+    }
+    if (keyword == "sem_wait") {
+        require_arity(words, 2, line, keyword);
+        return semaphore_action(model::ActionKind::SemWait, words[1]);
+    }
     if (keyword == "wait") {
         require_arity(words, 3, line, keyword);
         return wait_action(words[1], words[2]);
@@ -433,6 +448,7 @@ model::Program parse_program_stream(std::istream& input) {
     std::vector<std::map<std::string, std::size_t>> labels;
     std::map<std::string, std::size_t> mutex_first_use;
     std::map<std::string, std::size_t> rwlock_first_use;
+    std::map<std::string, std::size_t> semaphore_first_use;
     std::size_t current_thread = std::numeric_limits<std::size_t>::max();
 
     std::string line_text;
@@ -471,12 +487,22 @@ model::Program parse_program_stream(std::istream& input) {
                                  action.kind == model::ActionKind::RUnlock ||
                                  action.kind == model::ActionKind::WLock ||
                                  action.kind == model::ActionKind::WUnlock;
+        const bool uses_semaphore = action.kind == model::ActionKind::SemPost ||
+                                    action.kind == model::ActionKind::SemWait;
         if (uses_mutex) {
             const auto rwlock_use = rwlock_first_use.find(action.mutex);
             if (rwlock_use != rwlock_first_use.end()) {
                 std::ostringstream message;
                 message << "name '" << action.mutex
                         << "' is already used as an rwlock on line " << rwlock_use->second
+                        << " and cannot also be used as a mutex";
+                throw ParseError(line, message.str());
+            }
+            const auto semaphore_use = semaphore_first_use.find(action.mutex);
+            if (semaphore_use != semaphore_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.mutex
+                        << "' is already used as a semaphore on line " << semaphore_use->second
                         << " and cannot also be used as a mutex";
                 throw ParseError(line, message.str());
             }
@@ -491,7 +517,34 @@ model::Program parse_program_stream(std::istream& input) {
                         << " and cannot also be used as an rwlock";
                 throw ParseError(line, message.str());
             }
+            const auto semaphore_use = semaphore_first_use.find(action.rwlock);
+            if (semaphore_use != semaphore_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.rwlock
+                        << "' is already used as a semaphore on line " << semaphore_use->second
+                        << " and cannot also be used as an rwlock";
+                throw ParseError(line, message.str());
+            }
             rwlock_first_use.emplace(action.rwlock, line);
+        }
+        if (uses_semaphore) {
+            const auto mutex_use = mutex_first_use.find(action.semaphore);
+            if (mutex_use != mutex_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.semaphore
+                        << "' is already used as a mutex on line " << mutex_use->second
+                        << " and cannot also be used as a semaphore";
+                throw ParseError(line, message.str());
+            }
+            const auto rwlock_use = rwlock_first_use.find(action.semaphore);
+            if (rwlock_use != rwlock_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.semaphore
+                        << "' is already used as an rwlock on line " << rwlock_use->second
+                        << " and cannot also be used as a semaphore";
+                throw ParseError(line, message.str());
+            }
+            semaphore_first_use.emplace(action.semaphore, line);
         }
         if (action.kind == model::ActionKind::Join) {
             joins.emplace_back(line, action.target);
@@ -658,6 +711,12 @@ std::string action_text(const model::Action& action) {
         break;
     case model::ActionKind::WUnlock:
         output << "wunlock " << action.rwlock;
+        break;
+    case model::ActionKind::SemPost:
+        output << "sem_post " << action.semaphore;
+        break;
+    case model::ActionKind::SemWait:
+        output << "sem_wait " << action.semaphore;
         break;
     case model::ActionKind::Spawn:
         output << "spawn " << action.target;

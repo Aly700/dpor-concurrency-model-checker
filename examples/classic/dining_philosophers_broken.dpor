@@ -1,0 +1,18 @@
+# Three philosophers acquire their left fork first. The circular order admits
+# the classic state where every philosopher owns one fork and waits for the
+# next philosopher's fork.
+thread:
+  lock fork0
+  lock fork1
+  unlock fork1
+  unlock fork0
+thread:
+  lock fork1
+  lock fork2
+  unlock fork2
+  unlock fork1
+thread:
+  lock fork2
+  lock fork0
+  unlock fork0
+  unlock fork2

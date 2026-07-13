@@ -1,18 +1,17 @@
 // Independent 3-thread adversarial sweep: deterministically sample programs
 // with 3 threads x 2 actions over memory, atomic acquire/release/RMW, mutex,
-// reader-writer lock, Spawn, Join, and Mesa condition-variable actions. The
-// full alphabet^6 family is capped
+// reader-writer lock, counting semaphore, Spawn, Join, and Mesa
+// condition-variable actions. The full alphabet^6 family is capped
 // at 65536 evenly spaced encoded indexes, not randomness. Each sampled program
-// asserts naive/DPOR
-// verdict equality, schedule dominance, and replay identity of every DPOR
-// report. This targets the disabled-transition backtrack fallback, which
-// 2-thread sweeps exercise only weakly.
+// enforces naive/DPOR verdict equality, schedule dominance, and replay identity
+// of every DPOR report. This targets the disabled-transition backtrack
+// fallback, which 2-thread sweeps exercise only weakly.
 #include "model/checker.hpp"
 
 #include <algorithm>
-#include <cassert>
 #include <cstdint>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -93,6 +92,21 @@ Action wunlock(std::string rwlock) {
     return rwlock_action(ActionKind::WUnlock, std::move(rwlock));
 }
 
+Action semaphore_action(ActionKind kind, std::string semaphore) {
+    Action action;
+    action.kind = kind;
+    action.semaphore = std::move(semaphore);
+    return action;
+}
+
+Action sem_post(std::string semaphore) {
+    return semaphore_action(ActionKind::SemPost, std::move(semaphore));
+}
+
+Action sem_wait(std::string semaphore) {
+    return semaphore_action(ActionKind::SemWait, std::move(semaphore));
+}
+
 Action join(ThreadId target) {
     Action action;
     action.kind = ActionKind::Join;
@@ -129,27 +143,38 @@ Action broadcast(std::string condition) {
     return action;
 }
 
+void require(bool condition, const char* message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
 void assert_replays_dpor_report(const ModelChecker& checker, const CheckResult& dpor) {
     if (dpor.first_race) {
         const auto r = checker.replay(dpor.first_race->schedule);
-        assert(r.first_race && *r.first_race == *dpor.first_race);
+        require(r.first_race && *r.first_race == *dpor.first_race,
+                "3-thread race report did not replay identically");
     }
     if (dpor.first_deadlock) {
         const auto r = checker.replay(dpor.first_deadlock->schedule);
-        assert(r.first_deadlock && *r.first_deadlock == *dpor.first_deadlock);
+        require(r.first_deadlock && *r.first_deadlock == *dpor.first_deadlock,
+                "3-thread deadlock report did not replay identically");
     }
     if (dpor.first_error) {
         const auto r = checker.replay(dpor.first_error->schedule);
-        assert(r.first_error && *r.first_error == *dpor.first_error);
+        require(r.first_error && *r.first_error == *dpor.first_error,
+                "3-thread error report did not replay identically");
     }
     if (dpor.first_assertion) {
         const auto r = checker.replay(dpor.first_assertion->schedule);
-        assert(r.first_assertion && *r.first_assertion == *dpor.first_assertion);
+        require(r.first_assertion && *r.first_assertion == *dpor.first_assertion,
+                "3-thread assertion report did not replay identically");
     }
     if (dpor.first_nontermination) {
         const auto r = checker.replay(dpor.first_nontermination->schedule);
-        assert(r.first_nontermination &&
-               *r.first_nontermination == *dpor.first_nontermination);
+        require(r.first_nontermination &&
+                    *r.first_nontermination == *dpor.first_nontermination,
+                "3-thread nontermination report did not replay identically");
     }
 }
 
@@ -178,16 +203,8 @@ void cross_validate_program(const Program& p,
         bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "MISMATCH in 3-thread sweep at checked index " << checked << "\n";
-        assert(false && "3-thread oracle mismatch");
+        throw std::runtime_error("3-thread oracle mismatch");
     }
-
-    assert(dpor.first_race.has_value() == naive.first_race.has_value());
-    assert(dpor.first_deadlock.has_value() == naive.first_deadlock.has_value());
-    assert(dpor.first_error.has_value() == naive.first_error.has_value());
-    assert(dpor.first_assertion.has_value() == naive.first_assertion.has_value());
-    assert(cycle_exists(dpor) == cycle_exists(naive));
-    assert(bound_hit(dpor) == bound_hit(naive));
-    assert(dpor.schedules_explored <= naive.schedules_explored);
     assert_replays_dpor_report(checker, dpor);
 
     ++checked;
@@ -221,6 +238,8 @@ int main() {
         runlock("rw"),
         wlock("rw"),
         wunlock("rw"),
+        sem_post("sem"),
+        sem_wait("sem"),
     };
     const std::size_t k = alphabet.size();
 
@@ -281,6 +300,15 @@ int main() {
             {rlock("rw"), read("x"), runlock("rw")},
             {rlock("rw"), read("x"), runlock("rw")},
         }},
+        // SemPost/SemPost may commute, but a zero-permit waiter becomes
+        // enabled after either first post. When the second poster enables the
+        // waiter first, it can read x before the first poster publishes and
+        // expose a race, pinning the waiter-between-posts middle witness.
+        Program{{
+            {write("x"), sem_post("sem")},
+            {sem_post("sem")},
+            {sem_wait("sem"), read("x")},
+        }},
     };
     for (const auto& program : handpicked) {
         cross_validate_program(program, checked, naive_total, dpor_total, strict);
@@ -298,8 +326,10 @@ int main() {
     const ModelChecker reader_checker(three_readers);
     const CheckResult reader_naive = reader_checker.explore_naive();
     const CheckResult reader_dpor = reader_checker.explore_dpor();
-    assert(reader_naive.schedules_explored == 1680);
-    assert(reader_dpor.schedules_explored == 1);
+    require(reader_naive.schedules_explored == 1680,
+            "three-reader naive schedule count changed");
+    require(reader_dpor.schedules_explored == 1,
+            "three-reader DPOR schedule count changed");
 
     std::cout << "3-thread sweep: programs=" << checked
               << " alphabet=" << k

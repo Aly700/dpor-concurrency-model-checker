@@ -24,13 +24,15 @@ enum class BlockedOnKind {
     Thread,
     ConditionVariable,
     RwLockWriter,
-    RwLockReaders
+    RwLockReaders,
+    Semaphore
 };
 
 struct BlockedThread {
     ThreadId thread{0};
     std::string mutex;
     std::string rwlock;
+    std::string semaphore;
     std::optional<ThreadId> owner;
     BlockedOnKind kind{BlockedOnKind::Mutex};
     std::optional<ThreadId> target;

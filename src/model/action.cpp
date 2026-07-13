@@ -41,6 +41,11 @@ bool is_rwlock_action(const Action& action) {
            action.kind == ActionKind::WUnlock;
 }
 
+bool is_semaphore_action(const Action& action) {
+    return action.kind == ActionKind::SemPost ||
+           action.kind == ActionKind::SemWait;
+}
+
 bool is_condition_action(const Action& action) {
     return action.kind == ActionKind::Wait ||
            action.kind == ActionKind::Signal ||
@@ -170,13 +175,33 @@ bool independent(const Action& lhs, const Action& rhs) {
         return false;
     }
 
+    if (is_semaphore_action(lhs) && is_semaphore_action(rhs) &&
+        lhs.semaphore == rhs.semaphore) {
+        if (lhs.kind == ActionKind::SemPost && rhs.kind == ActionKind::SemPost) {
+            // Two cross-thread posts are always enabled and commute: both
+            // orders add two permits and componentwise-join the same two
+            // post-tick release clocks. Posters never acquire the accumulator,
+            // so their own clocks are unchanged by the other post. A waiter
+            // becomes enabled after either first post and remains enabled
+            // after both. The checker keeps the waiter-between-posts classes
+            // through disabled-transition repair at the earlier zero-permit
+            // prefix; only the adjacent post/post order is collapsed.
+            return true;
+        }
+
+        // A successful wait consumes a permit and acquires the accumulated
+        // release frontier. Its order with either a post or another wait can
+        // therefore change count, enabledness, and downstream HB verdicts.
+        return false;
+    }
+
     // Remaining pairs commute for this IR when both transitions are enabled:
     // non-conflicting memory accesses update disjoint or read-only metadata;
     // atomic accesses on different addresses touch disjoint location clocks;
     // mutex and Wait operations on distinct mutexes touch disjoint ownership
-    // and synchronization clocks; rwlock operations on distinct rwlocks do
-    // likewise; Signal/Broadcast on different condition variables do not
-    // queue permits and mutate disjoint wait sets; Yield has no modeled
+    // and synchronization clocks; rwlock and semaphore operations on distinct
+    // names do likewise; Signal/Broadcast on different condition variables do
+    // not queue permits and mutate disjoint wait sets; Yield has no modeled
     // shared-state or enabledness effect.
     return true;
 }

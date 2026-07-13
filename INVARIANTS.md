@@ -15,10 +15,11 @@
   collision would fabricate a false divergence proof. Fingerprint history is
   reset on backtrack and must never deduplicate states across executions.
 - The behavioral state includes normalized per-thread PCs, startedness, wait
-  phases, registers, memory values, mutex owners, condition-variable wait sets,
-  and ordered TSO store buffers or canonical per-address PSO FIFO maps. Vector
-  clocks, atomic/mutex clocks, race metadata, step counters, and schedule
-  history are analysis/budget/history state and are excluded. Consequently a
+  phases, registers, memory values, mutex owners, nonzero semaphore permit
+  counts, condition-variable wait sets, and ordered TSO store buffers or
+  canonical per-address PSO FIFO maps. Vector clocks, atomic/mutex/semaphore
+  clocks, race metadata, step counters, and schedule history are
+  analysis/budget/history state and are excluded. Consequently a
   lasso proves schedule-existence of non-termination only, not repetition of
   analysis instrumentation.
 - A cycle witness is `stem + one cycle`, split at the first occurrence of the
@@ -91,6 +92,13 @@
   not cleared merely when the live reader count reaches zero. This protects
   writer publication and every reader-to-later-writer edge without creating a
   reader-to-reader edge that could hide a race.
+- Every semaphore starts with zero permits. `SemPost` increments without a
+  modeled ceiling and release-joins its post-tick clock into a lifetime
+  accumulator; `SemWait` is enabled only at a positive count, decrements once,
+  and acquire-joins that accumulator without clearing or replacing it. This is
+  the documented strong-semaphore model: a waiter can be ordered after posts
+  whose anonymous permits it did not consume, and safe verdicts are relative
+  to that stronger model (adr/0022).
 - `Signal(cv)` and `Broadcast(cv)` must add a happens-before edge from the
   signaling thread to every waiter they wake. They must not queue permits when
   no waiter exists.
@@ -108,6 +116,9 @@
   while all pending different-address flushes are simultaneously schedulable.
   Atomics, CAS, synchronization operations, spawn/join, and `fence` remain
   disabled until every address FIFO owned by that thread is empty.
+- Under TSO and PSO, both semaphore actions are ordered points and remain
+  disabled until every buffer owned by the executing thread is empty. They do
+  not perform hidden flushes.
 - Atomic/atomic accesses are never races. Mixed plain/atomic same-address
   accesses are races when unordered by happens-before and at least one side is
   write-like: plain write, atomic store, successful CAS, or atomic RMW. CAS is
@@ -134,17 +145,26 @@
   program contains no writer-mode operation on that name; this static
   condition removes the last-reader/third-writer middle witness that would
   otherwise make the refinement unsound (adr/0021).
+- Cross-thread, co-enabled `SemPost(s)` actions are independent: count addition
+  and accumulated release-clock joins commute, neither poster acquires the
+  other, and either first post enables the same waiter set. Every same-name
+  pair involving `SemWait` remains dependent. A zero-permit wait uses the
+  all-enabled disabled-transition repair so both alternate-poster middle-wait
+  classes survive; selecting only one observed poster is forbidden
+  (adr/0022). Different semaphore names are independent.
 - Assertion failures are first-class terminal reports with replayable,
   minimized schedules. They must not be downgraded to modeled errors.
 - Deadlock detection must distinguish a true cycle from a voluntarily finished
   thread, and must identify whether each unfinished disabled thread is waiting
-  on a mutex, a join target, a condition variable, an rwlock writer, or an
-  rwlock reader set. A write-lock attempt by one of the current readers is a
-  readers-to-drain deadlock with `self_wait`, not a modeled reentrancy error.
+  on a mutex, a join target, a condition variable, an rwlock writer, an rwlock
+  reader set, or a zero-permit semaphore. A write-lock attempt by one of the
+  current readers is a readers-to-drain deadlock with `self_wait`, not a
+  modeled reentrancy error.
 - Reader-writer-lock ownership is a reader-holder set plus an optional writer;
   non-holder or wrong-mode unlock and read/write reentrancy are modeled errors.
-  A resource name may not be interpreted as both a mutex (including a Wait
-  mutex) and an rwlock, protecting deterministic ownership and HB semantics.
+  A resource name may not be interpreted as more than one of mutex (including
+  a Wait mutex), rwlock, and semaphore, protecting deterministic ownership,
+  permit, and HB semantics.
 - Thread completion is started-aware: a not-started static thread body is not
   finished for `Join` enabledness, even if the body is empty, but unstarted
   and unjoined bodies do not by themselves make clean termination a deadlock.

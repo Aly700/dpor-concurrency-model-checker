@@ -34,6 +34,8 @@ enum class Choice {
     RUnlock,
     WLock,
     WUnlock,
+    SemPost,
+    SemWait,
     Wait,
     Signal,
     Broadcast,
@@ -69,6 +71,8 @@ struct FuzzStats {
     std::size_t naive_unfair_cycles{0};
     std::size_t dpor_unfair_cycles{0};
     std::array<std::size_t, 4> rwlock_actions{};
+    // Rows are MostlyWellFormed/Adversarial; columns are SemPost/SemWait.
+    std::array<std::array<std::size_t, 2>, 2> semaphore_actions{};
 };
 
 model::Action read(std::string address) {
@@ -141,6 +145,21 @@ model::Action wlock(std::string rwlock) {
 
 model::Action wunlock(std::string rwlock) {
     return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
+}
+
+model::Action semaphore_action(model::ActionKind kind, std::string semaphore) {
+    model::Action action;
+    action.kind = kind;
+    action.semaphore = std::move(semaphore);
+    return action;
+}
+
+model::Action sem_post(std::string semaphore) {
+    return semaphore_action(model::ActionKind::SemPost, std::move(semaphore));
+}
+
+model::Action sem_wait(std::string semaphore) {
+    return semaphore_action(model::ActionKind::SemWait, std::move(semaphore));
 }
 
 model::Action wait(std::string condition, std::string mutex) {
@@ -351,6 +370,12 @@ std::string random_rwlock(std::mt19937_64& rng) {
     return bounded(rng, 2) == 0 ? "rw0" : "rw1";
 }
 
+std::string random_semaphore(std::mt19937_64& rng) {
+    // Keep generated semaphore names disjoint from mutexes and rwlocks so the
+    // ordinary fuzz lanes exercise semaphore semantics rather than validation.
+    return bounded(rng, 2) == 0 ? "sem0" : "sem1";
+}
+
 std::string random_condition(std::mt19937_64& rng, std::size_t condition_count) {
     assert(condition_count >= 1 && condition_count <= 2);
     if (condition_count == 1 || bounded(rng, condition_count) == 0) {
@@ -454,6 +479,8 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         {Choice::Broadcast, 10},
         {Choice::Spawn, 10},
         {Choice::Join, 14},
+        {Choice::SemPost, 10},
+        {Choice::SemWait, 10},
         {Choice::Fence, 5},
         {Choice::Yield, 4},
     };
@@ -506,6 +533,10 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         return release_rwlock(rng, held_rwlocks, false);
     case Choice::WUnlock:
         return release_rwlock(rng, held_rwlocks, true);
+    case Choice::SemPost:
+        return sem_post(random_semaphore(rng));
+    case Choice::SemWait:
+        return sem_wait(random_semaphore(rng));
     case Choice::Wait:
         return wait(random_condition(rng, condition_count),
                     held_mutexes.at(bounded(rng, held_mutexes.size())));
@@ -547,6 +578,8 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         {Choice::Broadcast, 6},
         {Choice::Spawn, 12},
         {Choice::Join, 14},
+        {Choice::SemPost, 8},
+        {Choice::SemWait, 12},
         {Choice::Fence, 5},
         {Choice::Yield, 4},
     };
@@ -568,6 +601,10 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         return wlock(random_rwlock(rng));
     case Choice::WUnlock:
         return wunlock(random_rwlock(rng));
+    case Choice::SemPost:
+        return sem_post(random_semaphore(rng));
+    case Choice::SemWait:
+        return sem_wait(random_semaphore(rng));
     case Choice::Wait:
         return wait(random_condition(rng, condition_count), random_mutex(rng));
     case Choice::Signal:
@@ -902,6 +939,21 @@ void assert_rwlock_spellings_round_trip() {
     assert(cli::parse_program_text(rendered).threads == program.threads);
 }
 
+void assert_semaphore_spellings_round_trip() {
+    const model::Program program{{{
+        sem_post("sem0"),
+        sem_wait("sem1"),
+    }}};
+    const std::string rendered = cli::render_program(program);
+    if (rendered !=
+            "thread:\n"
+            "  sem_post sem0\n"
+            "  sem_wait sem1\n" ||
+        cli::parse_program_text(rendered).threads != program.threads) {
+        throw std::runtime_error("semaphore spellings did not round-trip exactly");
+    }
+}
+
 void check_program(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
@@ -929,6 +981,18 @@ void check_program(std::uint64_t seed,
                 break;
             case model::ActionKind::WUnlock:
                 ++stats.rwlock_actions[3];
+                break;
+            case model::ActionKind::SemPost:
+                if (mode != GenerationMode::Value) {
+                    ++stats.semaphore_actions[
+                        mode == GenerationMode::MostlyWellFormed ? 0 : 1][0];
+                }
+                break;
+            case model::ActionKind::SemWait:
+                if (mode != GenerationMode::Value) {
+                    ++stats.semaphore_actions[
+                        mode == GenerationMode::MostlyWellFormed ? 0 : 1][1];
+                }
                 break;
             default:
                 break;
@@ -1010,6 +1074,7 @@ std::uint64_t parse_seed(const char* text) {
 
 int main(int argc, char** argv) {
     assert_rwlock_spellings_round_trip();
+    assert_semaphore_spellings_round_trip();
 
     // CTest uses these fixed seeds for deterministic coverage. Supplying one
     // or more argv seeds replaces the fixed set for manual exploration, e.g.
@@ -1076,7 +1141,12 @@ int main(int argc, char** argv) {
               << " rlock_actions=" << stats.rwlock_actions[0]
               << " runlock_actions=" << stats.rwlock_actions[1]
               << " wlock_actions=" << stats.rwlock_actions[2]
-              << " wunlock_actions=" << stats.rwlock_actions[3] << '\n';
+              << " wunlock_actions=" << stats.rwlock_actions[3]
+              << " sem_post_actions="
+              << stats.semaphore_actions[0][0] + stats.semaphore_actions[1][0]
+              << " sem_wait_actions="
+              << stats.semaphore_actions[0][1] + stats.semaphore_actions[1][1]
+              << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
     assert(stats.skipped * 10 < stats.total * 3);
@@ -1084,5 +1154,12 @@ int main(int argc, char** argv) {
     assert(stats.bound_hit > 0);
     assert(std::all_of(stats.rwlock_actions.begin(), stats.rwlock_actions.end(),
                        [](std::size_t count) { return count > 0; }));
+    for (const auto& lane : stats.semaphore_actions) {
+        if (!std::all_of(lane.begin(), lane.end(),
+                         [](std::size_t count) { return count > 0; })) {
+            throw std::runtime_error(
+                "fuzz lane did not generate both semaphore actions");
+        }
+    }
     return 0;
 }

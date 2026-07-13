@@ -34,6 +34,8 @@ struct GalleryCase {
     std::optional<bool> assertion_exists;
     bool dpor_only{false};
     std::optional<model::Fairness> expected_fairness;
+    std::vector<model::BlockedThread> expected_blocked_threads;
+    std::optional<model::Schedule> expected_deadlock_schedule;
 
     GalleryCase(std::string file_value,
                 ExpectedVerdict expected_value,
@@ -43,7 +45,9 @@ struct GalleryCase {
                 model::MemoryModel memory_model_value = model::MemoryModel::SC,
                 std::optional<bool> assertion_exists_value = std::nullopt,
                 bool dpor_only_value = false,
-                std::optional<model::Fairness> expected_fairness_value = std::nullopt)
+                std::optional<model::Fairness> expected_fairness_value = std::nullopt,
+                std::vector<model::BlockedThread> expected_blocked_threads_value = {},
+                std::optional<model::Schedule> expected_deadlock_schedule_value = std::nullopt)
         : file(std::move(file_value)),
           expected(expected_value),
           step_bound(step_bound_value),
@@ -52,7 +56,9 @@ struct GalleryCase {
           memory_model(memory_model_value),
           assertion_exists(assertion_exists_value),
           dpor_only(dpor_only_value),
-          expected_fairness(expected_fairness_value) {}
+          expected_fairness(expected_fairness_value),
+          expected_blocked_threads(std::move(expected_blocked_threads_value)),
+          expected_deadlock_schedule(std::move(expected_deadlock_schedule_value)) {}
 };
 
 struct CommandResult {
@@ -69,6 +75,17 @@ void require(bool condition, const std::string& message) {
     if (!condition) {
         fail(message);
     }
+}
+
+model::BlockedThread mutex_blocker(model::ThreadId thread,
+                                   std::string mutex,
+                                   model::ThreadId owner) {
+    model::BlockedThread blocked;
+    blocked.thread = thread;
+    blocked.mutex = std::move(mutex);
+    blocked.owner = owner;
+    blocked.kind = model::BlockedOnKind::Mutex;
+    return blocked;
 }
 
 std::string read_file(const std::filesystem::path& path) {
@@ -218,6 +235,23 @@ void require_expected_verdict(const GalleryCase& test_case,
     if (test_case.assertion_exists.has_value()) {
         require(result.first_assertion.has_value() == *test_case.assertion_exists,
                 test_case.file + " " + explorer + " assertion-existence mismatch");
+    }
+    if (!test_case.expected_blocked_threads.empty()) {
+        require(result.first_deadlock.has_value(),
+                test_case.file + " " + explorer + " omitted the expected deadlock report");
+        require(result.first_deadlock->blocked_threads == test_case.expected_blocked_threads,
+                test_case.file + " " + explorer +
+                    " deadlock did not contain the exact mutex-blocker cycle");
+        require(result.bound_exceeded_executions == 0,
+                test_case.file + " " + explorer + " unexpectedly hit the step bound");
+        require(result.cycles_detected == 0,
+                test_case.file + " " + explorer + " unexpectedly reported a cycle");
+    }
+    if (test_case.expected_deadlock_schedule.has_value()) {
+        require(result.first_deadlock.has_value() &&
+                    result.first_deadlock->schedule == *test_case.expected_deadlock_schedule,
+                test_case.file + " " + explorer +
+                    " first deadlock schedule changed nondeterministically");
     }
 }
 
@@ -392,6 +426,22 @@ const std::vector<GalleryCase>& gallery_cases() {
         {"failed_cas_handoff_broken_no_retry.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, std::nullopt, false},
         {"readers_writers.dpor", ExpectedVerdict::Clean, 10, 100000, false, model::MemoryModel::SC, false, false},
         {"readers_writers_broken.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, true, false},
+        {"dining_philosophers.dpor", ExpectedVerdict::Clean, 4, 1000, false},
+        {"dining_philosophers_broken.dpor",
+         ExpectedVerdict::Deadlock,
+         4,
+         1000,
+         true,
+         model::MemoryModel::SC,
+         std::nullopt,
+         false,
+         std::nullopt,
+         {mutex_blocker(0, "fork1", 1),
+          mutex_blocker(1, "fork2", 2),
+          mutex_blocker(2, "fork0", 0)},
+         model::Schedule{{0, 0, std::nullopt},
+                         {1, 0, std::nullopt},
+                         {2, 0, std::nullopt}}},
         {"peterson_tso.dpor", ExpectedVerdict::Race, 12, 300000, true, model::MemoryModel::TSO, true, true},
         {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::TSO, false, true},
         // The unfenced PSO run reaches both race and assertion witnesses but

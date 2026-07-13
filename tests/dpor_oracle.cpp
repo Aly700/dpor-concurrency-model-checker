@@ -9,6 +9,7 @@
 #include <iostream>
 #include <optional>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -73,6 +74,21 @@ model::Action wlock(std::string rwlock) {
 
 model::Action wunlock(std::string rwlock) {
     return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
+}
+
+model::Action semaphore_action(model::ActionKind kind, std::string semaphore) {
+    model::Action action;
+    action.kind = kind;
+    action.semaphore = std::move(semaphore);
+    return action;
+}
+
+model::Action sem_post(std::string semaphore) {
+    return semaphore_action(model::ActionKind::SemPost, std::move(semaphore));
+}
+
+model::Action sem_wait(std::string semaphore) {
+    return semaphore_action(model::ActionKind::SemWait, std::move(semaphore));
 }
 
 model::Action join(model::ThreadId target) {
@@ -145,7 +161,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 21> kActions{
+const std::array<model::Action, 23> kActions{
     read("x"),
     write("x"),
     write("y"),
@@ -167,6 +183,8 @@ const std::array<model::Action, 21> kActions{
     runlock("rw"),
     wlock("rw"),
     wunlock("rw"),
+    sem_post("sem"),
+    sem_wait("sem"),
 };
 
 model::Program two_thread_program(std::uint64_t encoded, std::size_t lhs_length, std::size_t rhs_length) {
@@ -258,6 +276,12 @@ std::string action_string(const model::Action& action) {
     case model::ActionKind::WUnlock:
         out << "WUnlock " << action.rwlock;
         break;
+    case model::ActionKind::SemPost:
+        out << "SemPost " << action.semaphore;
+        break;
+    case model::ActionKind::SemWait:
+        out << "SemWait " << action.semaphore;
+        break;
     }
     return out.str();
 }
@@ -303,34 +327,45 @@ std::uint64_t pow_actions(std::size_t exponent) {
     return result;
 }
 
+void require(bool condition, const char* message) {
+    if (!condition) {
+        throw std::runtime_error(message);
+    }
+}
+
 void assert_replays_dpor_report(const model::ModelChecker& checker, const model::CheckResult& dpor) {
     if (dpor.first_race.has_value()) {
         const auto replay = checker.replay(dpor.first_race->schedule);
-        assert(replay.first_race.has_value());
-        assert(*replay.first_race == *dpor.first_race);
+        require(replay.first_race.has_value() &&
+                    *replay.first_race == *dpor.first_race,
+                "two-thread race report did not replay identically");
     }
 
     if (dpor.first_deadlock.has_value()) {
         const auto replay = checker.replay(dpor.first_deadlock->schedule);
-        assert(replay.first_deadlock.has_value());
-        assert(*replay.first_deadlock == *dpor.first_deadlock);
+        require(replay.first_deadlock.has_value() &&
+                    *replay.first_deadlock == *dpor.first_deadlock,
+                "two-thread deadlock report did not replay identically");
     }
 
     if (dpor.first_error.has_value()) {
         const auto replay = checker.replay(dpor.first_error->schedule);
-        assert(replay.first_error.has_value());
-        assert(*replay.first_error == *dpor.first_error);
+        require(replay.first_error.has_value() &&
+                    *replay.first_error == *dpor.first_error,
+                "two-thread error report did not replay identically");
     }
 
     if (dpor.first_assertion.has_value()) {
         const auto replay = checker.replay(dpor.first_assertion->schedule);
-        assert(replay.first_assertion.has_value());
-        assert(*replay.first_assertion == *dpor.first_assertion);
+        require(replay.first_assertion.has_value() &&
+                    *replay.first_assertion == *dpor.first_assertion,
+                "two-thread assertion report did not replay identically");
     }
     if (dpor.first_nontermination.has_value()) {
         const auto replay = checker.replay(dpor.first_nontermination->schedule);
-        assert(replay.first_nontermination.has_value());
-        assert(*replay.first_nontermination == *dpor.first_nontermination);
+        require(replay.first_nontermination.has_value() &&
+                    *replay.first_nontermination == *dpor.first_nontermination,
+                "two-thread nontermination report did not replay identically");
     }
 }
 
@@ -488,6 +523,18 @@ std::vector<model::Program> hand_picked_programs() {
             {wlock("rw"), write("x"), wunlock("rw")},
             {rlock("rw"), read("x"), runlock("rw")},
         }},
+        // Semaphores start with zero permits, so an unseeded wait is a
+        // replayable semaphore-tagged deadlock rather than clean completion.
+        model::Program{{
+            {sem_wait("sem")},
+            {yield()},
+        }},
+        // A successful wait acquires the accumulated post-release frontier;
+        // the poster's plain publication must therefore be race-free.
+        model::Program{{
+            {write("published"), sem_post("sem")},
+            {sem_wait("sem"), read("published")},
+        }},
         // A cyclic fixture makes the oracle exercise cycle-existence and
         // identical lasso replay rather than only agreeing on its absence.
         // Before the peer yields the spin witness is unfair; after the peer
@@ -527,8 +574,9 @@ int main() {
 
     // Deterministically enumerates two-thread programs with 0..3 actions per
     // thread over kActions, including atomic acquire/release/RMW operations,
-    // Spawn, Join, Mesa condition-variable actions, and all four reader-writer
-    // lock actions. Each length pair is capped
+    // Spawn, Join, Mesa condition-variable actions, all four reader-writer
+    // lock actions, and counting-semaphore post/wait actions. Each length pair
+    // is capped
     // at 2048 programs; larger length pairs use evenly spaced encoded indexes,
     // not randomness.
     constexpr std::uint64_t kProgramsPerLengthPairCap = 2048;

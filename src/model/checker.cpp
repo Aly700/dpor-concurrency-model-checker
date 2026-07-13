@@ -51,6 +51,11 @@ struct RwLockState {
     VectorClock reader_releases;
 };
 
+struct SemaphoreState {
+    std::size_t permits{0};
+    VectorClock post_releases;
+};
+
 struct ExecutionState {
     MemoryModel memory_model{MemoryModel::SC};
     std::vector<std::uint32_t> pc;
@@ -58,6 +63,7 @@ struct ExecutionState {
     std::map<std::string, ThreadId> mutex_owner;
     std::map<std::string, VectorClock> mutex_clock;
     std::map<std::string, RwLockState> rwlocks;
+    std::map<std::string, SemaphoreState> semaphores;
     std::map<std::string, std::vector<ThreadId>> condition_waiters;
     std::vector<VectorClock> thread_clock;
     std::vector<std::array<Value, kRegisterCount>> registers;
@@ -141,6 +147,25 @@ StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
         }
     }
 
+    // Permit counts affect SemWait enabledness and therefore belong to exact
+    // behavioral state. Zero-count entries canonicalize to absence. The
+    // accumulated post-release clock is HB instrumentation and is excluded,
+    // just like mutex/rwlock release clocks.
+    std::size_t nonzero_semaphores = 0;
+    for (const auto& [_, semaphore] : state.semaphores) {
+        if (semaphore.permits != 0) {
+            ++nonzero_semaphores;
+        }
+    }
+    append_u64(fingerprint, static_cast<std::uint64_t>(nonzero_semaphores));
+    for (const auto& [name, semaphore] : state.semaphores) {
+        if (semaphore.permits == 0) {
+            continue;
+        }
+        append_string(fingerprint, name);
+        append_u64(fingerprint, static_cast<std::uint64_t>(semaphore.permits));
+    }
+
     // Empty waiter-map entries are observationally identical to absence:
     // Signal/Broadcast treat both as no waiters. Canonicalize them away while
     // preserving each nonempty wait set's deterministic wake order.
@@ -219,12 +244,12 @@ StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
         }
     }
 
-    // Excluded deliberately: mutex/rwlock/thread/atomic vector clocks and
-    // AddressState race metadata are analysis instrumentation; thread_steps
-    // is the exploration budget; schedule is history. None changes program
-    // control, enabledness, or modeled values. A repeated fingerprint
-    // therefore proves schedule-existence of non-termination only, not
-    // repetition of HB/race instrumentation and not fairness.
+    // Excluded deliberately: mutex/rwlock/semaphore/thread/atomic vector
+    // clocks and AddressState race metadata are analysis instrumentation;
+    // thread_steps is the exploration budget; schedule is history. None
+    // changes program control, enabledness, or modeled values. A repeated
+    // fingerprint therefore proves schedule-existence of non-termination
+    // only, not repetition of HB/race instrumentation and not fairness.
     return fingerprint;
 }
 
@@ -338,6 +363,7 @@ ExecutionState initial_state(const Program& program, MemoryModel memory_model) {
         memory_model,
         std::vector<std::uint32_t>(program.threads.size(), 0),
         initially_started_threads(program),
+        {},
         {},
         {},
         {},
@@ -477,6 +503,8 @@ bool is_buffered_ordered_point(const Action& action) {
     case ActionKind::RUnlock:
     case ActionKind::WLock:
     case ActionKind::WUnlock:
+    case ActionKind::SemPost:
+    case ActionKind::SemWait:
     case ActionKind::Wait:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
@@ -595,6 +623,10 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
         // keeps WLock disabled until every read holder releases.
         return rwlock->reader_holders.empty();
     }
+    case ActionKind::SemWait: {
+        const auto semaphore = state.semaphores.find(action.semaphore);
+        return semaphore != state.semaphores.end() && semaphore->second.permits > 0;
+    }
     case ActionKind::Join:
         if (join_target_is_invalid(program, tid, action)) {
             return true;
@@ -624,6 +656,7 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
     case ActionKind::Unlock:
     case ActionKind::RUnlock:
     case ActionKind::WUnlock:
+    case ActionKind::SemPost:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
     case ActionKind::Yield:
@@ -1005,6 +1038,11 @@ std::optional<std::vector<ScheduleStep>> enabler_heads_for_thread(const Program&
             heads = enabler_heads_for_waiter(program, node, static_action, visiting);
         }
         break;
+    case ActionKind::SemWait:
+        // Any remaining post on this name could enable the wait. There is no
+        // unique ownership chain to follow, so preserve the caller's
+        // conservative all-enabled fallback.
+        break;
     default:
         break;
     }
@@ -1069,6 +1107,10 @@ std::optional<std::vector<ScheduleStep>> disabled_repair_steps(const Program& pr
             node.wait_phase.at(current.thread) == WaitPhase::Waiting) {
             return enabler_heads_for_waiter(program, node, static_action, visiting);
         }
+        break;
+    case ActionKind::SemWait:
+        // Anonymous permits do not identify one concrete posting enabler.
+        // Returning no narrowed repair keeps every enabled candidate poster.
         break;
     default:
         break;
@@ -1629,6 +1671,30 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         found->second.writer_holder.reset();
         break;
     }
+    case ActionKind::SemPost: {
+        advance_pc(program, state, tid);
+        SemaphoreState& semaphore = state.semaphores[action.semaphore];
+        // The modeled semaphore has no ceiling. The finite interpreter's
+        // per-thread step bound makes machine-size overflow unreachable in a
+        // realizable exploration; assert that implementation boundary rather
+        // than inventing a disabled/error state.
+        assert(semaphore.permits < std::numeric_limits<std::size_t>::max());
+        ++semaphore.permits;
+        semaphore.post_releases.join(state.thread_clock.at(tid));
+        break;
+    }
+    case ActionKind::SemWait: {
+        advance_pc(program, state, tid);
+        const auto found = state.semaphores.find(action.semaphore);
+        assert(found != state.semaphores.end());
+        assert(found->second.permits > 0);
+        --found->second.permits;
+        // Strong-semaphore acquire: permits are anonymous, so a successful
+        // wait joins the accumulated release clocks of every prior post. The
+        // accumulator is intentionally neither cleared nor replaced.
+        state.thread_clock.at(tid).join(found->second.post_releases);
+        break;
+    }
     case ActionKind::Wait: {
         if (state.wait_phase.at(tid) == WaitPhase::Woken) {
             assert(state.mutex_owner.find(action.mutex) == state.mutex_owner.end());
@@ -1822,7 +1888,8 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
         // Lock and woken-Wait reacquire wait on a mutex; rwlock acquisitions
         // distinguish a writer owner from readers that must drain; Join waits
         // on its target thread; sleeping Wait waits on its condition variable
-        // without inventing a queued permit.
+        // without inventing a queued permit; SemWait names its zero-permit
+        // semaphore.
         if (action.kind == ActionKind::Lock) {
             const auto owner = state.mutex_owner.find(action.mutex);
             BlockedThread blocked;
@@ -1875,6 +1942,12 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
                                     : std::optional<ThreadId>{owner->second};
                 report.blocked_threads.push_back(std::move(blocked));
             }
+        } else if (action.kind == ActionKind::SemWait) {
+            BlockedThread blocked;
+            blocked.thread = tid;
+            blocked.kind = BlockedOnKind::Semaphore;
+            blocked.semaphore = action.semaphore;
+            report.blocked_threads.push_back(std::move(blocked));
         }
     }
     report.schedule = state.schedule;
@@ -2060,9 +2133,10 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
             add_repair_steps(backtrack_point, *repair_steps);
         } else {
             // Conservative fallback for blocked mutex/rwlock acquisitions,
-            // woken reacquires, self-wait cycles, and any chain we cannot
-            // compute. The later effective transition could not be scheduled
-            // here, so add every enabled thread just as ADR 0010 required.
+            // zero-permit semaphore waits, woken reacquires, self-wait cycles,
+            // and any chain we cannot compute. The later effective transition
+            // could not be scheduled here, so add every enabled thread just as
+            // ADR 0010 required.
             add_all_enabled_repair_steps(backtrack_point);
         }
     }
@@ -2101,10 +2175,11 @@ void add_disabled_backtracks(const Program& program,
             std::nullopt,
         };
         // INVARIANTS.md Soundness/Deadlock: a blocked mutex/rwlock acquisition,
-        // Join, sleeping Wait, or woken-Wait reacquire absent from the executed
-        // trace may be exactly the dependent action needed to expose another
-        // deadlock, race, or error schedule. We therefore apply the same
-        // independent()-guarded backtrack rule to disabled next actions at
+        // zero-permit SemWait, Join, sleeping Wait, or woken-Wait reacquire
+        // absent from the executed trace may be exactly the dependent action
+        // needed to expose another deadlock, race, or error schedule. We
+        // therefore apply the same independent()-guarded backtrack rule to
+        // disabled next actions at
         // terminal leaves; independent blocked actions remain pruned only when
         // the Independence invariant permits commuting them. effective_next_action()
         // makes the woken-Wait case a mutex reacquire, not a cv wait, while a
@@ -2220,11 +2295,11 @@ void dpor_dfs(const Program& program,
         if (!all_finished(program, state)) {
             // A sleep-blocked prefix is equivalent to an explored execution
             // only for the enabled transitions it would run. Disabled mutex
-            // or rwlock acquisitions, Join, not-started Spawn targets, and
-            // Wait-reacquire transitions can still evidence an earlier
-            // enabledness repair, especially before a slept modeled-error
-            // endpoint. Apply the terminal disabled fallback before pruning
-            // the slept representative.
+            // or rwlock acquisitions, zero-permit semaphore waits, Join,
+            // not-started Spawn targets, and Wait-reacquire transitions can
+            // still evidence an earlier enabledness repair, especially before
+            // a slept modeled-error endpoint. Apply the terminal disabled
+            // fallback before pruning the slept representative.
             add_disabled_backtracks(program, state, nodes, trace);
         }
         nodes.pop_back();
@@ -2713,6 +2788,9 @@ bool blocked_thread_less(const BlockedThread& lhs, const BlockedThread& rhs) {
     if (lhs.rwlock != rhs.rwlock) {
         return lhs.rwlock < rhs.rwlock;
     }
+    if (lhs.semaphore != rhs.semaphore) {
+        return lhs.semaphore < rhs.semaphore;
+    }
     if (lhs.owner.has_value() != rhs.owner.has_value()) {
         return !lhs.owner.has_value();
     }
@@ -2959,6 +3037,7 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
 
     std::set<std::string> mutex_names;
     std::set<std::string> rwlock_names;
+    std::set<std::string> semaphore_names;
     for (const auto& thread : program_.threads) {
         for (const Action& action : thread) {
             switch (action.kind) {
@@ -2973,6 +3052,10 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
             case ActionKind::WUnlock:
                 rwlock_names.insert(action.rwlock);
                 break;
+            case ActionKind::SemPost:
+            case ActionKind::SemWait:
+                semaphore_names.insert(action.semaphore);
+                break;
             default:
                 break;
             }
@@ -2982,6 +3065,16 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
         if (rwlock_names.find(name) != rwlock_names.end()) {
             throw std::invalid_argument(
                 "name '" + name + "' cannot be used as both a mutex and rwlock");
+        }
+    }
+    for (const std::string& name : semaphore_names) {
+        if (mutex_names.find(name) != mutex_names.end()) {
+            throw std::invalid_argument(
+                "name '" + name + "' cannot be used as both a mutex and semaphore");
+        }
+        if (rwlock_names.find(name) != rwlock_names.end()) {
+            throw std::invalid_argument(
+                "name '" + name + "' cannot be used as both an rwlock and semaphore");
         }
     }
 }

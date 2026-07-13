@@ -16,6 +16,7 @@ treated as findings, not as a reason to adjust core semantics.
 | Treiber push skeleton (`treiber_push.dpor`) | Two CAS-retry pushes leave both node bits in `top` and increment `success_count` twice | Clean | `treiber_push_broken_load_store.dpor` loses an update when load+store replaces CAS |
 | Failed-CAS handoff (`failed_cas_handoff.dpor`) | A failed CAS acquire orders a later plain payload read after the writer's release store | Nontermination; no race/assertion | `failed_cas_handoff_broken_no_retry.dpor` reads payload after a successful pre-publication CAS |
 | Reader-writer lock publication (`readers_writers.dpor`) | A reader excludes the writer and sees the writer's published payload | Clean | `readers_writers_broken.dpor` skips the reader lock, exposing both the payload race and an overlapping-writer assertion |
+| Dining philosophers (`dining_philosophers.dpor`) | A total fork order lets all three philosophers finish | Clean | `dining_philosophers_broken.dpor` acquires every left fork first, exposing a three-thread circular-wait deadlock |
 
 ### SC/TSO/PSO verdicts
 
@@ -64,3 +65,7 @@ fences drain every pending address before the entry checks.
 - The Treiber model does not allocate nodes or follow next pointers. It models
   `top` as a bitset of node ids and separately counts successful pushes with an
   atomic fetch-add.
+- The dining-philosophers pair models one lock/unlock meal per philosopher.
+  The ordered variant breaks the cycle by making the last philosopher acquire
+  `fork0` before `fork2`; the broken variant retains left-then-right order for
+  all three philosophers.
