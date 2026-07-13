@@ -72,6 +72,20 @@ void print_deadlock_blocker(std::ostream& output, const model::BlockedThread& bl
     case model::BlockedOnKind::ConditionVariable:
         output << "condition " << blocked.condition << " mutex " << blocked.mutex;
         break;
+    case model::BlockedOnKind::RwLockWriter:
+        output << "rwlock " << blocked.rwlock << " waiting_for_writer owned_by ";
+        if (blocked.owner.has_value()) {
+            output << *blocked.owner;
+        } else {
+            output << "none";
+        }
+        break;
+    case model::BlockedOnKind::RwLockReaders:
+        output << "rwlock " << blocked.rwlock << " waiting_for_readers_to_drain";
+        if (blocked.self_wait) {
+            output << " self_wait";
+        }
+        break;
     }
     output << '\n';
 }

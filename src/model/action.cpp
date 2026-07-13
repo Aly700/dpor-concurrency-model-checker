@@ -34,6 +34,13 @@ bool is_mutex_action(const Action& action) {
            action.kind == ActionKind::Wait;
 }
 
+bool is_rwlock_action(const Action& action) {
+    return action.kind == ActionKind::RLock ||
+           action.kind == ActionKind::RUnlock ||
+           action.kind == ActionKind::WLock ||
+           action.kind == ActionKind::WUnlock;
+}
+
 bool is_condition_action(const Action& action) {
     return action.kind == ActionKind::Wait ||
            action.kind == ActionKind::Signal ||
@@ -138,13 +145,39 @@ bool independent(const Action& lhs, const Action& rhs) {
         return false;
     }
 
+    if (is_rwlock_action(lhs) && is_rwlock_action(rhs) && lhs.rwlock == rhs.rwlock) {
+        if (lhs.kind == ActionKind::RLock && rhs.kind == ActionKind::RLock) {
+            // For two nonterminal acquisitions that DPOR considers from
+            // different threads, both are enabled only while no writer holds
+            // this rwlock. The two orders insert the same two reader holders,
+            // join the same writer-release clock into separate thread clocks,
+            // and leave shared values and race metadata untouched. The final
+            // enabled set is identical: in particular, a WLock is disabled
+            // after either first RLock and remains disabled after the second.
+            // Thus the full commuting diamond, including the potential
+            // writer's enabledness, is preserved. A reentrant RLock is also
+            // executable so it can report a modeled error; terminal endpoints
+            // are protected separately by the checker rule that clears sleep
+            // and backtracks every enabled sibling, so this action-level true
+            // result never prunes a transition across that terminal outcome.
+            return true;
+        }
+
+        // All remaining operations on one rwlock start dependent. Besides
+        // mutating overlapping ownership/HB state, reader releases can expose
+        // a middle writer in only one order. Widening any of these pairs needs
+        // both a state diamond and an explicit middle-witness argument.
+        return false;
+    }
+
     // Remaining pairs commute for this IR when both transitions are enabled:
     // non-conflicting memory accesses update disjoint or read-only metadata;
     // atomic accesses on different addresses touch disjoint location clocks;
     // mutex and Wait operations on distinct mutexes touch disjoint ownership
-    // and synchronization clocks; Signal/Broadcast on different condition
-    // variables do not queue permits and mutate disjoint wait sets; Yield has
-    // no modeled shared-state or enabledness effect.
+    // and synchronization clocks; rwlock operations on distinct rwlocks do
+    // likewise; Signal/Broadcast on different condition variables do not
+    // queue permits and mutate disjoint wait sets; Yield has no modeled
+    // shared-state or enabledness effect.
     return true;
 }
 

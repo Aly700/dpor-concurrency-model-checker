@@ -84,6 +84,13 @@
 - `Wait(cv, mutex)` must release `mutex` with the same clock update as
   `Unlock`; after wakeup it must reacquire `mutex` with the same clock join as
   `Lock` before advancing past the wait action.
+- A reader-writer lock has a last-writer release clock and an accumulated join
+  of reader-release clocks. `RLock` joins only the writer clock; `RUnlock`
+  accumulates its post-tick clock; `WLock` joins both clocks and then clears the
+  reader accumulator; `WUnlock` replaces the writer clock. The accumulator is
+  not cleared merely when the live reader count reaches zero. This protects
+  writer publication and every reader-to-later-writer edge without creating a
+  reader-to-reader edge that could hide a race.
 - `Signal(cv)` and `Broadcast(cv)` must add a happens-before edge from the
   signaling thread to every waiter they wake. They must not queue permits when
   no waiter exists.
@@ -117,11 +124,27 @@
   later `Flush` is the globally visible write and must retain all same-address
   dependencies and race bookkeeping. Under SC, and for all same-thread pairs,
   `Write` dependence is unchanged (adr/0020).
+- Cross-thread, co-enabled `RLock(m)` actions are classified independent. For
+  successful acquisitions, both orders leave the same reader set, clocks,
+  shared/race state, and enabled set, and a same-lock writer is disabled after
+  either first reader and after both. Reentrant error endpoints are protected
+  by the terminal all-siblings backtrack safeguard. Every other same-rwlock
+  action pair is conservatively dependent at the public relation. The checker
+  may commute all cross-thread reader-mode operations only when the complete
+  program contains no writer-mode operation on that name; this static
+  condition removes the last-reader/third-writer middle witness that would
+  otherwise make the refinement unsound (adr/0021).
 - Assertion failures are first-class terminal reports with replayable,
   minimized schedules. They must not be downgraded to modeled errors.
 - Deadlock detection must distinguish a true cycle from a voluntarily finished
   thread, and must identify whether each unfinished disabled thread is waiting
-  on a mutex, a join target, or a condition variable.
+  on a mutex, a join target, a condition variable, an rwlock writer, or an
+  rwlock reader set. A write-lock attempt by one of the current readers is a
+  readers-to-drain deadlock with `self_wait`, not a modeled reentrancy error.
+- Reader-writer-lock ownership is a reader-holder set plus an optional writer;
+  non-holder or wrong-mode unlock and read/write reentrancy are modeled errors.
+  A resource name may not be interpreted as both a mutex (including a Wait
+  mutex) and an rwlock, protecting deterministic ownership and HB semantics.
 - Thread completion is started-aware: a not-started static thread body is not
   finished for `Join` enabledness, even if the body is empty, but unstarted
   and unjoined bodies do not by themselves make clean termination a deadlock.

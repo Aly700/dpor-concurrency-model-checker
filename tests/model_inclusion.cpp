@@ -69,6 +69,29 @@ model::Action unlock(std::string mutex) {
     return action;
 }
 
+model::Action rwlock_action(model::ActionKind kind, std::string rwlock) {
+    model::Action action;
+    action.kind = kind;
+    action.rwlock = std::move(rwlock);
+    return action;
+}
+
+model::Action rlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RLock, std::move(rwlock));
+}
+
+model::Action runlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RUnlock, std::move(rwlock));
+}
+
+model::Action wlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WLock, std::move(rwlock));
+}
+
+model::Action wunlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
+}
+
 model::Action join(model::ThreadId target) {
     model::Action action;
     action.kind = model::ActionKind::Join;
@@ -118,7 +141,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 12> kEnumeratedActions{
+const std::array<model::Action, 16> kEnumeratedActions{
     read("x"),
     write("x"),
     write("y"),
@@ -131,9 +154,13 @@ const std::array<model::Action, 12> kEnumeratedActions{
     join(0),
     join(1),
     fence(),
+    rlock("rw"),
+    runlock("rw"),
+    wlock("rw"),
+    wunlock("rw"),
 };
 
-const std::array<model::Action, 16> kFuzzActions{
+const std::array<model::Action, 20> kFuzzActions{
     read("x", 0),
     read("y", 1),
     write("x", 1),
@@ -150,6 +177,10 @@ const std::array<model::Action, 16> kFuzzActions{
     yield(),
     set(0, 1),
     assertion(0),
+    rlock("rw"),
+    runlock("rw"),
+    wlock("rw"),
+    wunlock("rw"),
 };
 
 using BugVector = std::array<bool, static_cast<std::size_t>(BugKind::Count)>;
@@ -191,6 +222,9 @@ std::string action_text(const model::Action& action) {
     }
     if (!action.mutex.empty()) {
         out << " mutex=" << action.mutex;
+    }
+    if (!action.rwlock.empty()) {
+        out << " rwlock=" << action.rwlock;
     }
     if (!action.label.empty()) {
         out << " label=" << action.label;
@@ -356,6 +390,8 @@ std::vector<model::Program> hand_picked_programs() {
         model::Program{{{set(0, 1), label("spin"), bnz(0, "spin")}, {yield()}}},
         model::Program{{{write("data", 1), write("flag", 1)},
                         {read("flag", 0), read("data", 1)}}},
+        model::Program{{{wlock("rw"), write("data", 1), wunlock("rw")},
+                        {rlock("rw"), read("data", 0), runlock("rw")}}},
     };
 }
 

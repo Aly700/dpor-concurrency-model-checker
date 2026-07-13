@@ -60,6 +60,9 @@ target_link_libraries(minimize_tests PRIVATE model_checker)
 add_executable(condvar_tests tests/condvar.cpp)
 target_link_libraries(condvar_tests PRIVATE model_checker)
 
+add_executable(rwlock_tests tests/rwlock_tests.cpp)
+target_link_libraries(rwlock_tests PRIVATE model_checker)
+
 add_executable(hb_edge_probes tests/hb_edge_probes.cpp)
 target_link_libraries(hb_edge_probes PRIVATE model_checker)
 
@@ -116,6 +119,7 @@ add_test(NAME dpor_optimality COMMAND dpor_optimality)
 add_test(NAME dpor_oracle_3threads COMMAND dpor_oracle_3threads)
 add_test(NAME minimize_tests COMMAND minimize_tests)
 add_test(NAME condvar_tests COMMAND condvar_tests)
+add_test(NAME rwlock_tests COMMAND rwlock_tests)
 add_test(NAME hb_edge_probes COMMAND hb_edge_probes)
 add_test(NAME atomics_tests COMMAND atomics_tests)
 add_test(NAME values_tests COMMAND values_tests)

@@ -19,15 +19,23 @@ struct RaceReport {
     bool operator==(const RaceReport&) const = default;
 };
 
-enum class BlockedOnKind { Mutex, Thread, ConditionVariable };
+enum class BlockedOnKind {
+    Mutex,
+    Thread,
+    ConditionVariable,
+    RwLockWriter,
+    RwLockReaders
+};
 
 struct BlockedThread {
     ThreadId thread{0};
     std::string mutex;
+    std::string rwlock;
     std::optional<ThreadId> owner;
     BlockedOnKind kind{BlockedOnKind::Mutex};
     std::optional<ThreadId> target;
     std::string condition;
+    bool self_wait{false};
 
     bool operator==(const BlockedThread&) const = default;
 };

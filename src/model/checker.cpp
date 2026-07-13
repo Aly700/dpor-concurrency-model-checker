@@ -42,12 +42,22 @@ using PsoAddressBuffer = std::map<std::string, std::deque<Value>>;
 
 enum class WaitPhase { None, Waiting, Woken };
 
+struct RwLockState {
+    // std::set provides one canonical holder representation and deterministic
+    // iteration for fingerprints, deadlock reports, and enabler-chain repair.
+    std::set<ThreadId> reader_holders;
+    std::optional<ThreadId> writer_holder;
+    VectorClock writer_release;
+    VectorClock reader_releases;
+};
+
 struct ExecutionState {
     MemoryModel memory_model{MemoryModel::SC};
     std::vector<std::uint32_t> pc;
     std::vector<bool> started;
     std::map<std::string, ThreadId> mutex_owner;
     std::map<std::string, VectorClock> mutex_clock;
+    std::map<std::string, RwLockState> rwlocks;
     std::map<std::string, std::vector<ThreadId>> condition_waiters;
     std::vector<VectorClock> thread_clock;
     std::vector<std::array<Value, kRegisterCount>> registers;
@@ -100,6 +110,35 @@ StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
     for (const auto& [mutex, owner] : state.mutex_owner) {
         append_string(fingerprint, mutex);
         append_u64(fingerprint, owner);
+    }
+
+    // As with mutex clocks, rwlock release clocks are HB analysis
+    // instrumentation rather than behavioral state. The reader-release
+    // accumulator is consumed and reset by WLock, but that bookkeeping still
+    // cannot affect control or enabledness. Only occupied rwlocks can, so
+    // empty clock-bearing entries canonicalize to absence. Reader holders are
+    // already in ascending order.
+    std::size_t occupied_rwlocks = 0;
+    for (const auto& [_, rwlock] : state.rwlocks) {
+        if (rwlock.writer_holder.has_value() || !rwlock.reader_holders.empty()) {
+            ++occupied_rwlocks;
+        }
+    }
+    append_u64(fingerprint, static_cast<std::uint64_t>(occupied_rwlocks));
+    for (const auto& [name, rwlock] : state.rwlocks) {
+        if (!rwlock.writer_holder.has_value() && rwlock.reader_holders.empty()) {
+            continue;
+        }
+        append_string(fingerprint, name);
+        append_u64(fingerprint, rwlock.writer_holder.has_value() ? 1U : 0U);
+        if (rwlock.writer_holder.has_value()) {
+            append_u64(fingerprint, *rwlock.writer_holder);
+        }
+        append_u64(fingerprint,
+                   static_cast<std::uint64_t>(rwlock.reader_holders.size()));
+        for (const ThreadId reader : rwlock.reader_holders) {
+            append_u64(fingerprint, reader);
+        }
     }
 
     // Empty waiter-map entries are observationally identical to absence:
@@ -180,12 +219,12 @@ StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
         }
     }
 
-    // Excluded deliberately: mutex/thread/atomic vector clocks and AddressState
-    // race metadata are monotone analysis instrumentation; thread_steps is the
-    // exploration budget; schedule is history. None changes program control,
-    // enabledness, or modeled values. A repeated fingerprint therefore proves
-    // schedule-existence of non-termination only, not repetition of HB/race
-    // instrumentation and not a fairness property.
+    // Excluded deliberately: mutex/rwlock/thread/atomic vector clocks and
+    // AddressState race metadata are analysis instrumentation; thread_steps
+    // is the exploration budget; schedule is history. None changes program
+    // control, enabledness, or modeled values. A repeated fingerprint
+    // therefore proves schedule-existence of non-termination only, not
+    // repetition of HB/race instrumentation and not fairness.
     return fingerprint;
 }
 
@@ -229,6 +268,7 @@ struct DporNode {
     std::vector<std::uint32_t> pc;
     std::vector<bool> started;
     std::map<std::string, ThreadId> mutex_owner;
+    std::map<std::string, RwLockState> rwlocks;
     std::vector<WaitPhase> wait_phase;
     std::vector<std::deque<StoreBufferEntry>> store_buffers;
     std::vector<PsoAddressBuffer> pso_store_buffers;
@@ -298,6 +338,7 @@ ExecutionState initial_state(const Program& program, MemoryModel memory_model) {
         memory_model,
         std::vector<std::uint32_t>(program.threads.size(), 0),
         initially_started_threads(program),
+        {},
         {},
         {},
         {},
@@ -432,6 +473,10 @@ bool is_buffered_ordered_point(const Action& action) {
     case ActionKind::Fence:
     case ActionKind::Lock:
     case ActionKind::Unlock:
+    case ActionKind::RLock:
+    case ActionKind::RUnlock:
+    case ActionKind::WLock:
+    case ActionKind::WUnlock:
     case ActionKind::Wait:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
@@ -481,6 +526,19 @@ bool owns_mutex(const ExecutionState& state, ThreadId tid, const std::string& mu
     return owner != state.mutex_owner.end() && owner->second == tid;
 }
 
+const RwLockState* find_rwlock(const ExecutionState& state, const std::string& name) {
+    const auto rwlock = state.rwlocks.find(name);
+    return rwlock == state.rwlocks.end() ? nullptr : &rwlock->second;
+}
+
+bool holds_rwlock_read(const RwLockState& rwlock, ThreadId tid) {
+    return rwlock.reader_holders.find(tid) != rwlock.reader_holders.end();
+}
+
+bool holds_rwlock_write(const RwLockState& rwlock, ThreadId tid) {
+    return rwlock.writer_holder.has_value() && *rwlock.writer_holder == tid;
+}
+
 bool join_target_is_invalid(const Program& program, ThreadId tid, const Action& action) {
     return action.target >= program.threads.size() || action.target == tid;
 }
@@ -513,6 +571,30 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
         return false;
     case ActionKind::Lock:
         return state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
+    case ActionKind::RLock: {
+        const RwLockState* rwlock = find_rwlock(state, action.rwlock);
+        if (rwlock == nullptr || !rwlock->writer_holder.has_value()) {
+            // An existing read holder remains enabled so execution can report
+            // the specified non-reentrant acquisition as a modeled error.
+            return true;
+        }
+        // A read acquisition by the current writer is likewise an executable
+        // reentrancy error; another thread's writer blocks it.
+        return *rwlock->writer_holder == tid;
+    }
+    case ActionKind::WLock: {
+        const RwLockState* rwlock = find_rwlock(state, action.rwlock);
+        if (rwlock == nullptr) {
+            return true;
+        }
+        if (rwlock->writer_holder.has_value()) {
+            // Recursive writer acquisition executes to a modeled error.
+            return *rwlock->writer_holder == tid;
+        }
+        // A reader, including this same thread during an attempted upgrade,
+        // keeps WLock disabled until every read holder releases.
+        return rwlock->reader_holders.empty();
+    }
     case ActionKind::Join:
         if (join_target_is_invalid(program, tid, action)) {
             return true;
@@ -540,6 +622,8 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
     case ActionKind::CompareExchange:
     case ActionKind::Spawn:
     case ActionKind::Unlock:
+    case ActionKind::RUnlock:
+    case ActionKind::WUnlock:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
     case ActionKind::Yield:
@@ -810,6 +894,52 @@ std::optional<std::vector<ScheduleStep>> enabler_heads_for_mutex_owner(const Pro
     return enabler_heads_for_thread(program, node, owner->second, visiting);
 }
 
+std::optional<std::vector<ScheduleStep>> enabler_heads_for_rwlock_writer(
+    const Program& program,
+    const DporNode& node,
+    const std::string& name,
+    ThreadId blocked_thread,
+    std::vector<bool>& visiting) {
+    const auto found = node.rwlocks.find(name);
+    if (found == node.rwlocks.end() || !found->second.writer_holder.has_value() ||
+        *found->second.writer_holder == blocked_thread) {
+        return std::nullopt;
+    }
+    return enabler_heads_for_thread(
+        program, node, *found->second.writer_holder, visiting);
+}
+
+std::optional<std::vector<ScheduleStep>> enabler_heads_for_rwlock_readers(
+    const Program& program,
+    const DporNode& node,
+    const std::string& name,
+    ThreadId blocked_thread,
+    std::vector<bool>& visiting) {
+    const auto found = node.rwlocks.find(name);
+    if (found == node.rwlocks.end() || found->second.reader_holders.empty()) {
+        return std::nullopt;
+    }
+
+    std::vector<ScheduleStep> heads;
+    for (const ThreadId reader : found->second.reader_holders) {
+        // A read-to-write upgrade is a deliberate self wait. A recursive
+        // enabler chain cannot discharge it, so use the caller's conservative
+        // all-enabled fallback instead.
+        if (reader == blocked_thread) {
+            return std::nullopt;
+        }
+        const auto reader_heads =
+            enabler_heads_for_thread(program, node, reader, visiting);
+        if (!reader_heads.has_value()) {
+            return std::nullopt;
+        }
+        append_steps(heads, *reader_heads);
+    }
+    return heads.empty()
+               ? std::nullopt
+               : std::optional<std::vector<ScheduleStep>>{std::move(heads)};
+}
+
 std::optional<std::vector<ScheduleStep>> enabler_heads_for_thread(const Program& program,
                                                                   const DporNode& node,
                                                                   ThreadId tid,
@@ -850,6 +980,21 @@ std::optional<std::vector<ScheduleStep>> enabler_heads_for_thread(const Program&
     case ActionKind::Lock:
         heads = enabler_heads_for_mutex_owner(program, node, effective_action.mutex, tid, visiting);
         break;
+    case ActionKind::RLock:
+        heads = enabler_heads_for_rwlock_writer(
+            program, node, effective_action.rwlock, tid, visiting);
+        break;
+    case ActionKind::WLock: {
+        const auto rwlock = node.rwlocks.find(effective_action.rwlock);
+        if (rwlock != node.rwlocks.end() && rwlock->second.writer_holder.has_value()) {
+            heads = enabler_heads_for_rwlock_writer(
+                program, node, effective_action.rwlock, tid, visiting);
+        } else {
+            heads = enabler_heads_for_rwlock_readers(
+                program, node, effective_action.rwlock, tid, visiting);
+        }
+        break;
+    }
     case ActionKind::Join:
         if (!join_target_is_invalid(program, tid, effective_action)) {
             heads = enabler_heads_for_thread(program, node, effective_action.target, visiting);
@@ -895,6 +1040,24 @@ std::optional<std::vector<ScheduleStep>> disabled_repair_steps(const Program& pr
     const Action static_action = next_action_at_node(program, node, current.thread);
     const Action effective_action = effective_next_action_at_node(program, node, current.thread);
     switch (effective_action.kind) {
+    case ActionKind::RLock:
+        if (static_action == current.effective_action) {
+            return enabler_heads_for_rwlock_writer(
+                program, node, static_action.rwlock, current.thread, visiting);
+        }
+        break;
+    case ActionKind::WLock:
+        if (static_action == current.effective_action) {
+            const auto rwlock = node.rwlocks.find(static_action.rwlock);
+            if (rwlock != node.rwlocks.end() &&
+                rwlock->second.writer_holder.has_value()) {
+                return enabler_heads_for_rwlock_writer(
+                    program, node, static_action.rwlock, current.thread, visiting);
+            }
+            return enabler_heads_for_rwlock_readers(
+                program, node, static_action.rwlock, current.thread, visiting);
+        }
+        break;
     case ActionKind::Join:
         if (static_action == current.effective_action &&
             !join_target_is_invalid(program, current.thread, static_action)) {
@@ -951,6 +1114,24 @@ bool join_independent_from_transition(const Program& program,
     return true;
 }
 
+bool is_reader_rwlock_action(const Action& action) {
+    return action.kind == ActionKind::RLock || action.kind == ActionKind::RUnlock;
+}
+
+bool program_has_writer_action_for_rwlock(const Program& program,
+                                          const std::string& name) {
+    for (const auto& thread : program.threads) {
+        for (const Action& action : thread) {
+            if ((action.kind == ActionKind::WLock ||
+                 action.kind == ActionKind::WUnlock) &&
+                action.rwlock == name) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
 bool transitions_independent(const Program& program,
                              MemoryModel memory_model,
                              ThreadId lhs_thread,
@@ -983,6 +1164,22 @@ bool transitions_independent(const Program& program,
             !join_independent_from_transition(program, rhs_thread, rhs, lhs_thread, lhs)) {
             return false;
         }
+        return true;
+    }
+
+    if (is_reader_rwlock_action(lhs) && is_reader_rwlock_action(rhs) &&
+        lhs.rwlock == rhs.rwlock &&
+        !program_has_writer_action_for_rwlock(program, lhs.rwlock)) {
+        // In a statically writer-free rwlock, cross-thread reader acquisitions
+        // and releases form a commuting diamond: the final sorted holder set
+        // is identical; accumulated release clocks join commutatively; RLock
+        // never consumes that accumulator; and no shared value or race record
+        // changes. Crucially, the whole-program exclusion of both WLock and
+        // WUnlock removes the middle-writer witness that could otherwise be
+        // enabled after one release order but not the other. This refinement
+        // is checker-local because the public action predicate lacks program
+        // context. RLock/RLock remains independently justified even when a
+        // writer exists and falls through to the public predicate below.
         return true;
     }
 
@@ -1111,6 +1308,27 @@ ModelErrorReport make_unlock_error(const Action& action,
     } else {
         message << " owned by thread " << owner->second;
     }
+    return ModelErrorReport{endpoint, message.str(), schedule};
+}
+
+ModelErrorReport make_rwlock_unlock_error(const Action& action,
+                                          ScheduleStep endpoint,
+                                          const Schedule& schedule) {
+    std::ostringstream message;
+    message << "thread " << endpoint.thread << " attempted to "
+            << (action.kind == ActionKind::RUnlock ? "read-unlock" : "write-unlock")
+            << " rwlock '" << action.rwlock
+            << "' but it does not hold that mode";
+    return ModelErrorReport{endpoint, message.str(), schedule};
+}
+
+ModelErrorReport make_rwlock_reentrancy_error(const Action& action,
+                                              ScheduleStep endpoint,
+                                              const Schedule& schedule) {
+    std::ostringstream message;
+    message << "thread " << endpoint.thread << " attempted a reentrant "
+            << (action.kind == ActionKind::RLock ? "read" : "write")
+            << " acquisition of rwlock '" << action.rwlock << "'";
     return ModelErrorReport{endpoint, message.str(), schedule};
 }
 
@@ -1299,6 +1517,54 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         state.mutex_owner[action.mutex] = tid;
         state.thread_clock.at(tid).join(state.mutex_clock[action.mutex]);
         break;
+    case ActionKind::RLock: {
+        advance_pc(program, state, tid);
+        const auto found = state.rwlocks.find(action.rwlock);
+        if (found != state.rwlocks.end() &&
+            (holds_rwlock_read(found->second, tid) ||
+             holds_rwlock_write(found->second, tid))) {
+            report.error =
+                make_rwlock_reentrancy_error(action, endpoint, state.schedule);
+            break;
+        }
+
+        RwLockState& rwlock = state.rwlocks[action.rwlock];
+        assert(!rwlock.writer_holder.has_value());
+        // A reader acquires exactly the last writer release. It deliberately
+        // does not join accumulated reader releases, which would fabricate
+        // reader-to-reader HB and could hide races between readers.
+        state.thread_clock.at(tid).join(rwlock.writer_release);
+        const bool inserted = rwlock.reader_holders.insert(tid).second;
+        assert(inserted);
+        (void)inserted;
+        break;
+    }
+    case ActionKind::WLock: {
+        advance_pc(program, state, tid);
+        const auto found = state.rwlocks.find(action.rwlock);
+        if (found != state.rwlocks.end() &&
+            holds_rwlock_write(found->second, tid)) {
+            report.error =
+                make_rwlock_reentrancy_error(action, endpoint, state.schedule);
+            break;
+        }
+
+        RwLockState& rwlock = state.rwlocks[action.rwlock];
+        // A read-to-write upgrade is never executable: enabledness keeps it
+        // blocked on its own read hold so deadlock reporting can tag self_wait.
+        assert(!holds_rwlock_read(rwlock, tid));
+        assert(!rwlock.writer_holder.has_value());
+        assert(rwlock.reader_holders.empty());
+        // The writer acquires both publication frontiers. Reader releases are
+        // accumulated because no single release necessarily represents all
+        // readers that drained; consuming and resetting the accumulator here
+        // starts the next reader epoch without adding reader-reader edges.
+        state.thread_clock.at(tid).join(rwlock.writer_release);
+        state.thread_clock.at(tid).join(rwlock.reader_releases);
+        rwlock.reader_releases = VectorClock{};
+        rwlock.writer_holder = tid;
+        break;
+    }
     case ActionKind::Join:
         advance_pc(program, state, tid);
         if (join_target_is_invalid(program, tid, action)) {
@@ -1327,6 +1593,40 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         }
         state.mutex_clock[action.mutex] = state.thread_clock.at(tid);
         state.mutex_owner.erase(owner);
+        break;
+    }
+    case ActionKind::RUnlock: {
+        advance_pc(program, state, tid);
+        const auto found = state.rwlocks.find(action.rwlock);
+        if (found == state.rwlocks.end() ||
+            !holds_rwlock_read(found->second, tid)) {
+            report.error =
+                make_rwlock_unlock_error(action, endpoint, state.schedule);
+            break;
+        }
+
+        // Each read release contributes its post-tick clock to the current
+        // reader epoch. This does not affect a later RLock; only WLock consumes
+        // the accumulated join after all readers have drained.
+        found->second.reader_releases.join(state.thread_clock.at(tid));
+        found->second.reader_holders.erase(tid);
+        break;
+    }
+    case ActionKind::WUnlock: {
+        advance_pc(program, state, tid);
+        const auto found = state.rwlocks.find(action.rwlock);
+        if (found == state.rwlocks.end() ||
+            !holds_rwlock_write(found->second, tid)) {
+            report.error =
+                make_rwlock_unlock_error(action, endpoint, state.schedule);
+            break;
+        }
+
+        // Writer release replaces, rather than joins, the previous writer
+        // frontier. The writer's acquired clock already contains everything
+        // from the preceding writer and reader epoch.
+        found->second.writer_release = state.thread_clock.at(tid);
+        found->second.writer_holder.reset();
         break;
     }
     case ActionKind::Wait: {
@@ -1519,9 +1819,10 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
         const Action& action = next_action(program, state, tid);
         // INVARIANTS.md Soundness/Replay: a terminal state with unfinished
         // disabled threads must describe the exact blocker visible to replay.
-        // Lock and woken-Wait reacquire wait on a mutex, Join waits on its
-        // target thread to finish, and sleeping Wait waits on its condition
-        // variable without inventing a queued permit.
+        // Lock and woken-Wait reacquire wait on a mutex; rwlock acquisitions
+        // distinguish a writer owner from readers that must drain; Join waits
+        // on its target thread; sleeping Wait waits on its condition variable
+        // without inventing a queued permit.
         if (action.kind == ActionKind::Lock) {
             const auto owner = state.mutex_owner.find(action.mutex);
             BlockedThread blocked;
@@ -1531,6 +1832,23 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
             blocked.owner = owner == state.mutex_owner.end()
                                 ? std::optional<ThreadId>{}
                                 : std::optional<ThreadId>{owner->second};
+            report.blocked_threads.push_back(std::move(blocked));
+        } else if (action.kind == ActionKind::RLock ||
+                   action.kind == ActionKind::WLock) {
+            const RwLockState* rwlock = find_rwlock(state, action.rwlock);
+            assert(rwlock != nullptr);
+            BlockedThread blocked;
+            blocked.thread = tid;
+            blocked.rwlock = action.rwlock;
+            if (rwlock->writer_holder.has_value()) {
+                blocked.kind = BlockedOnKind::RwLockWriter;
+                blocked.owner = rwlock->writer_holder;
+            } else {
+                assert(action.kind == ActionKind::WLock);
+                assert(!rwlock->reader_holders.empty());
+                blocked.kind = BlockedOnKind::RwLockReaders;
+                blocked.self_wait = holds_rwlock_read(*rwlock, tid);
+            }
             report.blocked_threads.push_back(std::move(blocked));
         } else if (action.kind == ActionKind::Join && !join_target_is_invalid(program, tid, action)) {
             BlockedThread blocked;
@@ -1741,10 +2059,10 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
             // classes involving them remain covered by normal DPOR repairs.
             add_repair_steps(backtrack_point, *repair_steps);
         } else {
-            // Conservative fallback for blocked locks, woken reacquires, and
-            // any chain we cannot compute. The later effective transition
-            // could not be scheduled here, so add every enabled thread just as
-            // ADR 0010 required.
+            // Conservative fallback for blocked mutex/rwlock acquisitions,
+            // woken reacquires, self-wait cycles, and any chain we cannot
+            // compute. The later effective transition could not be scheduled
+            // here, so add every enabled thread just as ADR 0010 required.
             add_all_enabled_repair_steps(backtrack_point);
         }
     }
@@ -1782,10 +2100,10 @@ void add_disabled_backtracks(const Program& program,
             state.thread_clock.at(tid),
             std::nullopt,
         };
-        // INVARIANTS.md Soundness/Deadlock: a blocked Lock, Join, sleeping
-        // Wait, or woken-Wait reacquire absent from the executed trace may be
-        // exactly the dependent action needed to expose another deadlock,
-        // race, or error schedule. We therefore apply the same
+        // INVARIANTS.md Soundness/Deadlock: a blocked mutex/rwlock acquisition,
+        // Join, sleeping Wait, or woken-Wait reacquire absent from the executed
+        // trace may be exactly the dependent action needed to expose another
+        // deadlock, race, or error schedule. We therefore apply the same
         // independent()-guarded backtrack rule to disabled next actions at
         // terminal leaves; independent blocked actions remain pruned only when
         // the Independence invariant permits commuting them. effective_next_action()
@@ -1879,6 +2197,7 @@ void dpor_dfs(const Program& program,
         state.pc,
         state.started,
         state.mutex_owner,
+        state.rwlocks,
         state.wait_phase,
         state.store_buffers,
         state.pso_store_buffers,
@@ -1900,12 +2219,12 @@ void dpor_dfs(const Program& program,
     if (nodes.at(depth).backtrack.empty()) {
         if (!all_finished(program, state)) {
             // A sleep-blocked prefix is equivalent to an explored execution
-            // only for the enabled transitions it would run. Disabled Lock,
-            // Join, not-started Spawn targets, and Wait-reacquire transitions
-            // can still be the evidence that an earlier enabledness repair is
-            // needed, especially before a slept modeled-error endpoint. Apply
-            // the terminal disabled fallback before pruning the slept
-            // representative.
+            // only for the enabled transitions it would run. Disabled mutex
+            // or rwlock acquisitions, Join, not-started Spawn targets, and
+            // Wait-reacquire transitions can still evidence an earlier
+            // enabledness repair, especially before a slept modeled-error
+            // endpoint. Apply the terminal disabled fallback before pruning
+            // the slept representative.
             add_disabled_backtracks(program, state, nodes, trace);
         }
         nodes.pop_back();
@@ -2391,6 +2710,9 @@ bool blocked_thread_less(const BlockedThread& lhs, const BlockedThread& rhs) {
     if (lhs.mutex != rhs.mutex) {
         return lhs.mutex < rhs.mutex;
     }
+    if (lhs.rwlock != rhs.rwlock) {
+        return lhs.rwlock < rhs.rwlock;
+    }
     if (lhs.owner.has_value() != rhs.owner.has_value()) {
         return !lhs.owner.has_value();
     }
@@ -2403,7 +2725,10 @@ bool blocked_thread_less(const BlockedThread& lhs, const BlockedThread& rhs) {
     if (lhs.target.value_or(0) != rhs.target.value_or(0)) {
         return lhs.target.value_or(0) < rhs.target.value_or(0);
     }
-    return lhs.condition < rhs.condition;
+    if (lhs.condition != rhs.condition) {
+        return lhs.condition < rhs.condition;
+    }
+    return lhs.self_wait < rhs.self_wait;
 }
 
 RaceIdentity identity_of(const RaceReport& report) {
@@ -2630,6 +2955,34 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
     : program_(std::move(program)), step_bound_(step_bound), memory_model_(memory_model) {
     if (step_bound_ == 0) {
         throw std::invalid_argument("step bound must be greater than zero");
+    }
+
+    std::set<std::string> mutex_names;
+    std::set<std::string> rwlock_names;
+    for (const auto& thread : program_.threads) {
+        for (const Action& action : thread) {
+            switch (action.kind) {
+            case ActionKind::Lock:
+            case ActionKind::Unlock:
+            case ActionKind::Wait:
+                mutex_names.insert(action.mutex);
+                break;
+            case ActionKind::RLock:
+            case ActionKind::RUnlock:
+            case ActionKind::WLock:
+            case ActionKind::WUnlock:
+                rwlock_names.insert(action.rwlock);
+                break;
+            default:
+                break;
+            }
+        }
+    }
+    for (const std::string& name : mutex_names) {
+        if (rwlock_names.find(name) != rwlock_names.end()) {
+            throw std::invalid_argument(
+                "name '" + name + "' cannot be used as both a mutex and rwlock");
+        }
     }
 }
 

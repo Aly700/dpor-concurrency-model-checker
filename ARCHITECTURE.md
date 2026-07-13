@@ -42,6 +42,9 @@ The checker interprets a program as a small-step state machine:
 - `mutex_owner[mutex]` records the owning thread for held mutexes.
 - `mutex_clock[mutex]` records the vector clock stored by the last successful
   unlock of that mutex.
+- `rwlocks[name]` records a canonical reader-holder set, an optional writer,
+  the last writer-release clock, and the accumulated reader-release clock for
+  that reader epoch.
 - `atomic_location_clock[address]` records the per-address release sequence for
   modeled atomic operations. The model supports acquire loads, release stores,
   acquire-release RMWs, and SC-per-location; it does not model relaxed atomics.
@@ -68,23 +71,31 @@ The checker interprets a program as a small-step state machine:
 At each DFS state, the naive oracle enumerates exactly the enabled transitions
 in deterministic schedule-step order. Not-started threads are disabled. `Read`, `Write`,
 `AtomicLoad`, `AtomicStore`, `AtomicRmw`, `CompareExchange`, `Set`,
-`BranchNonzero`, `Assert`, `Fence`, `Yield`, `Unlock`, `Spawn`, `Signal`, and
+`BranchNonzero`, `Assert`, `Fence`, `Yield`, `Unlock`, `RUnlock`, `WUnlock`,
+`Spawn`, `Signal`, and
 `Broadcast` are enabled for started unfinished threads; invalid `Unlock`,
-invalid `Wait`, invalid `Spawn`, and invalid `Join` steps are reported as
-modeled errors. `Lock` is enabled only when its mutex is not currently owned.
+invalid rwlock unlock/reentrancy, invalid `Wait`, invalid `Spawn`, and invalid
+`Join` steps are reported as modeled errors. `Lock` is enabled only when its
+mutex is not currently owned. `RLock` is enabled in the absence of another
+thread's writer; `WLock` is enabled only with no writer and no readers, except
+that a current writer's recursive acquisition remains executable as an error.
+A read holder's attempted `WLock` stays disabled on its own hold and therefore
+forms a tagged self-wait deadlock.
 `Join(target)` is enabled only when `target` has started and finished.
 `Wait(cv, mutex)` is one IR action with two schedule steps at the same action
 index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
 started unfinished threads and no enabled action is a deadlock; the report
-tags each started blocked thread as waiting on a mutex, join target, or
-condition variable. A state where all started threads are finished is normal
+tags each started blocked thread as waiting on a mutex, join target, condition
+variable, rwlock writer, or rwlock reader set. A state where all started
+threads are finished is normal
 termination, even if some static thread bodies were never spawned. If an
 enabled choice names a thread that has already executed its per-thread step
 bound, that execution terminates with a bound outcome and increments
 `bound_exceeded_executions`.
 
-Under TSO and PSO, atomics, CAS, mutex/condition-variable operations, spawn,
-join, and `Fence` are ordered points: they are disabled until all of the
+Under TSO and PSO, atomics, CAS, mutex/condition-variable operations, all four
+rwlock operations, spawn, join, and `Fence` are ordered points: they are
+disabled until all of the
 executing thread's buffers are empty. A nonempty buffer always enables a flush for that thread,
 including after the source pc is done, so buffered completion is not deadlock.
 
@@ -95,6 +106,12 @@ releasing thread's clock in the mutex clock. `Lock` joins the acquiring thread's
 clock with that mutex clock. `Wait` first performs the same release update as
 `Unlock`, then its woken second step performs the same acquire join as `Lock`.
 `Signal` and `Broadcast` join the signaler's clock into each woken waiter.
+`RLock` joins only the named rwlock's last writer-release clock. `RUnlock`
+joins its post-tick clock into the rwlock's reader-release accumulator.
+`WLock` joins both the last writer release and every accumulated reader
+release, then clears the reader accumulator for the next epoch. `WUnlock`
+replaces the writer-release clock with its post-tick clock. In particular,
+readers never acquire one another's release clocks.
 `Spawn(target)` marks the target started and joins the target thread's clock
 with the spawner's post-tick clock, so pre-spawn actions happen-before all
 target actions.
@@ -198,6 +215,16 @@ success. Register-only actions are independent of every other thread's
 transition because they touch no shared state and do not affect cross-thread
 enabledness; same-thread transitions are still never commuted.
 
+Two cross-thread, co-enabled successful `RLock` operations on one name are
+independent. Either order leaves the same reader set, thread clocks,
+synchronization clocks, shared/race state, and enabled set; a waiting writer is
+disabled after either first acquisition and after both. All other same-rwlock
+pairs stay dependent in the public relation. A checker-local refinement
+commutes every cross-thread reader-mode pair only when the complete program has
+no writer-mode action on that name. The static absence of a writer removes the
+middle witness in which the last `RUnlock` enables a third thread's `WLock`
+between two otherwise commuting reader transitions.
+
 Spawn adds dynamic enabledness. Not-started threads are absent from enabled
 sets and sleep sets, and replay rejects target-thread steps before the
 corresponding spawn. At terminal leaves, a not-started thread with a non-empty
@@ -216,14 +243,17 @@ because it was previously slept.
 ## Verification Gates
 
 The DPOR implementation is checked against deterministic gates. The
-2-thread oracle sweep enumerates small programs by length pair over a 17-action
+2-thread oracle sweep enumerates small programs by length pair over a 21-action
 alphabet and compares naive vs. DPOR race/deadlock/error/assertion existence,
 the bound-hit boolean, schedule dominance, and report replay identity. The
 3-thread oracle sweep uses an evenly strided deterministic sample of the larger
-15-action, 6-slot space, plus hand-picked disabled-transition cases, to
-exercise spawn, join, and condition-variable enabledness. The seeded
+19-action, 6-slot space, plus hand-picked disabled-transition cases, to
+exercise spawn, join, condition-variable, and rwlock enabledness. A separate
+three-reader fixture pins 1680 naive leaves and one DPOR representative. The
+seeded
 differential fuzz gate generates 3000 fixed-seed programs across 2-5 threads,
-1-6 actions per thread, plain and atomic memory, mutexes, condition variables,
+1-6 actions per thread, plain and atomic memory, mutexes, rwlocks, condition
+variables,
 joins, yields, spawn-shaped programs, and modeled-error cases, plus a
 value-mode lane with registers, branches, CAS, fetch-add, assertions, and
 deliberate bound hits; capped explorations are counted but excluded from

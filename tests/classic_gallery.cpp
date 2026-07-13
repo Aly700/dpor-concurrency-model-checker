@@ -390,6 +390,8 @@ const std::vector<GalleryCase>& gallery_cases() {
         // closes the reader's failed-CAS retry cycle.
         {"failed_cas_handoff.dpor", ExpectedVerdict::NonTermination, 10, 100000, false, model::MemoryModel::SC, std::nullopt, false, model::Fairness::UnfairScheduleWitness},
         {"failed_cas_handoff_broken_no_retry.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, std::nullopt, false},
+        {"readers_writers.dpor", ExpectedVerdict::Clean, 10, 100000, false, model::MemoryModel::SC, false, false},
+        {"readers_writers_broken.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, true, false},
         {"peterson_tso.dpor", ExpectedVerdict::Race, 12, 300000, true, model::MemoryModel::TSO, true, true},
         {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::TSO, false, true},
         // The unfenced PSO run reaches both race and assertion witnesses but

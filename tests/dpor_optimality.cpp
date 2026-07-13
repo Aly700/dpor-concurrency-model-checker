@@ -526,6 +526,7 @@ std::string action_key(const model::Action& action) {
     out << static_cast<int>(action.kind)
         << "|a=" << action.address
         << "|m=" << action.mutex
+        << "|rw=" << action.rwlock
         << "|c=" << action.condition
         << "|t=" << action.target
         << "|d=" << optional_reg_key(action.destination)
@@ -768,6 +769,18 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::Yield:
         out << "Yield";
+        break;
+    case model::ActionKind::RLock:
+        out << "RLock " << action.rwlock;
+        break;
+    case model::ActionKind::RUnlock:
+        out << "RUnlock " << action.rwlock;
+        break;
+    case model::ActionKind::WLock:
+        out << "WLock " << action.rwlock;
+        break;
+    case model::ActionKind::WUnlock:
+        out << "WUnlock " << action.rwlock;
         break;
     }
     return out.str();

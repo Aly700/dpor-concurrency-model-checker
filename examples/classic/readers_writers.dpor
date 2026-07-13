@@ -1,0 +1,12 @@
+thread:
+  wlock rw
+  atomic_store writer_inside 1
+  write payload 1
+  atomic_store writer_inside 0
+  wunlock rw
+thread:
+  rlock rw
+  cas writer_inside 0 0 -> r0
+  read payload -> r1
+  runlock rw
+  assert r0

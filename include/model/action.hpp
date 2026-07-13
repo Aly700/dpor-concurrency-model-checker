@@ -46,13 +46,18 @@ enum class ActionKind {
     Wait,
     Signal,
     Broadcast,
-    Yield
+    Yield,
+    RLock,
+    RUnlock,
+    WLock,
+    WUnlock
 };
 
 struct Action {
     ActionKind kind{ActionKind::Yield};
     std::string address;
     std::string mutex;
+    std::string rwlock;
     std::string condition;
     ThreadId target{0};
     std::optional<RegisterId> destination;

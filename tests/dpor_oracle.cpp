@@ -52,6 +52,29 @@ model::Action unlock(std::string mutex) {
     return model::Action{model::ActionKind::Unlock, "", std::move(mutex)};
 }
 
+model::Action rwlock_action(model::ActionKind kind, std::string rwlock) {
+    model::Action action;
+    action.kind = kind;
+    action.rwlock = std::move(rwlock);
+    return action;
+}
+
+model::Action rlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RLock, std::move(rwlock));
+}
+
+model::Action runlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RUnlock, std::move(rwlock));
+}
+
+model::Action wlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WLock, std::move(rwlock));
+}
+
+model::Action wunlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
+}
+
 model::Action join(model::ThreadId target) {
     model::Action action;
     action.kind = model::ActionKind::Join;
@@ -122,7 +145,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 17> kActions{
+const std::array<model::Action, 21> kActions{
     read("x"),
     write("x"),
     write("y"),
@@ -140,6 +163,10 @@ const std::array<model::Action, 17> kActions{
     join(0),
     join(1),
     yield(),
+    rlock("rw"),
+    runlock("rw"),
+    wlock("rw"),
+    wunlock("rw"),
 };
 
 model::Program two_thread_program(std::uint64_t encoded, std::size_t lhs_length, std::size_t rhs_length) {
@@ -218,6 +245,18 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::Yield:
         out << "Yield";
+        break;
+    case model::ActionKind::RLock:
+        out << "RLock " << action.rwlock;
+        break;
+    case model::ActionKind::RUnlock:
+        out << "RUnlock " << action.rwlock;
+        break;
+    case model::ActionKind::WLock:
+        out << "WLock " << action.rwlock;
+        break;
+    case model::ActionKind::WUnlock:
+        out << "WUnlock " << action.rwlock;
         break;
     }
     return out.str();
@@ -445,6 +484,10 @@ std::vector<model::Program> hand_picked_programs() {
             {lock("m"), wait("cv", "m"), read("x"), unlock("m")},
             {lock("m"), signal("cv"), unlock("m"), write("x")},
         }},
+        model::Program{{
+            {wlock("rw"), write("x"), wunlock("rw")},
+            {rlock("rw"), read("x"), runlock("rw")},
+        }},
         // A cyclic fixture makes the oracle exercise cycle-existence and
         // identical lasso replay rather than only agreeing on its absence.
         // Before the peer yields the spin witness is unfair; after the peer
@@ -484,7 +527,8 @@ int main() {
 
     // Deterministically enumerates two-thread programs with 0..3 actions per
     // thread over kActions, including atomic acquire/release/RMW operations,
-    // Spawn, Join, and Mesa condition-variable actions. Each length pair is capped
+    // Spawn, Join, Mesa condition-variable actions, and all four reader-writer
+    // lock actions. Each length pair is capped
     // at 2048 programs; larger length pairs use evenly spaced encoded indexes,
     // not randomness.
     constexpr std::uint64_t kProgramsPerLengthPairCap = 2048;

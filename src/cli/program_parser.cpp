@@ -187,6 +187,13 @@ model::Action mutex_action(model::ActionKind kind, const std::string& mutex) {
     return action;
 }
 
+model::Action rwlock_action(model::ActionKind kind, const std::string& rwlock) {
+    model::Action action;
+    action.kind = kind;
+    action.rwlock = rwlock;
+    return action;
+}
+
 model::Action condition_action(model::ActionKind kind, const std::string& condition) {
     model::Action action;
     action.kind = kind;
@@ -366,6 +373,22 @@ model::Action parse_action(const std::vector<std::string>& words, std::size_t li
         require_arity(words, 2, line, keyword);
         return mutex_action(model::ActionKind::Unlock, words[1]);
     }
+    if (keyword == "rlock") {
+        require_arity(words, 2, line, keyword);
+        return rwlock_action(model::ActionKind::RLock, words[1]);
+    }
+    if (keyword == "runlock") {
+        require_arity(words, 2, line, keyword);
+        return rwlock_action(model::ActionKind::RUnlock, words[1]);
+    }
+    if (keyword == "wlock") {
+        require_arity(words, 2, line, keyword);
+        return rwlock_action(model::ActionKind::WLock, words[1]);
+    }
+    if (keyword == "wunlock") {
+        require_arity(words, 2, line, keyword);
+        return rwlock_action(model::ActionKind::WUnlock, words[1]);
+    }
     if (keyword == "wait") {
         require_arity(words, 3, line, keyword);
         return wait_action(words[1], words[2]);
@@ -408,6 +431,8 @@ model::Program parse_program_stream(std::istream& input) {
     std::vector<SpawnReference> spawns;
     std::vector<BranchReference> branches;
     std::vector<std::map<std::string, std::size_t>> labels;
+    std::map<std::string, std::size_t> mutex_first_use;
+    std::map<std::string, std::size_t> rwlock_first_use;
     std::size_t current_thread = std::numeric_limits<std::size_t>::max();
 
     std::string line_text;
@@ -439,6 +464,35 @@ model::Program parse_program_stream(std::istream& input) {
         }
 
         model::Action action = parse_action(words, line);
+        const bool uses_mutex = action.kind == model::ActionKind::Lock ||
+                                action.kind == model::ActionKind::Unlock ||
+                                action.kind == model::ActionKind::Wait;
+        const bool uses_rwlock = action.kind == model::ActionKind::RLock ||
+                                 action.kind == model::ActionKind::RUnlock ||
+                                 action.kind == model::ActionKind::WLock ||
+                                 action.kind == model::ActionKind::WUnlock;
+        if (uses_mutex) {
+            const auto rwlock_use = rwlock_first_use.find(action.mutex);
+            if (rwlock_use != rwlock_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.mutex
+                        << "' is already used as an rwlock on line " << rwlock_use->second
+                        << " and cannot also be used as a mutex";
+                throw ParseError(line, message.str());
+            }
+            mutex_first_use.emplace(action.mutex, line);
+        }
+        if (uses_rwlock) {
+            const auto mutex_use = mutex_first_use.find(action.rwlock);
+            if (mutex_use != mutex_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.rwlock
+                        << "' is already used as a mutex on line " << mutex_use->second
+                        << " and cannot also be used as an rwlock";
+                throw ParseError(line, message.str());
+            }
+            rwlock_first_use.emplace(action.rwlock, line);
+        }
         if (action.kind == model::ActionKind::Join) {
             joins.emplace_back(line, action.target);
         } else if (action.kind == model::ActionKind::Spawn) {
@@ -592,6 +646,18 @@ std::string action_text(const model::Action& action) {
         break;
     case model::ActionKind::Unlock:
         output << "unlock " << action.mutex;
+        break;
+    case model::ActionKind::RLock:
+        output << "rlock " << action.rwlock;
+        break;
+    case model::ActionKind::RUnlock:
+        output << "runlock " << action.rwlock;
+        break;
+    case model::ActionKind::WLock:
+        output << "wlock " << action.rwlock;
+        break;
+    case model::ActionKind::WUnlock:
+        output << "wunlock " << action.rwlock;
         break;
     case model::ActionKind::Spawn:
         output << "spawn " << action.target;

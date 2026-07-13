@@ -1,6 +1,7 @@
 #include "model/action.hpp"
 #include "model/checker.hpp"
 
+#include <array>
 #include <cassert>
 #include <stdexcept>
 #include <string>
@@ -39,6 +40,29 @@ model::Action write_value(std::string address, model::Value value) {
 
 model::Action lock(std::string mutex) {
     return model::Action{model::ActionKind::Lock, "", std::move(mutex)};
+}
+
+model::Action rwlock_action(model::ActionKind kind, std::string rwlock) {
+    model::Action action;
+    action.kind = kind;
+    action.rwlock = std::move(rwlock);
+    return action;
+}
+
+model::Action rlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RLock, std::move(rwlock));
+}
+
+model::Action runlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RUnlock, std::move(rwlock));
+}
+
+model::Action wlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WLock, std::move(rwlock));
+}
+
+model::Action wunlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
 }
 
 model::Action join(model::ThreadId target) {
@@ -183,6 +207,26 @@ int main() {
     assert(model::independent(flush("x"), read("y")));
     assert(model::independent(flush("x"), set(0, 1)));
 
+    const std::array<model::Action, 4> same_rwlock_actions{
+        rlock("rw"), runlock("rw"), wlock("rw"), wunlock("rw")};
+    for (std::size_t lhs = 0; lhs < same_rwlock_actions.size(); ++lhs) {
+        for (std::size_t rhs = 0; rhs < same_rwlock_actions.size(); ++rhs) {
+            const bool reader_reader_acquires = lhs == 0 && rhs == 0;
+            require(model::independent(
+                        same_rwlock_actions.at(lhs), same_rwlock_actions.at(rhs)) ==
+                        reader_reader_acquires,
+                    "same-rwlock action-level independence matrix changed");
+        }
+    }
+    const std::array<model::Action, 4> other_rwlock_actions{
+        rlock("other"), runlock("other"), wlock("other"), wunlock("other")};
+    for (const model::Action& lhs : same_rwlock_actions) {
+        for (const model::Action& rhs : other_rwlock_actions) {
+            require(model::independent(lhs, rhs),
+                    "different-rwlock actions must remain independent");
+        }
+    }
+
     const model::Program relation_program{{
         {write("x")},
         {read("x")},
@@ -216,6 +260,7 @@ int main() {
     assert_pair_commutes_when_independent(read("x"), write("y"));
     assert_pair_commutes_when_independent(write("x"), lock("m"));
     assert_pair_commutes_when_independent(lock("m"), lock("n"));
+    assert_pair_commutes_when_independent(rlock("rw"), rlock("rw"));
     assert_pair_commutes_when_independent(signal("cv0"), signal("cv1"));
     assert_pair_commutes_when_independent(broadcast("cv0"), signal("cv1"));
     assert_pair_commutes_when_independent(yield(), write("x"));

@@ -1,6 +1,7 @@
 // Independent 3-thread adversarial sweep: deterministically sample programs
 // with 3 threads x 2 actions over memory, atomic acquire/release/RMW, mutex,
-// Spawn, Join, and Mesa condition-variable actions. The full alphabet^6 family is capped
+// reader-writer lock, Spawn, Join, and Mesa condition-variable actions. The
+// full alphabet^6 family is capped
 // at 65536 evenly spaced encoded indexes, not randomness. Each sampled program
 // asserts naive/DPOR
 // verdict equality, schedule dominance, and replay identity of every DPOR
@@ -67,6 +68,29 @@ Action unlock(std::string mutex) {
     action.kind = ActionKind::Unlock;
     action.mutex = std::move(mutex);
     return action;
+}
+
+Action rwlock_action(ActionKind kind, std::string rwlock) {
+    Action action;
+    action.kind = kind;
+    action.rwlock = std::move(rwlock);
+    return action;
+}
+
+Action rlock(std::string rwlock) {
+    return rwlock_action(ActionKind::RLock, std::move(rwlock));
+}
+
+Action runlock(std::string rwlock) {
+    return rwlock_action(ActionKind::RUnlock, std::move(rwlock));
+}
+
+Action wlock(std::string rwlock) {
+    return rwlock_action(ActionKind::WLock, std::move(rwlock));
+}
+
+Action wunlock(std::string rwlock) {
+    return rwlock_action(ActionKind::WUnlock, std::move(rwlock));
 }
 
 Action join(ThreadId target) {
@@ -193,6 +217,10 @@ int main() {
         join(0),
         join(1),
         join(2),
+        rlock("rw"),
+        runlock("rw"),
+        wlock("rw"),
+        wunlock("rw"),
     };
     const std::size_t k = alphabet.size();
 
@@ -248,10 +276,30 @@ int main() {
             {lock("m"), signal("cv")},
             {write("x"), broadcast("cv")},
         }},
+        Program{{
+            {rlock("rw"), read("x"), runlock("rw")},
+            {rlock("rw"), read("x"), runlock("rw")},
+            {rlock("rw"), read("x"), runlock("rw")},
+        }},
     };
     for (const auto& program : handpicked) {
         cross_validate_program(program, checked, naive_total, dpor_total, strict);
     }
+
+    // Three fixed per-thread chains have 9!/(3!^3) = 1680 interleavings.
+    // With no writer action anywhere in this program, every cross-thread
+    // reader-mode pair commutes, so the reader-only DPOR refinement must retain
+    // exactly one representative.
+    const Program three_readers{{
+        {rlock("rw"), read("x"), runlock("rw")},
+        {rlock("rw"), read("x"), runlock("rw")},
+        {rlock("rw"), read("x"), runlock("rw")},
+    }};
+    const ModelChecker reader_checker(three_readers);
+    const CheckResult reader_naive = reader_checker.explore_naive();
+    const CheckResult reader_dpor = reader_checker.explore_dpor();
+    assert(reader_naive.schedules_explored == 1680);
+    assert(reader_dpor.schedules_explored == 1);
 
     std::cout << "3-thread sweep: programs=" << checked
               << " alphabet=" << k

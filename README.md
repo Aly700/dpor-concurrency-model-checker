@@ -19,6 +19,7 @@ state that proves the cycle.
 | Memory models | `--memory-model sc\|tso\|pso`, `fence` | SC by default; TSO adds one FIFO store buffer per thread, PSO uses one FIFO per thread/address, and both expose replayable flush steps plus full drain fences |
 | Atomics | `atomic_load`, `atomic_store`, `atomic_rmw`, `cas` | Acquire/release/acq-rel, SC-per-location; atomic-atomic never races, mixed plain/atomic does |
 | Mutexes | `lock`, `unlock` | Blocking; release/acquire vector-clock edges; non-owner unlock is a modeled error |
+| Reader-writer locks | `rlock`, `runlock`, `wlock`, `wunlock` | Parallel readers, exclusive writers, writer-to-reader and reader/writer-to-writer HB; reentrancy errors and read-to-write upgrades self-deadlock |
 | Condition variables | `wait`, `signal`, `broadcast` | Mesa semantics, two-phase wait (release+sleep, then reacquire); no permit queuing, so lost wakeups deadlock |
 | Threads | `spawn`, `join`, `yield` | Static thread bodies with dynamic start; spawn starts a target and creates a happens-before edge, join blocks until a started target finishes and inherits its clock |
 
@@ -29,8 +30,9 @@ Two explorers share one execution semantics:
   last-point backtracking and sleep sets. Prunes only what the independence
   relation proves commutes (~95% of schedules on deeper programs).
 
-Detection: happens-before data races (vector clocks), deadlocks across all
-three blocking kinds (with the wait cycle named), modeled API errors, assertion
+Detection: happens-before data races (vector clocks), deadlocks across mutex,
+join, condition-variable, waiting-for-writer, and readers-to-drain blockers,
+modeled API errors, assertion
 failures, and executions that exceed the configured per-thread step bound.
 The checker also proves schedule-existence of non-termination when one
 execution revisits an exact behavioral state. Safety reports carry
@@ -119,7 +121,24 @@ atomic_store f IMM|rN   # legacy "atomic_store f" stores 0
 atomic_rmw f IMM|rN -> rN  # legacy "atomic_rmw f" adds 1 and discards old value
 cas f EXPECTED NEW -> rN
 fence                   # SC no-op; under TSO/PSO, enabled only after all of this thread's stores drain
+lock m
+unlock m
+rlock rw
+runlock rw
+wlock rw
+wunlock rw
+wait cv m
+signal cv
+broadcast cv
+spawn THREAD_ID
+join THREAD_ID
+yield
 ```
+
+Mutex and reader-writer lock names occupy distinct namespaces: a program may
+not use the same name with both action families. Under TSO/PSO, every lock and
+unlock action is a full ordered point and waits for that thread's pending stores
+to drain.
 
 `dpor check` accepts `--memory-model sc|tso|pso` (default `sc`) and
 `--step-bound N` to set the per-thread step bound. Because
@@ -136,7 +155,8 @@ exploration stops at the schedule cap (`--max-schedules`), the report says
 Cycle detection is per execution and path-local. After every transition, the
 checker compares an exact canonical byte encoding of the complete behavioral
 state: normalized thread PCs, started threads, wait phases and wait sets,
-registers, memory values, mutex owners, ordered TSO store buffers, and
+registers, memory values, mutex owners, reader-writer lock holders, ordered TSO
+store buffers, and
 canonical per-address PSO FIFO maps. It never
 uses a lossy hash; a collision could fabricate a false proof of divergence.
 Vector clocks and race history are analysis instrumentation rather than program
@@ -252,7 +272,8 @@ gallery uses atomic coordination variables instead.
 
 `examples/classic/` contains a checked gallery of classic mutual-exclusion and
 lock-free patterns: Peterson, Dekker, a bounded two-thread Bakery
-simplification, a Treiber push skeleton, and a failed-CAS handoff. Each model is
+simplification, a Treiber push skeleton, a failed-CAS handoff, and reader-writer
+lock publication. Each model is
 paired with a deliberately broken variant and documented in
 [`examples/classic/README.md`](examples/classic/README.md), including the exact
 bounded verdict and any `.dpor` modeling limitation.
@@ -266,13 +287,14 @@ execution hit the step bound; that DPOR never explores more schedules; that
 every DPOR report replays to an identical report; and how far DPOR is from one
 schedule per Mazurkiewicz class:
 
-1. **Exhaustive 2-thread sweep** — every program over a 17-action alphabet
-   (capped per length pair; ~21k programs).
-2. **Strided 3-thread sweep** — 65,542 programs evenly sampled from the full
-   15-action, 6-slot space.
+1. **Exhaustive 2-thread sweep** — every program over a 21-action alphabet
+   (capped per length pair; 21,856 programs including hand-picked fixtures).
+2. **Strided 3-thread sweep** — 65,543 programs evenly sampled from the full
+   19-action, 6-slot space, plus an asserted three-reader discriminator with
+   1,680 naive schedules and one DPOR representative.
 3. **Seeded differential fuzz** — 3,000 random 2–5-thread programs per run,
-   including spawn-shaped, value/branch/CAS/assertion programs, exact spin
-   cycles, growing-state bound backstops, and deliberately malformed ones;
+   including rwlocks, spawn-shaped, value/branch/CAS/assertion programs, exact
+   spin cycles, growing-state bound backstops, and deliberately malformed ones;
    failures print the seed and the program in `.dpor` syntax for by-hand
    reproduction. Deterministic fractions run under TSO and PSO, and the summary
    prints both model counts plus naive/DPOR total, fair, and unfair cycle
@@ -290,7 +312,8 @@ schedule per Mazurkiewicz class:
    schedule dominance, and exact replay.
 6. **Cross-model inclusion** — a deterministic two-thread corpus plus
    fixed-seed samples checks per-kind bug existence is monotone
-   `SC => TSO => PSO`, skipping and reporting any truncated exploration.
+   `SC => TSO => PSO`, including all four rwlock actions, while skipping and
+   reporting any truncated exploration.
 
 All gates are deterministic and run in CI on Linux and macOS.
 
@@ -298,7 +321,7 @@ All gates are deterministic and run in CI on Linux and macOS.
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
 soundness-relevant decision in `adr/` (0001 architecture crux through ADR
-0019's all-model optimality meter), including the exact vector-clock edge for
+0021's reader-writer locks), including the exact vector-clock edge for
 each synchronization kind and why each DPOR pruning step cannot lose a bug
 class.
 

@@ -2,6 +2,7 @@
 #include "program_parser.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cassert>
 #include <cstddef>
 #include <cstdint>
@@ -29,6 +30,10 @@ enum class Choice {
     AtomicMemory,
     Lock,
     Unlock,
+    RLock,
+    RUnlock,
+    WLock,
+    WUnlock,
     Wait,
     Signal,
     Broadcast,
@@ -63,6 +68,7 @@ struct FuzzStats {
     std::size_t dpor_fair_cycles{0};
     std::size_t naive_unfair_cycles{0};
     std::size_t dpor_unfair_cycles{0};
+    std::array<std::size_t, 4> rwlock_actions{};
 };
 
 model::Action read(std::string address) {
@@ -112,6 +118,29 @@ model::Action unlock(std::string mutex) {
     action.kind = model::ActionKind::Unlock;
     action.mutex = std::move(mutex);
     return action;
+}
+
+model::Action rwlock_action(model::ActionKind kind, std::string rwlock) {
+    model::Action action;
+    action.kind = kind;
+    action.rwlock = std::move(rwlock);
+    return action;
+}
+
+model::Action rlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RLock, std::move(rwlock));
+}
+
+model::Action runlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RUnlock, std::move(rwlock));
+}
+
+model::Action wlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WLock, std::move(rwlock));
+}
+
+model::Action wunlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
 }
 
 model::Action wait(std::string condition, std::string mutex) {
@@ -316,6 +345,12 @@ std::string random_mutex(std::mt19937_64& rng) {
     return bounded(rng, 2) == 0 ? "m" : "n";
 }
 
+std::string random_rwlock(std::mt19937_64& rng) {
+    // Deliberately disjoint from the mutex namespace so generated programs
+    // exercise rwlock semantics instead of being rejected by validation.
+    return bounded(rng, 2) == 0 ? "rw0" : "rw1";
+}
+
 std::string random_condition(std::mt19937_64& rng, std::size_t condition_count) {
     assert(condition_count >= 1 && condition_count <= 2);
     if (condition_count == 1 || bounded(rng, condition_count) == 0) {
@@ -339,9 +374,54 @@ bool contains(const std::vector<std::string>& values, const std::string& value) 
     return std::find(values.begin(), values.end(), value) != values.end();
 }
 
+struct HeldRwLock {
+    std::string name;
+    bool writer{false};
+};
+
+bool contains_rwlock(const std::vector<HeldRwLock>& held, const std::string& name) {
+    return std::find_if(held.begin(), held.end(), [&](const HeldRwLock& entry) {
+               return entry.name == name;
+           }) != held.end();
+}
+
+std::size_t random_rwlock_with_mode(std::mt19937_64& rng,
+                                    const std::vector<HeldRwLock>& held,
+                                    bool writer) {
+    std::vector<std::size_t> matches;
+    for (std::size_t index = 0; index < held.size(); ++index) {
+        if (held.at(index).writer == writer) {
+            matches.push_back(index);
+        }
+    }
+    assert(!matches.empty());
+    return matches.at(bounded(rng, matches.size()));
+}
+
 void erase_one(std::vector<std::string>& values, std::size_t index) {
     assert(index < values.size());
     values.erase(values.begin() + static_cast<std::ptrdiff_t>(index));
+}
+
+model::Action acquire_rwlock(std::mt19937_64& rng,
+                             std::vector<HeldRwLock>& held_rwlocks,
+                             bool writer) {
+    std::string rwlock = random_rwlock(rng);
+    if (contains_rwlock(held_rwlocks, rwlock)) {
+        rwlock = rwlock == "rw0" ? "rw1" : "rw0";
+    }
+    assert(!contains_rwlock(held_rwlocks, rwlock));
+    held_rwlocks.push_back(HeldRwLock{rwlock, writer});
+    return writer ? wlock(std::move(rwlock)) : rlock(std::move(rwlock));
+}
+
+model::Action release_rwlock(std::mt19937_64& rng,
+                             std::vector<HeldRwLock>& held_rwlocks,
+                             bool writer) {
+    const std::size_t index = random_rwlock_with_mode(rng, held_rwlocks, writer);
+    std::string rwlock = held_rwlocks.at(index).name;
+    held_rwlocks.erase(held_rwlocks.begin() + static_cast<std::ptrdiff_t>(index));
+    return writer ? wunlock(std::move(rwlock)) : runlock(std::move(rwlock));
 }
 
 model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
@@ -349,11 +429,22 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
                                                   std::size_t thread_count,
                                                   std::size_t condition_count,
                                                   std::size_t slots_left,
-                                                  std::vector<std::string>& held) {
-    if (slots_left == held.size()) {
-        std::string mutex = held.back();
-        held.pop_back();
-        return unlock(std::move(mutex));
+                                                  std::vector<std::string>& held_mutexes,
+                                                  std::vector<HeldRwLock>& held_rwlocks) {
+    const std::size_t held_count = held_mutexes.size() + held_rwlocks.size();
+    if (slots_left == held_count) {
+        const std::size_t selected = bounded(rng, held_count);
+        if (selected < held_mutexes.size()) {
+            std::string mutex = held_mutexes.at(selected);
+            erase_one(held_mutexes, selected);
+            return unlock(std::move(mutex));
+        }
+        const std::size_t rw_index = selected - held_mutexes.size();
+        HeldRwLock held = held_rwlocks.at(rw_index);
+        held_rwlocks.erase(
+            held_rwlocks.begin() + static_cast<std::ptrdiff_t>(rw_index));
+        return held.writer ? wunlock(std::move(held.name))
+                           : runlock(std::move(held.name));
     }
 
     std::vector<WeightedChoice> choices = {
@@ -367,12 +458,24 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         {Choice::Yield, 4},
     };
 
-    if (slots_left >= held.size() + 2 && held.size() < 2) {
+    if (slots_left >= held_count + 2 && held_mutexes.size() < 2) {
         choices.push_back({Choice::Lock, 25});
     }
-    if (!held.empty()) {
+    if (slots_left >= held_count + 2 && held_rwlocks.size() < 2) {
+        choices.push_back({Choice::RLock, 12});
+        choices.push_back({Choice::WLock, 12});
+    }
+    if (!held_mutexes.empty()) {
         choices.push_back({Choice::Unlock, 8});
         choices.push_back({Choice::Wait, 24});
+    }
+    if (std::any_of(held_rwlocks.begin(), held_rwlocks.end(),
+                    [](const HeldRwLock& held) { return !held.writer; })) {
+        choices.push_back({Choice::RUnlock, 8});
+    }
+    if (std::any_of(held_rwlocks.begin(), held_rwlocks.end(),
+                    [](const HeldRwLock& held) { return held.writer; })) {
+        choices.push_back({Choice::WUnlock, 8});
     }
 
     switch (choose(rng, choices)) {
@@ -382,21 +485,30 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         return random_atomic_memory(rng);
     case Choice::Lock: {
         std::string mutex = random_mutex(rng);
-        if (contains(held, mutex)) {
+        if (contains(held_mutexes, mutex)) {
             mutex = mutex == "m" ? "n" : "m";
         }
-        assert(!contains(held, mutex));
-        held.push_back(mutex);
+        assert(!contains(held_mutexes, mutex));
+        held_mutexes.push_back(mutex);
         return lock(std::move(mutex));
     }
     case Choice::Unlock: {
-        const std::size_t index = bounded(rng, held.size());
-        std::string mutex = held.at(index);
-        erase_one(held, index);
+        const std::size_t index = bounded(rng, held_mutexes.size());
+        std::string mutex = held_mutexes.at(index);
+        erase_one(held_mutexes, index);
         return unlock(std::move(mutex));
     }
+    case Choice::RLock:
+        return acquire_rwlock(rng, held_rwlocks, false);
+    case Choice::WLock:
+        return acquire_rwlock(rng, held_rwlocks, true);
+    case Choice::RUnlock:
+        return release_rwlock(rng, held_rwlocks, false);
+    case Choice::WUnlock:
+        return release_rwlock(rng, held_rwlocks, true);
     case Choice::Wait:
-        return wait(random_condition(rng, condition_count), held.at(bounded(rng, held.size())));
+        return wait(random_condition(rng, condition_count),
+                    held_mutexes.at(bounded(rng, held_mutexes.size())));
     case Choice::Signal:
         return signal(random_condition(rng, condition_count));
     case Choice::Broadcast:
@@ -418,13 +530,18 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
                                           model::ThreadId tid,
                                           std::size_t thread_count,
                                           std::size_t condition_count) {
-    // The adversarial lane deliberately injects unbalanced unlocks, waits
-    // without owning the mutex, and self-joins to exercise modeled-error paths.
+    // The adversarial lane deliberately injects unbalanced mutex/rwlock
+    // unlocks, waits without owning the mutex, and self-joins to exercise
+    // modeled-error paths.
     const std::vector<WeightedChoice> choices = {
         {Choice::PlainMemory, 16},
         {Choice::AtomicMemory, 16},
         {Choice::Lock, 12},
         {Choice::Unlock, 18},
+        {Choice::RLock, 8},
+        {Choice::RUnlock, 10},
+        {Choice::WLock, 8},
+        {Choice::WUnlock, 10},
         {Choice::Wait, 18},
         {Choice::Signal, 8},
         {Choice::Broadcast, 6},
@@ -443,6 +560,14 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         return lock(random_mutex(rng));
     case Choice::Unlock:
         return unlock(random_mutex(rng));
+    case Choice::RLock:
+        return rlock(random_rwlock(rng));
+    case Choice::RUnlock:
+        return runlock(random_rwlock(rng));
+    case Choice::WLock:
+        return wlock(random_rwlock(rng));
+    case Choice::WUnlock:
+        return wunlock(random_rwlock(rng));
     case Choice::Wait:
         return wait(random_condition(rng, condition_count), random_mutex(rng));
     case Choice::Signal:
@@ -576,19 +701,27 @@ model::Program generate_program(std::mt19937_64& rng, GenerationMode mode) {
     for (std::size_t tid_index = 0; tid_index < thread_count; ++tid_index) {
         const auto tid = static_cast<model::ThreadId>(tid_index);
         const std::size_t action_count = generated_action_count(rng, thread_count);
-        std::vector<std::string> held;
+        std::vector<std::string> held_mutexes;
+        std::vector<HeldRwLock> held_rwlocks;
         for (std::size_t action_index = 0; action_index < action_count; ++action_index) {
             const std::size_t slots_left = action_count - action_index;
             if (mode == GenerationMode::MostlyWellFormed) {
                 program.threads.at(tid).push_back(
                     generate_mostly_well_formed_action(
-                        rng, tid, thread_count, condition_count, slots_left, held));
+                        rng,
+                        tid,
+                        thread_count,
+                        condition_count,
+                        slots_left,
+                        held_mutexes,
+                        held_rwlocks));
             } else {
                 program.threads.at(tid).push_back(
                     generate_adversarial_action(rng, tid, thread_count, condition_count));
             }
         }
-        assert(mode == GenerationMode::Adversarial || held.empty());
+        assert(mode == GenerationMode::Adversarial || held_mutexes.empty());
+        assert(mode == GenerationMode::Adversarial || held_rwlocks.empty());
     }
     return program;
 }
@@ -754,6 +887,21 @@ void assert_round_trips(std::uint64_t seed,
     }
 }
 
+void assert_rwlock_spellings_round_trip() {
+    const model::Program program{{{
+        rlock("rw0"),
+        runlock("rw0"),
+        wlock("rw1"),
+        wunlock("rw1"),
+    }}};
+    const std::string rendered = cli::render_program(program);
+    assert(rendered.find("  rlock rw0\n") != std::string::npos);
+    assert(rendered.find("  runlock rw0\n") != std::string::npos);
+    assert(rendered.find("  wlock rw1\n") != std::string::npos);
+    assert(rendered.find("  wunlock rw1\n") != std::string::npos);
+    assert(cli::parse_program_text(rendered).threads == program.threads);
+}
+
 void check_program(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
@@ -767,6 +915,26 @@ void check_program(std::uint64_t seed,
     const model::CheckResult dpor = checker.explore_dpor(kMaxSchedules);
 
     ++stats.total;
+    for (const auto& thread : program.threads) {
+        for (const model::Action& action : thread) {
+            switch (action.kind) {
+            case model::ActionKind::RLock:
+                ++stats.rwlock_actions[0];
+                break;
+            case model::ActionKind::RUnlock:
+                ++stats.rwlock_actions[1];
+                break;
+            case model::ActionKind::WLock:
+                ++stats.rwlock_actions[2];
+                break;
+            case model::ActionKind::WUnlock:
+                ++stats.rwlock_actions[3];
+                break;
+            default:
+                break;
+            }
+        }
+    }
     if (memory_model == model::MemoryModel::TSO) {
         ++stats.tso;
     } else if (memory_model == model::MemoryModel::PSO) {
@@ -841,6 +1009,8 @@ std::uint64_t parse_seed(const char* text) {
 } // namespace
 
 int main(int argc, char** argv) {
+    assert_rwlock_spellings_round_trip();
+
     // CTest uses these fixed seeds for deterministic coverage. Supplying one
     // or more argv seeds replaces the fixed set for manual exploration, e.g.
     // `./dpor_fuzz_differential 0x1234`.
@@ -902,11 +1072,17 @@ int main(int argc, char** argv) {
               << " naive_fair_cycles=" << stats.naive_fair_cycles
               << " dpor_fair_cycles=" << stats.dpor_fair_cycles
               << " naive_unfair_cycles=" << stats.naive_unfair_cycles
-              << " dpor_unfair_cycles=" << stats.dpor_unfair_cycles << '\n';
+              << " dpor_unfair_cycles=" << stats.dpor_unfair_cycles
+              << " rlock_actions=" << stats.rwlock_actions[0]
+              << " runlock_actions=" << stats.rwlock_actions[1]
+              << " wlock_actions=" << stats.rwlock_actions[2]
+              << " wunlock_actions=" << stats.rwlock_actions[3] << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
     assert(stats.skipped * 10 < stats.total * 3);
     assert(stats.cycle > 0);
     assert(stats.bound_hit > 0);
+    assert(std::all_of(stats.rwlock_actions.begin(), stats.rwlock_actions.end(),
+                       [](std::size_t count) { return count > 0; }));
     return 0;
 }

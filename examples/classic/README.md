@@ -15,6 +15,7 @@ treated as findings, not as a reason to adjust core semantics.
 | Lamport bakery, bounded two-thread simplification (`bakery_bounded_counter.dpor`) | Plain critical-section counter touch is race-free | Nontermination; no race/assertion | `bakery_bounded_counter_broken_no_choosing_wait.dpor` uses a bounded one-check witness that observes `number[j] == 0` while the other thread is still choosing |
 | Treiber push skeleton (`treiber_push.dpor`) | Two CAS-retry pushes leave both node bits in `top` and increment `success_count` twice | Clean | `treiber_push_broken_load_store.dpor` loses an update when load+store replaces CAS |
 | Failed-CAS handoff (`failed_cas_handoff.dpor`) | A failed CAS acquire orders a later plain payload read after the writer's release store | Nontermination; no race/assertion | `failed_cas_handoff_broken_no_retry.dpor` reads payload after a successful pre-publication CAS |
+| Reader-writer lock publication (`readers_writers.dpor`) | A reader excludes the writer and sees the writer's published payload | Clean | `readers_writers_broken.dpor` skips the reader lock, exposing both the payload race and an overlapping-writer assertion |
 
 ### SC/TSO/PSO verdicts
 
