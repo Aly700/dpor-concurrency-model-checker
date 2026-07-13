@@ -251,6 +251,41 @@ beyond bounded verdicts:
   reader lock, making both the payload race and the overlap assertion
   reachable: 56 naive schedules, six under DPOR.
 
+## The eighth campaign: dining philosophers, then strong semaphores
+
+- **The gallery gained its canonical deadlock** — three philosophers taking
+  left fork then right fork reach the circular wait in which every thread owns
+  one mutex and blocks on the next. The minimized witness names all three fork
+  owners and replays identically under the naive explorer, DPOR, and the CLI.
+  The paired fix imposes a total fork order: the last philosopher reverses its
+  local acquisition order, the cycle disappears, and the model verifies clean.
+- **Semaphore happens-before is strong by declaration, not accident** — permits
+  are anonymous, start at zero, and are seeded only by explicit `SemPost`
+  actions. Every post release-joins its post-tick clock into a lifetime
+  accumulator; every successful `SemWait` decrements the count and
+  acquire-joins the whole accumulator without clearing it. A waiter can
+  therefore become ordered after posts whose permit it did not consume. Exact
+  permit-to-wait matching would add replayable nondeterminism, so the checker
+  verifies against this declared strong model rather than pretending to model
+  exact permit passing.
+- **The edge was tested by breaking it** — poster-publishes/waiter-reads is
+  race-free with the accumulator join; removing that join flips the probe to a
+  race, and restoring it restores the verdict. `SemPost` never acquires the
+  existing accumulator, so two posters' otherwise unrelated plain writes stay
+  unordered and still race. A worker was killed while the deliberate mutation
+  was live, so the experiment was restarted by inspecting and restoring the
+  known-good join before mutating again — a small infrastructure-resilience
+  rule for destructive probes.
+- **Commutation shipped at one proved boundary** — co-enabled
+  `SemPost(s)`/`SemPost(s)` actions commute because count addition and clock
+  join commute and either first post enables the same waiters. Every same-name
+  pair involving `SemWait` stays dependent; a zero-permit wait deliberately
+  uses the all-enabled repair so alternate-poster middle witnesses survive.
+  The discriminator has three naive leaves and two DPOR representatives. The
+  widened gates covered 22,126 two-thread and 65,544 three-thread oracle
+  programs plus 3,000 fuzz programs; meter output stayed byte-identical at SC
+  1.067, TSO 1.152, and PSO 1.154, and all 25 suites passed.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
