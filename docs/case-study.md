@@ -388,6 +388,66 @@ beyond bounded verdicts:
   flavors passed, and the optimality lines remained byte-identical at SC 1.067,
   TSO 1.152, and PSO 1.154.
 
+## The eleventh campaign: try-lock, false edges, and the third holder
+
+- **Try-lock made mutex happens-before path-sensitive** — a successful attempt
+  is exactly `Lock`: it takes ownership, writes `1`, and acquire-joins the last
+  release frontier. A failed attempt writes `0`, advances, and joins nothing.
+  Verdict-flip fixtures pin the success edge in both thread-id directions; two
+  negative fixtures pin the more dangerous failure direction. One leaves a
+  stale release frontier behind a different current owner, and the other puts a
+  write inside the live holder's critical section. Reads after each failed
+  attempt must remain racy, proving that neither the stored frontier nor the
+  holder's live clock leaks through failure. Independent adversarial review
+  kept that no-edge race visible even when a separate deadlock appeared in
+  `also_found`.
+- **A retry loop was reclassified as scheduling behavior, not blocking** —
+  mutex ownership never disables `TryLock`, and it never enters a deadlock
+  blocker set. A backward branch on its `0` result instead creates an ordinary
+  lasso question.
+  If the spinner repeats while a nonparticipating holder's `Unlock` remains
+  enabled at every cycle state, the witness is labeled `unfair-schedule`: the
+  label qualifies that schedule, not the whole program, and does not invent a
+  deadlock. The spin-until-acquired adversary showed both sides at once: the
+  acquisition path was safety-clean because success received the real acquire
+  edge, while the schedule that ignored the enabled unlock retained its unfair
+  lasso witness. The gallery's correct test-and-set counter follows that
+  convention; moving the counter write outside the acquired section yields a
+  replayable race.
+- **The only new same-mutex diamond needs a third-party owner** — two exact
+  co-enabled `TryLock(m)` occurrences commute only when the node's snapshotted
+  owner is a third thread distinct from both triers. Both orders then write
+  `0`, advance and tick each trier once, leave ownership and all mutex clocks
+  untouched, and reach the same complete state with the same enabled set. The
+  checker-local relation consults the parent node's owner snapshot and requires
+  the identical endpoint/action occurrence to survive sleep inheritance; an
+  attempt advances its pc, so no barrier-like generation stamp is needed.
+  Free-mutex attempts deliberately remain dependent: the first succeeds and
+  the second fails, so reversing them changes the owner and both result
+  registers rather than forming a diamond.
+- **The discriminator pins three semantic classes, not just a smaller number**
+  — with T0 and T1 each trying `m` once and T2 finishing while holding it,
+  naive exploration has four maximal orders. T0-first and T1-first are distinct
+  winner classes; after T2 locks first, the two orders of guaranteed failure
+  commute. DPOR therefore explores exactly three representatives. Counts alone
+  would be a weak guard, so companion fixtures keep both free-mutex winners,
+  keep the owner-equals-either-trier cases dependent, reject the refinement for
+  mixed same-mutex actions, and use spawn-gated fail/unlock/success plus
+  asymmetric winner assertions to preserve the middle and outcome classes.
+- **Every differential gate widened while the instrument stayed fixed** — the
+  two-thread oracle checked 22,418 programs over 25 actions (61,087 naive /
+  34,108 DPOR), the three-thread sweep checked 65,544 over 23 (896,252 /
+  347,246, with 38,178 strict reductions), TSO checked 10,775 over 13 (136,097
+  / 28,027), and PSO checked 5,656 over 13 (85,816 / 15,104), with zero capped
+  skips in both buffered oracles. Fixed-seed fuzz generated 1,578 try-locks and
+  compared 1,556 of them; 2,983 of 3,000 programs were fully compared and all
+  17 capped cases were reported. Cross-model inclusion ran 17,230 checks over
+  1,723 programs with zero global skips and all four dedicated try-lock programs
+  compared. Both 27-suite flavors passed, the meter lines remained
+  byte-identical at SC 1.067 / TSO 1.152 / PSO 1.154, and interleaved
+  best-of-three Release runs moved from 23.14 seconds pristine to 22.78 seconds
+  with the campaign — a 1.6% favorable difference and no wall-time regression.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
