@@ -9,6 +9,7 @@ using namespace model;
 static Action R(std::string a) { Action x; x.kind = ActionKind::Read; x.address = std::move(a); return x; }
 static Action W(std::string a) { Action x; x.kind = ActionKind::Write; x.address = std::move(a); return x; }
 static Action L(std::string m) { Action x; x.kind = ActionKind::Lock; x.mutex = std::move(m); return x; }
+static Action TL(std::string m, RegisterId destination) { Action x; x.kind = ActionKind::TryLock; x.mutex = std::move(m); x.destination = destination; return x; }
 static Action U(std::string m) { Action x; x.kind = ActionKind::Unlock; x.mutex = std::move(m); return x; }
 static Action WAIT(std::string cv, std::string m) { Action x; x.kind = ActionKind::Wait; x.condition = std::move(cv); x.mutex = std::move(m); return x; }
 static Action SIG(std::string cv) { Action x; x.kind = ActionKind::Signal; x.condition = std::move(cv); return x; }
@@ -56,6 +57,27 @@ static void require_barrier_agreement(const Program& program, const char* messag
                       naive.first_error.has_value() == dpor.first_error.has_value() &&
                       dpor.schedules_explored <= naive.schedules_explored,
                   message);
+}
+
+static void require_trylock_agreement(const Program& program, const char* message) {
+    const ModelChecker checker(program);
+    const auto naive = checker.explore_naive();
+    const auto dpor = checker.explore_dpor();
+    require_probe(naive.first_race.has_value() == dpor.first_race.has_value() &&
+                      naive.first_deadlock.has_value() == dpor.first_deadlock.has_value() &&
+                      naive.first_error.has_value() == dpor.first_error.has_value() &&
+                      naive.first_assertion.has_value() == dpor.first_assertion.has_value() &&
+                      (naive.cycles_detected > 0) == (dpor.cycles_detected > 0) &&
+                      dpor.schedules_explored <= naive.schedules_explored,
+                  message);
+    for (const CheckResult* result : {&naive, &dpor}) {
+        if (result->first_race.has_value()) {
+            const auto replayed = checker.replay(result->first_race->schedule);
+            require_probe(replayed.first_race.has_value() &&
+                              *replayed.first_race == *result->first_race,
+                          "TryLock HB race report did not replay identically");
+        }
+    }
 }
 
 static void check_agreement(const Program& p, const char* name) {
@@ -202,6 +224,59 @@ int main() {
                               S(0, 2), S(2, 0), S(2, 1)},
                              "actual cross-generation participant chain was lost");
         require_barrier_agreement(p, "barrier chained-generation oracle mismatch");
+    }
+    {
+        // A successful TryLock acquires the preceding mutex release just like
+        // Lock. Exercise both thread-id directions so the verdict cannot rely
+        // on one deterministic exploration order.
+        const Program low_to_high{{
+            {L("m"), W("x"), U("m")},
+            {TL("m", 0), R("x"), U("m")},
+        }};
+        require_clean_replay(low_to_high,
+                             {S(0, 0), S(0, 1), S(0, 2),
+                              S(1, 0), S(1, 1), S(1, 2)},
+                             "successful TryLock lost the low-to-high release/acquire edge");
+        require_trylock_agreement(low_to_high,
+                                  "low-to-high TryLock HB oracle mismatch");
+
+        const Program high_to_low{{
+            {TL("m", 0), R("x"), U("m")},
+            {L("m"), W("x"), U("m")},
+        }};
+        require_clean_replay(high_to_low,
+                             {S(1, 0), S(1, 1), S(1, 2),
+                              S(0, 0), S(0, 1), S(0, 2)},
+                             "successful TryLock lost the high-to-low release/acquire edge");
+        require_trylock_agreement(high_to_low,
+                                  "high-to-low TryLock HB oracle mismatch");
+    }
+    {
+        // The release clock remains stored while another thread holds m. A
+        // failed TryLock must not acquire that stale prior release frontier.
+        const Program p{{
+            {L("m"), W("x"), U("m")},
+            {L("m")},
+            {TL("m", 0), R("x")},
+        }};
+        require_racy_replay(p,
+                            {S(0, 0), S(0, 1), S(0, 2),
+                             S(1, 0), S(2, 0), S(2, 1)},
+                            "failed TryLock acquired a stale mutex release clock");
+        require_trylock_agreement(p, "stale-release TryLock HB oracle mismatch");
+    }
+    {
+        // Nor may failure acquire the current owner's live thread clock. The
+        // holder has published nothing: schedule order alone leaves this read
+        // unordered with its lock-held write.
+        const Program p{{
+            {L("m"), W("x"), U("m")},
+            {TL("m", 0), R("x")},
+        }};
+        require_racy_replay(p,
+                            {S(0, 0), S(0, 1), S(1, 0), S(1, 1)},
+                            "failed TryLock leaked the live holder clock");
+        require_trylock_agreement(p, "live-holder TryLock HB oracle mismatch");
     }
     std::cout << "ALL CV PROBES PASSED\n";
     return 0;

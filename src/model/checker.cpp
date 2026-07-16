@@ -870,6 +870,7 @@ bool is_buffered_ordered_point(const Action& action) {
     case ActionKind::CompareExchange:
     case ActionKind::Fence:
     case ActionKind::Lock:
+    case ActionKind::TryLock:
     case ActionKind::Unlock:
     case ActionKind::RLock:
     case ActionKind::RUnlock:
@@ -972,6 +973,11 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
         return false;
     case ActionKind::Lock:
         return state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
+    case ActionKind::TryLock:
+        // Unlike Lock, TryLock never waits for ownership. Under TSO/PSO the
+        // ordered-point guard above may still require this thread's buffers to
+        // drain before the source transition becomes enabled.
+        return true;
     case ActionKind::RLock: {
         const RwLockState* rwlock = find_rwlock(state, action.rwlock);
         if (rwlock == nullptr || !rwlock->writer_holder.has_value()) {
@@ -1705,6 +1711,40 @@ bool node_enabled_transition_matches(
            enabled->second.barrier_generation == barrier_generation;
 }
 
+bool same_mutex_try_locks_independent_at_node(
+    const DporNode& node,
+    ThreadId lhs_thread,
+    const Action& lhs,
+    const ScheduleStep& lhs_endpoint,
+    std::optional<std::uint64_t> lhs_generation,
+    ThreadId rhs_thread,
+    const Action& rhs,
+    const ScheduleStep& rhs_endpoint,
+    std::optional<std::uint64_t> rhs_generation) {
+    if (lhs_thread == rhs_thread || lhs.kind != ActionKind::TryLock ||
+        rhs.kind != ActionKind::TryLock || lhs.mutex.empty() ||
+        lhs.mutex != rhs.mutex || lhs_generation.has_value() ||
+        rhs_generation.has_value() ||
+        !node_enabled_transition_matches(
+            node, lhs_thread, lhs, lhs_endpoint, lhs_generation) ||
+        !node_enabled_transition_matches(
+            node, rhs_thread, rhs, rhs_endpoint, rhs_generation)) {
+        return false;
+    }
+
+    const auto owner = node.mutex_owner.find(lhs.mutex);
+    if (owner == node.mutex_owner.end() || owner->second == lhs_thread ||
+        owner->second == rhs_thread) {
+        return false;
+    }
+
+    // Both TryLocks fail. Each changes only its own thread's tick, pc, and
+    // destination register (r0 by default); those effects are disjoint.
+    // Neither changes the owner/release state, shared values, or race state,
+    // and the exact co-enabled other TryLock stays enabled after either order.
+    return true;
+}
+
 bool same_barrier_arrivals_independent_at_node(
     const DporNode& node,
     ThreadId lhs_thread,
@@ -1782,6 +1822,23 @@ bool transitions_independent_at_node(
     const Action& rhs,
     const ScheduleStep& rhs_endpoint,
     std::optional<std::uint64_t> rhs_generation) {
+    if (lhs.kind == ActionKind::TryLock &&
+        rhs.kind == ActionKind::TryLock && lhs.mutex == rhs.mutex) {
+#if defined(DPOR_EXPLORATION_METRICS)
+        ++profile_metrics().dpor_independence_checks;
+#endif
+        return same_mutex_try_locks_independent_at_node(
+            node,
+            lhs_thread,
+            lhs,
+            lhs_endpoint,
+            lhs_generation,
+            rhs_thread,
+            rhs,
+            rhs_endpoint,
+            rhs_generation);
+    }
+
     if (lhs.kind == ActionKind::BarrierWait &&
         rhs.kind == ActionKind::BarrierWait && lhs.barrier == rhs.barrier) {
 #if defined(DPOR_EXPLORATION_METRICS)
@@ -2195,6 +2252,20 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         state.mutex_owner[action.mutex] = tid;
         state.thread_clock.at(tid).join(state.mutex_clock[action.mutex]);
         break;
+    case ActionKind::TryLock: {
+        advance_pc(program, state, tid);
+        const bool success =
+            state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
+        write_register(state, tid, action.destination.value_or(0), success ? 1 : 0);
+        if (success) {
+            // The success path is exactly Lock's acquire edge. Failure changes
+            // only this thread's destination register and must not join either
+            // the stored release frontier or the live owner's clock.
+            state.mutex_owner[action.mutex] = tid;
+            state.thread_clock.at(tid).join(state.mutex_clock[action.mutex]);
+        }
+        break;
+    }
     case ActionKind::RLock: {
         advance_pc(program, state, tid);
         const auto found = state.rwlocks.find(action.rwlock);
@@ -3909,6 +3980,7 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
         for (const Action& action : thread) {
             switch (action.kind) {
             case ActionKind::Lock:
+            case ActionKind::TryLock:
             case ActionKind::Unlock:
                 mutex_names.insert(action.mutex);
                 break;

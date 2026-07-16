@@ -1,5 +1,6 @@
 // Independent 3-thread adversarial sweep: deterministically sample programs
-// with 3 threads x 2 actions over memory, atomic acquire/release/RMW, mutex,
+// with 3 threads x 2 actions over memory, atomic acquire/release/RMW, mutex
+// lock/try-lock/unlock,
 // reader-writer lock, counting semaphore, Spawn, Join, and Mesa
 // condition-variable actions. The full alphabet^6 family is capped
 // at 65536 evenly spaced encoded indexes, not randomness. Each sampled program
@@ -59,6 +60,14 @@ Action lock(std::string mutex) {
     Action action;
     action.kind = ActionKind::Lock;
     action.mutex = std::move(mutex);
+    return action;
+}
+
+Action try_lock(std::string mutex, RegisterId destination = 0) {
+    Action action;
+    action.kind = ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
     return action;
 }
 
@@ -233,6 +242,7 @@ int main() {
         atomic_store("f"),
         atomic_rmw("f"),
         lock("m"),
+        try_lock("m"),
         unlock("m"),
         wait("cv", "m"),
         signal("cv"),
@@ -251,6 +261,13 @@ int main() {
         barrier_wait("bar", 3),
     };
     const std::size_t k = alphabet.size();
+    require(k == 23, "three-thread oracle alphabet must include TryLock");
+    const Action& try_lock_entry = alphabet.at(6);
+    require(try_lock_entry.kind == ActionKind::TryLock &&
+                try_lock_entry.mutex == "m" &&
+                try_lock_entry.destination.has_value() &&
+                *try_lock_entry.destination == 0,
+            "three-thread oracle TryLock entry must be try_lock m -> r0");
 
     std::size_t checked = 0, naive_total = 0, dpor_total = 0, strict = 0;
     std::size_t combos = 1;

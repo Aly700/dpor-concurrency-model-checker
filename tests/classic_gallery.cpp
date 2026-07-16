@@ -295,6 +295,38 @@ void require_naive_dpor_agree(const GalleryCase& test_case,
             test_case.file + " DPOR explored more schedules than naive");
 }
 
+void require_first_witness_equal(const GalleryCase& test_case,
+                                 const model::CheckResult& naive,
+                                 const model::CheckResult& dpor) {
+    switch (test_case.expected) {
+    case ExpectedVerdict::Race:
+        require(naive.first_race.has_value() && dpor.first_race.has_value() &&
+                    *naive.first_race == *dpor.first_race,
+                test_case.file + " naive and DPOR first race witnesses differed");
+        return;
+    case ExpectedVerdict::Assertion:
+        require(naive.first_assertion.has_value() && dpor.first_assertion.has_value() &&
+                    *naive.first_assertion == *dpor.first_assertion,
+                test_case.file + " naive and DPOR first assertion witnesses differed");
+        return;
+    case ExpectedVerdict::Deadlock:
+        require(naive.first_deadlock.has_value() && dpor.first_deadlock.has_value() &&
+                    *naive.first_deadlock == *dpor.first_deadlock,
+                test_case.file + " naive and DPOR first deadlock witnesses differed");
+        return;
+    case ExpectedVerdict::NonTermination:
+        require(naive.first_nontermination.has_value() &&
+                    dpor.first_nontermination.has_value() &&
+                    *naive.first_nontermination == *dpor.first_nontermination,
+                test_case.file + " naive and DPOR first nontermination witnesses differed");
+        return;
+    case ExpectedVerdict::Clean:
+    case ExpectedVerdict::CleanUpToBound:
+        fail(test_case.file + " requested exact identity without a witness verdict");
+    }
+    fail("unknown expected verdict");
+}
+
 void require_replays_report(const std::string& label,
                             const model::ModelChecker& checker,
                             const model::CheckResult& result) {
@@ -458,6 +490,27 @@ const std::vector<GalleryCase>& gallery_cases() {
     //   that the naive oracle exhausts before max_schedules.
     // - Treiber has no intended bound hit; failed-CAS handoff does.
     static const std::vector<GalleryCase> cases = {
+        {"test_and_set_spinlock_counter.dpor",
+         ExpectedVerdict::NonTermination,
+         10,
+         100000,
+         false,
+         model::MemoryModel::SC,
+         std::nullopt,
+         false,
+         model::Fairness::UnfairScheduleWitness},
+        {"test_and_set_spinlock_counter_broken_outside_section.dpor",
+         ExpectedVerdict::Race,
+         14,
+         100000,
+         true,
+         model::MemoryModel::SC,
+         std::nullopt,
+         false,
+         std::nullopt,
+         {},
+         std::nullopt,
+         true},
         // Formerly clean up to bound: bound 10 is sufficient to close the
         // waiting contender's exact Peterson spin cycle.
         {"peterson_counter.dpor", ExpectedVerdict::NonTermination, 10, 300000, false, model::MemoryModel::SC, std::nullopt, false, model::Fairness::UnfairScheduleWitness},
@@ -540,11 +593,7 @@ void verify_gallery_with_library(const std::filesystem::path& source_dir) {
             require_expected_verdict(test_case, naive, "naive");
             require_naive_dpor_agree(test_case, naive, dpor);
             if (test_case.exact_witness_across_explorers) {
-                require(naive.first_deadlock.has_value() &&
-                            dpor.first_deadlock.has_value() &&
-                            *naive.first_deadlock == *dpor.first_deadlock,
-                        test_case.file +
-                            " naive and DPOR first witnesses were not byte-identical");
+                require_first_witness_equal(test_case, naive, dpor);
             }
             require_replays_report(test_case.file + " naive", checker, naive);
         }

@@ -220,6 +220,14 @@ model::Action lock(std::string mutex) {
     return action;
 }
 
+model::Action try_lock(std::string mutex, model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action unlock(std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Unlock;
@@ -752,6 +760,10 @@ std::string action_string(const model::Action& action) {
     case model::ActionKind::Lock:
         out << "Lock " << action.mutex;
         break;
+    case model::ActionKind::TryLock:
+        out << "TryLock " << action.mutex << " -> r"
+            << static_cast<unsigned>(action.destination.value_or(0));
+        break;
     case model::ActionKind::Unlock:
         out << "Unlock " << action.mutex;
         break;
@@ -796,6 +808,15 @@ std::string action_string(const model::Action& action) {
         break;
     }
     return out.str();
+}
+
+void test_try_lock_identity_support() {
+    const model::Action r0 = try_lock("m", 0);
+    const model::Action r1 = try_lock("m", 1);
+    require(action_key(r0) != action_key(r1),
+            "TryLock destinations collapsed in optimality occurrence identity");
+    require(action_string(r1) == "TryLock m -> r1",
+            "TryLock optimality diagnostic rendering changed");
 }
 
 void print_program(const model::Program& program) {
@@ -1075,6 +1096,7 @@ int main() {
     test_same_thread_flush_correspondence();
     test_replay_exposes_pso_flush_identity();
     test_pso_flush_reordering_changes_class_count();
+    test_try_lock_identity_support();
 
     const model::Program enqueue_read_repair{{
         {write("y")},

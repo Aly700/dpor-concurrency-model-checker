@@ -55,6 +55,14 @@ model::Action unlock(std::string mutex) {
     return action;
 }
 
+model::Action try_lock(std::string mutex, model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action wait(std::string condition, std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Wait;
@@ -209,6 +217,22 @@ int main() {
     REQUIRE(forward_metrics.fingerprint_builds == 0);
 
     model::diagnostics::reset_exploration_metrics();
+    const model::Program acyclic_try_lock{{{
+        try_lock("m", 0),
+        unlock("m"),
+    }}};
+    const model::CheckResult acyclic_try_result =
+        model::ModelChecker(acyclic_try_lock).explore_naive();
+    const auto acyclic_try_metrics =
+        model::diagnostics::exploration_metrics();
+    REQUIRE(acyclic_try_result.schedules_explored == 1);
+    REQUIRE(!acyclic_try_result.first_error.has_value());
+    REQUIRE(!acyclic_try_result.first_nontermination.has_value());
+    REQUIRE(acyclic_try_metrics.fingerprint_builds == 0);
+    REQUIRE(acyclic_try_metrics.history_insertions == 0);
+    REQUIRE(acyclic_try_metrics.history_restores == 0);
+
+    model::diagnostics::reset_exploration_metrics();
     const model::Program missing_label{{{
         set_one(),
         branch_nonzero("missing"),
@@ -317,6 +341,27 @@ int main() {
     REQUIRE(cyclic_barrier_metrics.fingerprint_builds > 0);
     REQUIRE(cyclic_barrier_metrics.history_insertions ==
             cyclic_barrier_metrics.history_restores);
+
+    model::diagnostics::reset_exploration_metrics();
+    const model::Program failed_try_retry{{
+        {lock("m"), spawn(1)},
+        {
+            set_one(),
+            label("retry"),
+            try_lock("m", 1),
+            branch_nonzero("retry"),
+        },
+    }};
+    const model::CheckResult failed_try_cycle =
+        model::ModelChecker(failed_try_retry, 10).explore_naive();
+    const auto failed_try_metrics =
+        model::diagnostics::exploration_metrics();
+    REQUIRE(failed_try_cycle.cycles_detected > 0);
+    REQUIRE(failed_try_cycle.first_nontermination.has_value());
+    REQUIRE(failed_try_metrics.fingerprint_builds > 0);
+    REQUIRE(failed_try_metrics.history_insertions > 0);
+    REQUIRE(failed_try_metrics.history_insertions ==
+            failed_try_metrics.history_restores);
 
     model::diagnostics::reset_exploration_metrics();
     const model::Program cyclic{{{

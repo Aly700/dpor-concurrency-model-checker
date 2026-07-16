@@ -18,7 +18,8 @@
 - `ModelChecker::explore_dpor` is the reduced oracle added beside the naive
   DFS. It uses deterministic backtrack/done sets, the public action-level
   `independent()` predicate, and checker-local transition refinements for
-  enabled valid `Join` operations and generation-stamped barrier arrivals.
+  enabled valid `Join` operations, failed same-mutex `TryLock` pairs under a
+  third-party owner, and generation-stamped barrier arrivals.
 - `ModelChecker::replay` re-executes a deterministic schedule under the same
   step bound and rejects disabled, out-of-range, or post-terminal steps with a
   clear error.
@@ -39,7 +40,8 @@ The checker interprets a program as a small-step state machine:
 - `registers[tid][0..7]` are thread-local int64 registers initialized to zero.
 - `thread_steps[tid]` counts scheduled steps for the per-thread execution
   bound.
-- `mutex_owner[mutex]` records the owning thread for held mutexes.
+- `mutex_owner[mutex]` records the owning thread for held mutexes acquired by
+  either `Lock` or a successful `TryLock`.
 - `mutex_clock[mutex]` records the vector clock stored by the last successful
   unlock of that mutex.
 - `rwlocks[name]` records a canonical reader-holder set, an optional writer,
@@ -79,14 +81,16 @@ The checker interprets a program as a small-step state machine:
 At each DFS state, the naive oracle enumerates exactly the enabled transitions
 in deterministic schedule-step order. Not-started threads are disabled. `Read`, `Write`,
 `AtomicLoad`, `AtomicStore`, `AtomicRmw`, `CompareExchange`, `Set`,
-`BranchNonzero`, `Assert`, `Fence`, `Yield`, `Unlock`, `RUnlock`, `WUnlock`,
-`SemPost`, `Spawn`, `Signal`, and
+`BranchNonzero`, `Assert`, `Fence`, `Yield`, `TryLock`, `Unlock`, `RUnlock`,
+`WUnlock`, `SemPost`, `Spawn`, `Signal`, and
 `Broadcast` are enabled for started unfinished threads; invalid `Unlock`,
 invalid rwlock unlock/reentrancy, invalid `Wait`, invalid `Spawn`, and invalid
 `Join` steps are reported as modeled errors. `Lock` is enabled only when its
-mutex is not currently owned. `RLock` is enabled in the absence of another
-thread's writer; `WLock` is enabled only with no writer and no readers, except
-that a current writer's recursive acquisition remains executable as an error.
+mutex is not currently owned; `TryLock` remains enabled regardless of the
+owner and reports failure through its register result. `RLock` is enabled in
+the absence of another thread's writer; `WLock` is enabled only with no writer
+and no readers, except that a current writer's recursive acquisition remains
+executable as an error.
 A read holder's attempted `WLock` stays disabled on its own hold and therefore
 forms a tagged self-wait deadlock.
 `SemWait(name)` is enabled exactly when the named semaphore has a positive
@@ -114,7 +118,8 @@ enabled choice names a thread that has already executed its per-thread step
 bound, that execution terminates with a bound outcome and increments
 `bound_exceeded_executions`.
 
-Under TSO and PSO, atomics, CAS, mutex/condition-variable operations, all four
+Under TSO and PSO, atomics, CAS, mutex/condition-variable operations (including
+`TryLock`), all four
 rwlock operations, both semaphore operations, barrier waits, spawn, join, and
 `Fence` are ordered points: they are
 disabled until all of the
@@ -138,11 +143,30 @@ reports tag every participant left in an incomplete generation as
 endpoint, while DPOR stamps its internal enabled and executed occurrences with
 the generation ordinal so cyclic reuse cannot alias two generations.
 
+## Try-Lock
+
+`TryLock(m, rN)` has the strict text spelling `try_lock m -> rN` and uses the
+same mutex resource, owner, release clock, and cross-namespace collision rules
+as `Lock`, `Unlock`, and the mutex operand of `Wait`. It never waits. Every
+execution advances the caller's pc and writes exactly one result: if `m` is
+free, it writes `1` and becomes owner; if any thread (including the caller)
+owns `m`, it writes `0` and changes no mutex state. Existing `Unlock`
+owner validation applies unchanged after either outcome.
+
+A failed attempt is therefore absent from deadlock blocker sets. A backward
+branch may turn repeated failures into a lasso. That is reported and replayed
+through the existing non-termination machinery; weak fairness classifies a
+holder-starvation witness as unfair when the holder's `Unlock` remains enabled
+throughout the cycle.
+
 ## Happens-Before Analysis
 
 Each executed step ticks its thread's vector clock. `Unlock` stores the
 releasing thread's clock in the mutex clock. `Lock` joins the acquiring thread's
-clock with that mutex clock. `Wait` first performs the same release update as
+clock with that mutex clock. A successful `TryLock` performs exactly that same
+join after becoming owner. A failed `TryLock` performs no join at all: neither
+the stored release clock nor the current owner's live clock is acquired.
+`Wait` first performs the same release update as
 `Unlock`, then its woken second step performs the same acquire join as `Lock`.
 `Signal` and `Broadcast` join the signaler's clock into each woken waiter.
 `RLock` joins only the named rwlock's last writer-release clock. `RUnlock`
@@ -190,7 +214,10 @@ Values ride on top of these clock rules. Plain reads and atomic loads copy the
 current schedule-order cell value into a destination register when one is
 present. Plain writes and atomic stores update the cell from an immediate or
 register operand. Atomic RMW returns the old value and adds its operand. CAS
-stores on success and writes `1` or `0` to its result register.
+stores on success and writes `1` or `0` to its result register. `TryLock`
+likewise writes `1` for acquisition and `0` for failure into its destination
+register, so existing value flow and `BranchNonzero` directly implement retry
+loops.
 
 Memory accesses compare their current vector clock against prior conflicting
 accesses to the same address. Under TSO or PSO, an enqueued plain write records no
@@ -225,6 +252,8 @@ deterministically sampled boundary assertion compares both the complete parent
 
 Programs without a normalized self/backward `BranchNonzero` do not allocate or
 construct cycle history. Every ordinary source step advances a normalized pc;
+`TryLock` does so on both outcomes, with its result already represented by the
+existing register array and successful ownership by `mutex_owner`;
 the exceptional first `Wait` phase changes the fingerprinted wait/ownership
 state and needs a later pc-advancing signal before it can resume; a non-last
 `BarrierWait` strictly grows the fingerprinted arrival set and disables that
@@ -334,6 +363,27 @@ this retains both alternate-poster middle-wait traces when posts commute.
 Different semaphore names use the ordinary disjoint-resource independence
 rule.
 
+The public action relation conservatively keeps every same-mutex pair
+involving `TryLock` dependent. The checker-local exception applies only to two
+different threads' exact co-enabled `TryLock(m)` occurrences when the node's
+snapshotted `mutex_owner` says that a third thread owns `m`. Both attempts must
+fail. Each order ticks and advances both triers and writes `0` to their
+disjoint thread-local registers, while leaving ownership, the mutex release
+clock, shared values, race metadata, and the resulting enabled set identical.
+
+The surrounding DPOR safeguards remain part of that diamond. Free-mutex pairs,
+an owner that is one of the triers, and every mixed same-mutex pair stay
+dependent. Those dependencies give persistent closure around an intervening
+`Unlock`, `Lock`, or `Wait`. Sleep inheritance consults the parent node's owner
+snapshot and inherits only an endpoint/action occurrence that remains enabled
+in the child. A source `TryLock` is never disabled by mutex ownership, so the
+established buffered ordered-point and generic disabled-transition repairs need
+no TryLock-specific path. It always advances its pc, so its numeric endpoint
+supplies occurrence identity without the generation stamp required by cyclic
+barriers. The exact three-thread discriminator has T2 acquire and retain `m`
+while T0 and T1 each try once: naive explores four terminal orders, whereas
+DPOR commutes only the two T2-first failures and explores exactly three.
+
 Two valid, co-enabled arrivals on one barrier generation are independent only
 at a node with current arrival count `k` satisfying `k + 2 < parties`. In that
 case neither adjacent order releases the generation: both orders leave the
@@ -377,30 +427,35 @@ because it was previously slept.
 ## Verification Gates
 
 The DPOR implementation is checked against deterministic gates. The 2-thread
-oracle sweep enumerates small programs by length pair over a 24-action alphabet
+oracle sweep enumerates small programs by length pair over a 25-action alphabet
 and compares naive vs. DPOR race/deadlock/error/assertion existence, the
 bound-hit boolean, schedule dominance, and report replay identity. The
 3-thread oracle sweep uses an evenly strided deterministic sample of the larger
-22-action, 6-slot space, plus hand-picked disabled-transition cases, to
+23-action, 6-slot space, plus hand-picked disabled-transition cases, to
 exercise spawn, join, condition-variable, rwlock, semaphore, and barrier
 enabledness. A
 separate three-reader fixture pins 1680 naive leaves and one DPOR
 representative. The seeded differential fuzz gate generates 3000 fixed-seed
 programs across 2-5 threads, 1-6 actions per thread, plain and atomic memory,
-mutexes, rwlocks, semaphores, barriers, condition variables, joins, yields,
-spawn-shaped programs, and modeled-error cases, plus a value-mode lane with registers,
-branches, CAS, fetch-add, assertions, and deliberate bound hits; capped
-explorations are counted but excluded from verdict equality because truncation
-can legitimately hide a later endpoint.
+mutexes, rwlocks, semaphores, barriers, TryLock, condition variables, joins,
+yields, spawn-shaped programs, and modeled-error cases, plus a value-mode lane
+with registers, branches, CAS, fetch-add, assertions, and deliberate bound
+hits; capped explorations are counted but excluded from verdict equality
+because truncation can legitimately hide a later endpoint.
 
-The barrier-widened acceptance run checked 22,269 two-thread programs, 65,544
-three-thread programs (833,863 naive versus 336,551 DPOR schedules), 10,698 TSO
-programs, and 5,579 PSO programs. Their action alphabets were respectively 24,
-22, 12, and 12. The fixed fuzz run generated 1,100 `BarrierWait` actions; 2,977
-of its 3,000 programs were compared and 23 capped programs were reported. A
-dedicated cross-model barrier corpus compared all 4 of 4 programs with zero
-skips. The unchanged optimality corpora retain byte-identical meter ratios SC
-1.067, TSO 1.152, and PSO 1.154.
+The TryLock-widened acceptance run checked 22,418 two-thread programs (61,087
+naive versus 34,108 DPOR schedules), 65,544 three-thread programs (896,252
+naive versus 347,246 DPOR schedules), 10,775 TSO programs (136,097 versus
+28,027), and 5,656 PSO programs (85,816 versus 15,104). Both buffered oracles
+enforce zero capped skips. Their action alphabets were respectively 25, 23, 13,
+and 13. The fixed fuzz run generated 952 `BarrierWait` and 1,578 `TryLock`
+actions, with 1,556 TryLocks in
+fully compared programs; 2,983 of its 3,000 programs were compared and 17
+capped programs were reported. Cross-model inclusion compared all 1,723
+programs with zero global skips, including both dedicated four-program
+BarrierWait and TryLock corpora at 4/4/0. The unchanged
+optimality corpora retain byte-identical meter ratios SC 1.067, TSO 1.152, and
+PSO 1.154.
 
 The optimality meter is the fourth gate. Its SC corpus collects all naive
 maximal schedules for small non-error/non-assertion programs, replays them into

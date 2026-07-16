@@ -30,6 +30,7 @@ bool is_write_like(const Action& action) {
 
 bool is_mutex_action(const Action& action) {
     return action.kind == ActionKind::Lock ||
+           action.kind == ActionKind::TryLock ||
            action.kind == ActionKind::Unlock ||
            action.kind == ActionKind::Wait;
 }
@@ -149,8 +150,10 @@ bool independent(const Action& lhs, const Action& rhs) {
 
     if (is_mutex_action(lhs) && is_mutex_action(rhs) && lhs.mutex == rhs.mutex) {
         // Operations on one mutex are dependent because ownership, blocking,
-        // release/acquire vector-clock state, Wait's atomic release and later
-        // reacquire, and future enabledness all depend on their order.
+        // TryLock's success result, release/acquire vector-clock state, Wait's
+        // atomic release and later reacquire, and future enabledness all depend
+        // on their order. State-dependent refinements belong in the checker,
+        // not this action-only public predicate.
         return false;
     }
 
@@ -211,9 +214,9 @@ bool independent(const Action& lhs, const Action& rhs) {
     // Remaining pairs commute for this IR when both transitions are enabled:
     // non-conflicting memory accesses update disjoint or read-only metadata;
     // atomic accesses on different addresses touch disjoint location clocks;
-    // mutex and Wait operations on distinct mutexes touch disjoint ownership
-    // and synchronization clocks; rwlock and semaphore operations on distinct
-    // names do likewise; different barriers touch disjoint generations;
+    // mutex, TryLock, and Wait operations on distinct mutexes touch disjoint
+    // ownership and synchronization clocks; rwlock and semaphore operations
+    // on distinct names do likewise; different barriers touch disjoint generations;
     // Signal/Broadcast on different condition variables do
     // not queue permits and mutate disjoint wait sets; Yield has no modeled
     // shared-state or enabledness effect.

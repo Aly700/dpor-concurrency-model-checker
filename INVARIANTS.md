@@ -30,10 +30,12 @@
   fingerprinted arrival set and disables that participant. The set can return
   to empty only when a last arrival advances every participant past the
   barrier; without a backward branch none can return to that source pc.
+  `TryLock` is an ordinary pc-advancing source transition on both success and
+  failure, so adding it does not weaken this well-foundedness argument.
   Therefore a complete behavioral state cannot recur. Any future action that
   can decrease a pc or repeatedly mutate behavioral state without advancing a
   pc must extend or invalidate this proof before fingerprint elision is allowed
-  (adr/0023, adr/0024).
+  (adr/0023, adr/0024, adr/0025).
 - The behavioral state includes normalized per-thread PCs, startedness, wait
   phases, registers, memory values, mutex owners, reader-writer lock holders,
   nonzero semaphore permit counts, every nonempty barrier's configured party
@@ -44,7 +46,9 @@
   and schedule history are
   analysis/budget/history state and are excluded. Consequently a
   lasso proves schedule-existence of non-termination only, not repetition of
-  analysis instrumentation.
+  analysis instrumentation. `TryLock` needs no new fingerprint field: its
+  result is already present in the destination register, successful ownership
+  is already present in `mutex_owner`, and its pc always advances.
 - A cycle witness is `stem + one cycle`, split at the first occurrence of the
   revisited state. The claim is existential. Its fairness field classifies only
   that witness and makes no system-level scheduler-fairness,
@@ -114,6 +118,12 @@
 - `Wait(cv, mutex)` must release `mutex` with the same clock update as
   `Unlock`; after wakeup it must reacquire `mutex` with the same clock join as
   `Lock` before advancing past the wait action.
+- `TryLock(m) -> rN` always advances. On success it writes exactly `1`, becomes
+  the mutex owner, and joins the acquiring thread with `mutex_clock[m]` exactly
+  as `Lock` does. If `m` is held by any thread, including the caller, it writes
+  exactly `0`, acquires nothing, and must not join either the stored mutex
+  release clock or the live holder's clock. Failure never blocks and never
+  changes ownership.
 - A reader-writer lock has a last-writer release clock and an accumulated join
   of reader-release clocks. `RLock` joins only the writer clock; `RUnlock`
   accumulates its post-tick clock; `WLock` joins both clocks and then clears the
@@ -158,6 +168,9 @@
 - Under TSO and PSO, `BarrierWait` is also an ordered point: an arrival remains
   disabled until all buffers owned by that thread are empty and performs no
   hidden flush.
+- Under TSO and PSO, `TryLock` is a full ordered point like `Lock`: the source
+  transition remains disabled until every buffer owned by the caller is empty,
+  and neither success nor failure performs a hidden flush.
 - Atomic/atomic accesses are never races. Mixed plain/atomic same-address
   accesses are races when unordered by happens-before and at least one side is
   write-like: plain write, atomic store, successful CAS, or atomic RMW. CAS is
@@ -191,6 +204,20 @@
   all-enabled disabled-transition repair so both alternate-poster middle-wait
   classes survive; selecting only one observed poster is forbidden
   (adr/0022). Different semaphore names are independent.
+- The public action-only relation keeps every same-mutex pair involving
+  `TryLock` dependent. Checker-local DPOR may commute two exact co-enabled
+  `TryLock(m)` occurrences from different threads only when the node's
+  snapshotted owner of `m` is a third thread distinct from both. Both attempts
+  then fail and write `0` into disjoint thread-local registers; either order
+  leaves identical PCs, registers, ownership, clocks, shared/race state, and
+  enabled transitions. A free mutex, either trier as owner, a different
+  same-mutex action, or a nonmatching endpoint remains dependent. Existing
+  persistent closure retains intervening same-mutex operations; sleep
+  inheritance evaluates the parent snapshot and keeps only the identical
+  surviving endpoint; `TryLock` is never mutex-disabled, so it needs no new
+  disabled-transition repair; and its pc advance supplies occurrence identity
+  without a generation stamp. Different mutex names commute under the ordinary
+  cross-cutting safeguards (adr/0025).
 - The public action-only relation keeps same-name `BarrierWait` actions
   dependent because it cannot observe generation state. Checker-local DPOR may
   commute two valid co-enabled arrivals on the same barrier only when their
@@ -217,8 +244,14 @@
   barrier blocker is rendered `barrier NAME waiting_on_barrier`. A write-lock
   attempt by one of the current readers is a readers-to-drain deadlock with
   `self_wait`, not a modeled reentrancy error.
+- `TryLock` never appears in a deadlock blocker set. A backward branch that
+  retries a failed attempt is a lasso/non-termination question. Under weak
+  fairness, its witness is unfair when a nonparticipant holder's `Unlock`
+  remains enabled at every cycle state; it is not reclassified as deadlock.
 - Reader-writer-lock ownership is a reader-holder set plus an optional writer;
   non-holder or wrong-mode unlock and read/write reentrancy are modeled errors.
+  `TryLock`, `Lock`, `Unlock`, and the mutex operand of `Wait` share the same
+  mutex namespace and ownership state; `Unlock` validation is unchanged.
   A barrier resource name may not also be interpreted as a mutex (including a
   Wait mutex), rwlock, semaphore, or condition variable. Mutex, rwlock, and
   semaphore names retain their established pairwise separation. These distinct

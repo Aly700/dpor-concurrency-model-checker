@@ -105,6 +105,21 @@ model::Action join(model::ThreadId target) {
     return action;
 }
 
+model::Action try_lock(std::string mutex, model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
+model::Action unlock(std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Unlock;
+    action.mutex = std::move(mutex);
+    return action;
+}
+
 model::ScheduleStep pso_flush(model::ThreadId thread, std::uint32_t address_id) {
     model::ScheduleStep step;
     step.thread = thread;
@@ -407,6 +422,44 @@ void pso_flush_independence_is_address_aware() {
     }
 }
 
+void try_lock_waits_until_every_pso_address_buffer_is_explicitly_drained() {
+    const model::Program program{{{
+        write("x", 1),
+        write("y", 1),
+        try_lock("m", 0),
+        assertion(0),
+        unlock("m"),
+    }}};
+    const model::ModelChecker checker(program, 20, model::MemoryModel::PSO);
+
+    bool rejected_with_y_pending = false;
+    try {
+        (void)checker.replay({
+            {0, 0},
+            {0, 1},
+            pso_flush(0, 0),
+            {0, 2},
+        });
+    } catch (const std::invalid_argument&) {
+        rejected_with_y_pending = true;
+    }
+    if (!rejected_with_y_pending) {
+        throw std::runtime_error(
+            "PSO TryLock executed while one address buffer remained pending");
+    }
+
+    const auto drained = checker.replay({
+        {0, 0},
+        {0, 1},
+        pso_flush(0, 0),
+        pso_flush(0, 1),
+        {0, 2},
+        {0, 3},
+        {0, 4},
+    });
+    require_shape("TryLock PSO explicit drains", drained, {});
+}
+
 } // namespace
 
 int main() {
@@ -418,6 +471,7 @@ int main() {
     replay_rejects_missing_or_wrong_pso_flush_address();
     pso_forwards_newest_same_address_store();
     pso_flush_independence_is_address_aware();
+    try_lock_waits_until_every_pso_address_buffer_is_explicitly_drained();
     std::cout << "pso_litmus: cases=5 models=3 MP=sc:no,tso:no,pso:yes"
                  " MP_fenced=sc:no,tso:no,pso:no SB=sc:no,tso:yes,pso:yes"
                  " same_address=sc:no,tso:no,pso:no lasso=sc:yes,tso:yes,pso:yes\n";

@@ -49,6 +49,14 @@ model::Action lock(std::string mutex) {
     return model::Action{model::ActionKind::Lock, "", std::move(mutex)};
 }
 
+model::Action try_lock(std::string mutex, model::RegisterId destination = 0) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action unlock(std::string mutex) {
     return model::Action{model::ActionKind::Unlock, "", std::move(mutex)};
 }
@@ -169,7 +177,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 24> kActions{
+const std::array<model::Action, 25> kActions{
     read("x"),
     write("x"),
     write("y"),
@@ -178,6 +186,7 @@ const std::array<model::Action, 24> kActions{
     atomic_rmw("f"),
     lock("m"),
     lock("n"),
+    try_lock("m"),
     unlock("m"),
     unlock("n"),
     wait("cv", "m"),
@@ -251,6 +260,10 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::Lock:
         out << "Lock " << action.mutex;
+        break;
+    case model::ActionKind::TryLock:
+        out << "TryLock " << action.mutex << " -> r"
+            << static_cast<unsigned>(action.destination.value_or(0));
         break;
     case model::ActionKind::Unlock:
         out << "Unlock " << action.mutex;
@@ -585,6 +598,14 @@ void assert_disabled_transition_fallback_finds_deadlock() {
 } // namespace
 
 int main() {
+    require(kActions.size() == 25,
+            "two-thread oracle alphabet must include TryLock");
+    const model::Action& try_lock_entry = kActions.at(8);
+    require(try_lock_entry.kind == model::ActionKind::TryLock &&
+                try_lock_entry.mutex == "m" &&
+                try_lock_entry.destination.has_value() &&
+                *try_lock_entry.destination == 0,
+            "two-thread oracle TryLock entry must be try_lock m -> r0");
     std::size_t programs_checked = 0;
     std::size_t naive_total = 0;
     std::size_t dpor_total = 0;
@@ -592,6 +613,7 @@ int main() {
 
     // Deterministically enumerates two-thread programs with 0..3 actions per
     // thread over kActions, including atomic acquire/release/RMW operations,
+    // nonblocking mutex acquisition,
     // Spawn, Join, Mesa condition-variable actions, all four reader-writer
     // lock actions, counting-semaphore post/wait actions, and a two-party
     // cyclic-barrier arrival. Each length pair

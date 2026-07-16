@@ -29,6 +29,7 @@ enum class Choice {
     PlainMemory,
     AtomicMemory,
     Lock,
+    TryLock,
     Unlock,
     RLock,
     RUnlock,
@@ -76,6 +77,10 @@ struct FuzzStats {
     std::array<std::array<std::size_t, 2>, 2> semaphore_actions{};
     // MostlyWellFormed/Adversarial BarrierWait counts.
     std::array<std::size_t, 2> barrier_waits{};
+    // MostlyWellFormed/Adversarial TryLock counts. "Compared" excludes
+    // programs discarded because either explorer reached the schedule cap.
+    std::array<std::size_t, 2> try_lock_actions_generated{};
+    std::array<std::size_t, 2> try_lock_actions_compared{};
 };
 
 model::Action read(std::string address) {
@@ -117,6 +122,14 @@ model::Action lock(std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Lock;
     action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action try_lock(std::string mutex, model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
     return action;
 }
 
@@ -493,6 +506,7 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
     std::vector<WeightedChoice> choices = {
         {Choice::PlainMemory, 10},
         {Choice::AtomicMemory, 10},
+        {Choice::TryLock, 18},
         {Choice::Signal, 14},
         {Choice::Broadcast, 10},
         {Choice::Spawn, 10},
@@ -538,6 +552,10 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         held_mutexes.push_back(mutex);
         return lock(std::move(mutex));
     }
+    case Choice::TryLock:
+        return try_lock(
+            random_mutex(rng),
+            static_cast<model::RegisterId>(bounded(rng, model::kRegisterCount)));
     case Choice::Unlock: {
         const std::size_t index = bounded(rng, held_mutexes.size());
         std::string mutex = held_mutexes.at(index);
@@ -589,6 +607,7 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         {Choice::PlainMemory, 16},
         {Choice::AtomicMemory, 16},
         {Choice::Lock, 12},
+        {Choice::TryLock, 40},
         {Choice::Unlock, 18},
         {Choice::RLock, 8},
         {Choice::RUnlock, 10},
@@ -613,6 +632,10 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         return random_atomic_memory(rng);
     case Choice::Lock:
         return lock(random_mutex(rng));
+    case Choice::TryLock:
+        return try_lock(
+            random_mutex(rng),
+            static_cast<model::RegisterId>(bounded(rng, model::kRegisterCount)));
     case Choice::Unlock:
         return unlock(random_mutex(rng));
     case Choice::RLock:
@@ -993,6 +1016,19 @@ void assert_barrier_spelling_round_trips() {
     }
 }
 
+void assert_try_lock_spelling_round_trips() {
+    const model::Program program{{{
+        try_lock("m", 3),
+    }}};
+    const std::string rendered = cli::render_program(program);
+    if (rendered !=
+            "thread:\n"
+            "  try_lock m -> r3\n" ||
+        cli::parse_program_text(rendered).threads != program.threads) {
+        throw std::runtime_error("TryLock spelling did not round-trip exactly");
+    }
+}
+
 void check_program(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
@@ -1006,9 +1042,17 @@ void check_program(std::uint64_t seed,
     const model::CheckResult dpor = checker.explore_dpor(kMaxSchedules);
 
     ++stats.total;
+    std::size_t try_lock_actions_in_program = 0;
     for (const auto& thread : program.threads) {
         for (const model::Action& action : thread) {
             switch (action.kind) {
+            case model::ActionKind::TryLock:
+                ++try_lock_actions_in_program;
+                if (mode != GenerationMode::Value) {
+                    ++stats.try_lock_actions_generated[
+                        mode == GenerationMode::MostlyWellFormed ? 0 : 1];
+                }
+                break;
             case model::ActionKind::RLock:
                 ++stats.rwlock_actions[0];
                 break;
@@ -1085,6 +1129,15 @@ void check_program(std::uint64_t seed,
 
     assert_replays_dpor_report(seed, program_index, mode, memory_model, program, checker, naive, dpor);
 
+    if (try_lock_actions_in_program != 0) {
+        if (mode == GenerationMode::Value) {
+            throw std::runtime_error(
+                "value fuzz lane unexpectedly generated TryLock");
+        }
+        stats.try_lock_actions_compared[
+            mode == GenerationMode::MostlyWellFormed ? 0 : 1] +=
+            try_lock_actions_in_program;
+    }
     ++stats.checked;
     if (naive.first_race.has_value()) {
         ++stats.race;
@@ -1121,6 +1174,7 @@ int main(int argc, char** argv) {
     assert_rwlock_spellings_round_trip();
     assert_semaphore_spellings_round_trip();
     assert_barrier_spelling_round_trips();
+    assert_try_lock_spelling_round_trips();
 
     // CTest uses these fixed seeds for deterministic coverage. Supplying one
     // or more argv seeds replaces the fixed set for manual exploration, e.g.
@@ -1165,6 +1219,10 @@ int main(int argc, char** argv) {
         }
     }
 
+    const std::size_t try_lock_actions_generated =
+        stats.try_lock_actions_generated[0] + stats.try_lock_actions_generated[1];
+    const std::size_t try_lock_actions_compared =
+        stats.try_lock_actions_compared[0] + stats.try_lock_actions_compared[1];
     std::cout << "fuzz_differential: programs=" << stats.total
               << " checked=" << stats.checked
               << " skipped_capped=" << stats.skipped
@@ -1194,6 +1252,16 @@ int main(int argc, char** argv) {
               << stats.semaphore_actions[0][1] + stats.semaphore_actions[1][1]
               << " barrier_waits_generated="
               << stats.barrier_waits[0] + stats.barrier_waits[1]
+              << " try_lock_actions_generated=" << try_lock_actions_generated
+              << " try_lock_actions_compared=" << try_lock_actions_compared
+              << " try_lock_mostly_generated="
+              << stats.try_lock_actions_generated[0]
+              << " try_lock_mostly_compared="
+              << stats.try_lock_actions_compared[0]
+              << " try_lock_adversarial_generated="
+              << stats.try_lock_actions_generated[1]
+              << " try_lock_adversarial_compared="
+              << stats.try_lock_actions_compared[1]
               << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
@@ -1214,6 +1282,20 @@ int main(int argc, char** argv) {
          stats.barrier_waits[0] + stats.barrier_waits[1] < 200)) {
         throw std::runtime_error(
             "fuzz lanes did not generate hundreds of BarrierWait actions");
+    }
+    if (argc == 1) {
+        for (std::size_t lane = 0; lane < stats.try_lock_actions_generated.size(); ++lane) {
+            const std::size_t generated = stats.try_lock_actions_generated[lane];
+            const std::size_t compared = stats.try_lock_actions_compared[lane];
+            if (generated < 200) {
+                throw std::runtime_error(
+                    "each fuzz lane must generate hundreds of TryLock actions");
+            }
+            if (compared < 100 || compared * 4 < generated * 3) {
+                throw std::runtime_error(
+                    "each fuzz lane must compare substantial TryLock coverage");
+            }
+        }
     }
     return 0;
 }

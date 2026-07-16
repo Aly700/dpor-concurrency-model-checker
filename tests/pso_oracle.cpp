@@ -47,6 +47,14 @@ model::Action lock(std::string mutex) {
     return action;
 }
 
+model::Action try_lock(std::string mutex, model::RegisterId destination = 0) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action unlock(std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Unlock;
@@ -98,7 +106,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 12> kActions{
+const std::array<model::Action, 13> kActions{
     read("x"),
     read("y"),
     write("x"),
@@ -108,6 +116,7 @@ const std::array<model::Action, 12> kActions{
     atomic_store("x"),
     atomic_store("y"),
     lock("m"),
+    try_lock("m"),
     unlock("m"),
     fence(),
     barrier_wait("bar", 2),
@@ -280,6 +289,17 @@ void cross_validate_program(const model::Program& program,
 } // namespace
 
 int main() {
+    if (kActions.size() != 13) {
+        throw std::runtime_error("PSO oracle alphabet must include TryLock");
+    }
+    const model::Action& try_lock_entry = kActions.at(9);
+    if (try_lock_entry.kind != model::ActionKind::TryLock ||
+        try_lock_entry.mutex != "m" ||
+        !try_lock_entry.destination.has_value() ||
+        *try_lock_entry.destination != 0) {
+        throw std::runtime_error(
+            "PSO oracle TryLock entry must be try_lock m -> r0");
+    }
     std::size_t programs_checked = 0;
     std::size_t skipped_capped = 0;
     std::size_t naive_total = 0;
@@ -334,5 +354,8 @@ int main() {
               << " dpor_fair_cycles=" << cycle_counts.dpor_fair
               << " naive_unfair_cycles=" << cycle_counts.naive_unfair
               << " dpor_unfair_cycles=" << cycle_counts.dpor_unfair << '\n';
+    if (skipped_capped != 0) {
+        throw std::runtime_error("PSO oracle must not skip capped programs");
+    }
     return 0;
 }

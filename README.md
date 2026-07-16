@@ -18,7 +18,7 @@ state that proves the cycle.
 | Plain memory | `read`, `write` | Shared int64 cells, initial 0; conflicting unordered accesses are races |
 | Memory models | `--memory-model sc\|tso\|pso`, `fence` | SC by default; TSO adds one FIFO store buffer per thread, PSO uses one FIFO per thread/address, and both expose replayable flush steps plus full drain fences |
 | Atomics | `atomic_load`, `atomic_store`, `atomic_rmw`, `cas` | Acquire/release/acq-rel, SC-per-location; atomic-atomic never races, mixed plain/atomic does |
-| Mutexes | `lock`, `unlock` | Blocking; release/acquire vector-clock edges; non-owner unlock is a modeled error |
+| Mutexes | `lock`, `try_lock`, `unlock` | Blocking lock plus nonblocking `try_lock MUTEX -> rN`; successful acquisition has the mutex acquire edge, failure writes 0 and synchronizes with nothing; non-owner unlock is a modeled error |
 | Reader-writer locks | `rlock`, `runlock`, `wlock`, `wunlock` | Parallel readers, exclusive writers, writer-to-reader and reader/writer-to-writer HB; reentrancy errors and read-to-write upgrades self-deadlock |
 | Counting semaphores | `sem_post`, `sem_wait` | Zero-initialized anonymous permits; posts accumulate release clocks and successful waits acquire the lifetime accumulator (the documented strong model) |
 | Cyclic barriers | `barrier_wait NAME PARTIES` | Each generation blocks until `PARTIES` arrivals, then releases every participant with an exact all-arrivals HB join and resets |
@@ -124,6 +124,7 @@ atomic_rmw f IMM|rN -> rN  # legacy "atomic_rmw f" adds 1 and discards old value
 cas f EXPECTED NEW -> rN
 fence                   # SC no-op; under TSO/PSO, enabled only after all of this thread's stores drain
 lock m
+try_lock m -> r0        # never blocks; writes 1 on acquisition, otherwise 0
 unlock m
 rlock rw
 runlock rw
@@ -145,8 +146,16 @@ barrier name is additionally distinct from all three of those namespaces and
 from condition-variable names. Every semaphore starts with zero permits; there
 is no declaration or initialization action, so initial permits are explicit
 `sem_post` steps. Under TSO/PSO, every lock, unlock, semaphore operation,
-barrier wait, and condition-variable operation is a full ordered point and
+barrier wait, `try_lock`, and condition-variable operation is a full ordered point and
 waits for that thread's pending stores to drain.
+
+`try_lock` uses the same mutex owner and namespace as `lock`/`unlock` and always
+advances. If the mutex is free it writes `1`, acquires ownership, and joins the
+prior release clock exactly like `lock`; if held by anyone, including the
+caller, it writes `0`, changes no ownership, and creates no happens-before
+edge. A branch-based retry is therefore a lasso/non-termination question, not a
+deadlock blocker. Existing condition-variable names may still reuse a mutex
+spelling; the cross-namespace rules are otherwise unchanged.
 
 Semaphore happens-before is intentionally strong and deterministic. Each post
 release-joins its clock into a lifetime accumulator, and every successful wait
@@ -189,6 +198,11 @@ Vector clocks, barrier release accumulators and absolute generation ordinals,
 and race history are analysis instrumentation rather than program behavior, so
 they are excluded. The resulting witness claims non-termination only, not
 repeated race-analysis state.
+
+`try_lock` adds no fingerprint field: its `0`/`1` result already lives in the
+register array, successful ownership already lives in the mutex-owner map, and
+both outcomes advance the pc. A retry's backward branch activates this exact
+cycle history before the attempt can recur.
 
 On a revisit, the report splits the executed schedule at the first occurrence:
 
@@ -299,7 +313,8 @@ gallery uses atomic coordination variables instead.
 
 `examples/classic/` contains a checked gallery of classic mutual-exclusion and
 lock-free patterns: Peterson, Dekker, a bounded two-thread Bakery
-simplification, a Treiber push skeleton, a failed-CAS handoff, reader-writer
+simplification, a test-and-set spinlock built from `try_lock`, a Treiber push
+skeleton, a failed-CAS handoff, reader-writer
 lock publication, a three-thread dining-philosophers pair, and a two-generation
 three-worker cyclic-barrier computation. The barrier's broken variant omits one
 worker from the final generation and deterministically deadlocks the other two.
@@ -316,20 +331,24 @@ execution hit the step bound; that DPOR never explores more schedules; that
 every DPOR report replays to an identical report; and how far DPOR is from one
 schedule per Mazurkiewicz class:
 
-1. **Exhaustive 2-thread sweep** — every program over a 24-action alphabet
-   (capped per length pair; 22,269 programs including hand-picked fixtures).
+1. **Exhaustive 2-thread sweep** — every program over a 25-action alphabet
+   (capped per length pair; 22,418 programs and 61,087 naive versus 34,108
+   DPOR schedules, including hand-picked fixtures).
 2. **Strided 3-thread sweep** — 65,544 programs evenly sampled from the full
-   22-action, 6-slot space, totaling 833,863 naive versus 336,551 DPOR
+   23-action, 6-slot space, totaling 896,252 naive versus 347,246 DPOR
    schedules; it also retains an asserted three-reader discriminator with
    1,680 naive schedules and one DPOR representative and a barrier
-   discriminator with six naive schedules and three DPOR representatives.
+   discriminator with six naive schedules and three DPOR representatives. The
+   third-holder TryLock discriminator has four naive schedules and exactly
+   three DPOR representatives.
 3. **Seeded differential fuzz** — 3,000 random 2–5-thread programs per run,
    including rwlocks, semaphores, barriers, spawn-shaped,
    value/branch/CAS/assertion programs, exact spin cycles, growing-state bound
    backstops, and deliberately malformed ones; failures print the seed and the
    program in `.dpor` syntax for by-hand reproduction. The fixed acceptance run
-   generated 1,100 barrier waits and compared 2,977 programs, with 23 capped
-   programs reported and excluded from verdict equality. Deterministic
+   generated 952 barrier waits and 1,578 TryLock actions (1,556 in fully
+   compared programs) and compared 2,983 programs, with 17 capped programs
+   reported and excluded from verdict equality. Deterministic
    fractions run under TSO and PSO, and the summary prints both model counts
    plus naive/DPOR total, fair, and unfair cycle counters.
 4. **SC/TSO/PSO optimality meter** — collects naive schedules for small
@@ -344,13 +363,14 @@ schedule per Mazurkiewicz class:
    1.154.
 5. **Buffered-model oracles** — capped TSO and PSO program sweeps compare
    naive and DPOR verdict/total-cycle/fair-cycle/unfair-cycle existence,
-   schedule dominance, and exact replay. The barrier-widened runs check 10,698
-   TSO and 5,579 PSO programs over 12-action alphabets.
-6. **Cross-model inclusion** — 1,717 deterministic two-thread and hand-picked
-   programs perform 17,170 per-kind checks that bug existence is monotone
+   schedule dominance, and exact replay. The TryLock-widened runs check 10,775
+   TSO and 5,656 PSO programs over 13-action alphabets, with zero capped skips
+   in either oracle.
+6. **Cross-model inclusion** — 1,723 deterministic two-thread and hand-picked
+   programs perform 17,230 per-kind checks that bug existence is monotone
    `SC => TSO => PSO`, including all four rwlock actions, both semaphore
-   actions, and a dedicated four-program barrier corpus. All 4 of 4 barrier
-   programs compare with zero skips.
+   actions, TryLock, and dedicated four-program barrier and TryLock corpora.
+   Every program compares with zero skips; both dedicated corpora are 4/4/0.
 
 All gates are deterministic and run in CI on Linux and macOS.
 
@@ -358,7 +378,7 @@ All gates are deterministic and run in CI on Linux and macOS.
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
 soundness-relevant decision in `adr/` (0001 architecture crux through ADR
-0024's cyclic barriers), including the exact vector-clock edge for
+0025's TryLock and spinlock gallery), including the exact vector-clock edge for
 each synchronization kind and why each DPOR pruning step cannot lose a bug
 class.
 

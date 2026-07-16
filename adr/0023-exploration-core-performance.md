@@ -111,6 +111,23 @@ cover an acyclic completed generation, an acyclic undersubscribed generation,
 a blocked backward loop, and a balanced cyclic-barrier lasso with exact history
 restore.
 
+### Classifier extension for TryLock
+
+ADR 0025 adds `TryLock`, but it requires no new well-founded measure. Every
+attempt is a source transition that advances the normalized pc exactly once,
+whether it acquires the mutex and writes `1` or observes an owner and writes
+`0`. Its only behavioral outcomes are already represented by the existing
+register array and mutex-owner map. Thus an acyclic program containing
+`TryLock` remains eligible for history/fingerprint elision under the original
+ordinary-source-step proof.
+
+A retry loop necessarily contains the self/backward `BranchNonzero` that
+returns control to the attempt, so the classifier enables exact cycle history
+before a failed-try lasso can close. The focused metrics gate pins both edges:
+an acyclic `TryLock`/`Unlock` program builds no fingerprints, while a failed
+`TryLock` retry under a retained owner detects a cycle and balances every
+history insertion with its restore.
+
 After these changes, the profiled three-thread sweep retained all 2,701,592
 branch state copies but reduced history copies and fingerprint bytes to zero.
 Enabled collections fell from 3,587,425 to 2,810,854 (776,571 fewer, 21.6%),

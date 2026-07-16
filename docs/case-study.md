@@ -343,23 +343,23 @@ beyond bounded verdicts:
 ## The tenth campaign: collective barriers and the last arriver
 
 - **Barrier happens-before is collective, not pairwise** — for generation `g`,
-  each arrival joins its post-tick clock into `R_g`; release then joins that
-  clock, the join of **all** generation arrivals, into every participant before
+  each arrival joins its post-tick clock into `R_g`; release then joins `R_g` —
+  the join of **all** generation-arrival clocks — into every participant before
   any can continue. Completion clears both the arrival set and `R_g` before the
   barrier name is reused, so a later generation cannot inherit a false edge
   merely by naming the same barrier. Real cross-generation order survives in
   the clocks of participants that actually carry it through program order and
   arrive again.
-- **The first same-pc wait-like action forced an explicit proof amendment** —
-  a non-last `BarrierWait` is a completed transition whose participant remains
-  at the same source endpoint. ADR 0023's fingerprint-elision classifier could
-  not simply assume its old well-foundedness argument still applied: the
-  current generation's sorted arrival set had to enter the behavioral
-  fingerprint. In an acyclic program each non-last arrival strictly grows that
-  set and disables its thread; only another thread's source arrival can empty
-  it while advancing every parked pc, after which no participant can return to
-  the old endpoint without backward control flow. That extension, rather than
-  analogy, keeps elision legal.
+- **The first new same-pc wait-like action since ADR 0023 forced an explicit
+  proof amendment** — a non-last `BarrierWait` is a completed transition whose
+  participant remains at the same source endpoint. ADR 0023's
+  fingerprint-elision classifier could not simply assume its old
+  well-foundedness argument still applied: the current generation's sorted
+  arrival set had to enter the behavioral fingerprint. In an acyclic program
+  each non-last arrival strictly grows that set and disables its thread; only
+  another thread's source arrival can empty it while advancing every parked pc,
+  after which no participant can return to the old endpoint without backward
+  control flow. That extension, rather than analogy, keeps elision legal.
 - **Early-arrival independence is state-dependent and deliberately narrow** —
   with `k` arrivals and party count `p`, two co-enabled same-generation
   arrivals commute only when `k + 2 < p`. Equality means the second transition

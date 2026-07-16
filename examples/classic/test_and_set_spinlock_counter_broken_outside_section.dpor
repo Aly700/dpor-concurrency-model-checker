@@ -1,0 +1,25 @@
+# Algorithm: broken test-and-set spinlock counter.
+# Property: both the counter read and write must be protected by counter_lock.
+# Expected verdict: race.
+# Bug: each thread unlocks after the read and performs its write outside the
+# acquired section, so try_lock cannot order the counter accesses.
+thread:
+  set r7 1
+t0_retry:
+  try_lock counter_lock -> r0
+  bnz r0 t0_acquired
+  bnz r7 t0_retry
+t0_acquired:
+  read counter -> r1
+  unlock counter_lock
+  write counter 1
+thread:
+  set r7 1
+t1_retry:
+  try_lock counter_lock -> r0
+  bnz r0 t1_acquired
+  bnz r7 t1_retry
+t1_acquired:
+  read counter -> r1
+  unlock counter_lock
+  write counter 2

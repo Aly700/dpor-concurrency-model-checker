@@ -40,6 +40,7 @@ enum class ActionKind {
     Fence,
     Flush,
     Lock,
+    TryLock,
     Unlock,
     Spawn,
     Join,

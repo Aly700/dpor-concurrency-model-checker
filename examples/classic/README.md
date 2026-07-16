@@ -6,6 +6,7 @@ treated as findings, not as a reason to adjust core semantics.
 
 | Algorithm | Property checked | Expected verdict | Broken variant demonstrates |
 |---|---|---|---|
+| Test-and-set spinlock counter (`test_and_set_spinlock_counter.dpor`) | `try_lock` retry branches keep the plain counter touch inside one acquired mutex section | Nontermination; no race/assertion | `test_and_set_spinlock_counter_broken_outside_section.dpor` unlocks before the counter write, exposing a replayable race |
 | Peterson counter (`peterson_counter.dpor`) | Plain critical-section counter touch is race-free | Nontermination; no race/assertion | `peterson_counter_broken_wrong_flag.dpor` reads an unused flag, so both threads enter and the counter races |
 | Peterson inside assertion (`peterson_inside_assert.dpor`) | Plain `inside_free` is nonzero on entry | Clean up to bound | `peterson_inside_assert_broken_wrong_flag.dpor` races on `inside_free` before every violating schedule necessarily reaches the assertion |
 | Dekker counter (`dekker_counter.dpor`) | Plain critical-section counter touch is race-free | Nontermination; no race/assertion | `dekker_counter_broken_drop_turn_wait.dpor` enters immediately after the courtesy flag reset instead of waiting for turn |
@@ -37,9 +38,10 @@ fences drain every pending address before the entry checks.
 
 ## Modeling Notes
 
-- `.dpor` has `set`, `bnz`, `assert`, loads/stores, fetch-add RMW, and CAS, but
-  no general arithmetic, no `max()`, no branch-on-zero, and no register-to-
-  register comparison. The Peterson and Dekker models use no-op CAS
+- `.dpor` has `set`, `bnz`, `assert`, loads/stores, fetch-add RMW, CAS, and
+  nonblocking `try_lock MUTEX -> rN`, but no general arithmetic, no `max()`,
+  no branch-on-zero, and no register-to-register comparison. The Peterson and
+  Dekker models use no-op CAS
   (`cas turn X X -> rN`) as an atomic equality test for `turn`.
 - The counter examples use a plain read plus a literal plain write as the
   critical-section footprint. That is the race-sensitive part of an increment,

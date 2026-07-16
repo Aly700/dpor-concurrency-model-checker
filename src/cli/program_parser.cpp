@@ -187,6 +187,13 @@ model::Action mutex_action(model::ActionKind kind, const std::string& mutex) {
     return action;
 }
 
+model::Action try_lock_action(const std::string& mutex,
+                              model::RegisterId destination) {
+    model::Action action = mutex_action(model::ActionKind::TryLock, mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action rwlock_action(model::ActionKind kind, const std::string& rwlock) {
     model::Action action;
     action.kind = kind;
@@ -384,6 +391,15 @@ model::Action parse_action(const std::vector<std::string>& words, std::size_t li
         require_arity(words, 2, line, keyword);
         return mutex_action(model::ActionKind::Lock, words[1]);
     }
+    if (keyword == "try_lock") {
+        require_arity(words, 4, line, keyword);
+        if (words[2] != "->") {
+            throw ParseError(line, "keyword 'try_lock' expects mutex -> register");
+        }
+        return try_lock_action(
+            words[1],
+            parse_register_token(words[3], line, "destination register"));
+    }
     if (keyword == "unlock") {
         require_arity(words, 2, line, keyword);
         return mutex_action(model::ActionKind::Unlock, words[1]);
@@ -499,6 +515,7 @@ model::Program parse_program_stream(std::istream& input) {
 
         model::Action action = parse_action(words, line);
         const bool uses_mutex = action.kind == model::ActionKind::Lock ||
+                                action.kind == model::ActionKind::TryLock ||
                                 action.kind == model::ActionKind::Unlock ||
                                 action.kind == model::ActionKind::Wait;
         const bool uses_rwlock = action.kind == model::ActionKind::RLock ||
@@ -787,6 +804,10 @@ std::string action_text(const model::Action& action) {
         break;
     case model::ActionKind::Lock:
         output << "lock " << action.mutex;
+        break;
+    case model::ActionKind::TryLock:
+        output << "try_lock " << action.mutex << " -> "
+               << register_text(action.destination.value_or(0));
         break;
     case model::ActionKind::Unlock:
         output << "unlock " << action.mutex;

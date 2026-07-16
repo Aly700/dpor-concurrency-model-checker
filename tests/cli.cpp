@@ -877,6 +877,122 @@ void assert_barrier_parser_is_strict_and_namespace_is_distinct(
     }
 }
 
+void assert_try_lock_syntax_and_witnesses_round_trip_byte_identically(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    // One-thread witnesses keep every exploration metric identical between
+    // check and replay while exercising canonical success and failure traces.
+    assert_check_replay_byte_identity(
+        binary,
+        work_dir,
+        "cli_try_lock_success_spelling",
+        "thread:\n"
+        "  try_lock spin -> r7\n"
+        "  unlock spin\n"
+        "  assert r0\n",
+        "assertion",
+        {"try_lock spin -> r7", "unlock spin"});
+
+    // Lock and TryLock deliberately share the mutex namespace. Self-try fails,
+    // leaving r7 == 0 and producing a deterministic assertion witness.
+    assert_check_replay_byte_identity(
+        binary,
+        work_dir,
+        "cli_try_lock_failure_spelling",
+        "thread:\n"
+        "  lock spin\n"
+        "  try_lock spin -> r7\n"
+        "  unlock spin\n"
+        "  assert r7\n",
+        "assertion",
+        {"lock spin", "try_lock spin -> r7", "unlock spin"});
+}
+
+void assert_try_lock_parser_is_strict_and_uses_the_mutex_namespace(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    struct ParseCase {
+        std::string stem;
+        std::string action;
+        std::string expected;
+    };
+    const std::vector<ParseCase> parse_cases = {
+        {"uppercase", "TryLock spin -> r0", "unknown keyword 'TryLock'"},
+        {"missing_name", "try_lock", "keyword 'try_lock' expects 3 operands"},
+        {"missing_arrow", "try_lock spin r0", "keyword 'try_lock' expects 3 operands"},
+        {"missing_register", "try_lock spin ->", "keyword 'try_lock' expects 3 operands"},
+        {"wrong_arrow", "try_lock spin => r0", "expects mutex -> register"},
+        {"extra", "try_lock spin -> r0 extra", "keyword 'try_lock' expects 3 operands"},
+        {"invalid_register", "try_lock spin -> rx", "invalid destination register 'rx'"},
+        {"out_of_range_register", "try_lock spin -> r8", "destination register is out of range"},
+    };
+    for (const ParseCase& parse_case : parse_cases) {
+        const auto program_path = work_dir / ("cli_try_lock_" + parse_case.stem + ".dpor");
+        write_file(program_path, "thread:\n  " + parse_case.action + "\n");
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_try_lock_" + parse_case.stem + ".out"),
+            work_dir / ("cli_try_lock_" + parse_case.stem + ".err"));
+        require_cli(result.exit_code == 2,
+                    parse_case.stem + " try_lock syntax should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    parse_case.stem + " try_lock syntax wrote stdout");
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    parse_case.stem + " try_lock syntax omitted its line");
+        require_cli(result.stderr_text.find(parse_case.expected) != std::string::npos,
+                    parse_case.stem + " try_lock diagnostic mismatch: " +
+                        result.stderr_text);
+    }
+
+    struct CollisionCase {
+        std::string stem;
+        std::string program_text;
+        std::string other_namespace;
+    };
+    const std::vector<CollisionCase> collisions = {
+        {"try_lock_then_rwlock",
+         "thread:\n  try_lock shared -> r0\n  rlock shared\n",
+         "rwlock"},
+        {"rwlock_then_try_lock",
+         "thread:\n  wlock shared\n  try_lock shared -> r0\n",
+         "rwlock"},
+        {"try_lock_then_semaphore",
+         "thread:\n  try_lock shared -> r0\n  sem_post shared\n",
+         "semaphore"},
+        {"semaphore_then_try_lock",
+         "thread:\n  sem_wait shared\n  try_lock shared -> r0\n",
+         "semaphore"},
+        {"try_lock_then_barrier",
+         "thread:\n  try_lock shared -> r0\n  barrier_wait shared 1\n",
+         "barrier"},
+        {"barrier_then_try_lock",
+         "thread:\n  barrier_wait shared 1\n  try_lock shared -> r0\n",
+         "barrier"},
+    };
+    for (const CollisionCase& collision : collisions) {
+        const auto program_path = work_dir / ("cli_" + collision.stem + ".dpor");
+        write_file(program_path, collision.program_text);
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_" + collision.stem + ".out"),
+            work_dir / ("cli_" + collision.stem + ".err"));
+        require_cli(result.exit_code == 2,
+                    collision.stem + " namespace collision should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    collision.stem + " namespace collision wrote stdout");
+        require_cli(result.stderr_text.find("line 3") != std::string::npos,
+                    collision.stem + " collision omitted the conflict line");
+        require_cli(result.stderr_text.find("mutex") != std::string::npos,
+                    collision.stem + " collision omitted mutex");
+        require_cli(result.stderr_text.find(collision.other_namespace) != std::string::npos,
+                    collision.stem + " collision omitted " + collision.other_namespace);
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    collision.stem + " collision omitted the first-use line");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -905,5 +1021,7 @@ int main(int argc, char** argv) {
     assert_semaphore_parser_is_strict_and_namespace_is_distinct(binary, work_dir);
     assert_barrier_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
     assert_barrier_parser_is_strict_and_namespace_is_distinct(binary, work_dir);
+    assert_try_lock_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
+    assert_try_lock_parser_is_strict_and_uses_the_mutex_namespace(binary, work_dir);
     return 0;
 }

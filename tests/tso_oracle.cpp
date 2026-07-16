@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <iostream>
 #include <sstream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 
@@ -45,6 +46,14 @@ model::Action lock(std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Lock;
     action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action try_lock(std::string mutex, model::RegisterId destination = 0) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
     return action;
 }
 
@@ -99,7 +108,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 12> kActions{
+const std::array<model::Action, 13> kActions{
     read("x"),
     read("y"),
     write("x"),
@@ -109,6 +118,7 @@ const std::array<model::Action, 12> kActions{
     atomic_store("x"),
     atomic_store("y"),
     lock("m"),
+    try_lock("m"),
     unlock("m"),
     fence(),
     barrier_wait("bar", 2),
@@ -211,6 +221,7 @@ void print_program(const model::Program& program) {
 
 void cross_validate_program(const model::Program& program,
                             std::size_t& programs_checked,
+                            std::size_t& skipped_capped,
                             std::size_t& naive_total,
                             std::size_t& dpor_total,
                             CycleCounts& cycle_counts) {
@@ -221,6 +232,7 @@ void cross_validate_program(const model::Program& program,
     const auto dpor = checker.explore_dpor(kMaxSchedules);
 
     if (naive.exploration_capped || dpor.exploration_capped) {
+        ++skipped_capped;
         return;
     }
 
@@ -269,7 +281,19 @@ void cross_validate_program(const model::Program& program,
 } // namespace
 
 int main() {
+    if (kActions.size() != 13) {
+        throw std::runtime_error("TSO oracle alphabet must include TryLock");
+    }
+    const model::Action& try_lock_entry = kActions.at(9);
+    if (try_lock_entry.kind != model::ActionKind::TryLock ||
+        try_lock_entry.mutex != "m" ||
+        !try_lock_entry.destination.has_value() ||
+        *try_lock_entry.destination != 0) {
+        throw std::runtime_error(
+            "TSO oracle TryLock entry must be try_lock m -> r0");
+    }
     std::size_t programs_checked = 0;
+    std::size_t skipped_capped = 0;
     std::size_t naive_total = 0;
     std::size_t dpor_total = 0;
     CycleCounts cycle_counts;
@@ -284,6 +308,7 @@ int main() {
                 cross_validate_program(
                     two_thread_program(encoded, lhs_length, rhs_length),
                     programs_checked,
+                    skipped_capped,
                     naive_total,
                     dpor_total,
                     cycle_counts);
@@ -300,11 +325,13 @@ int main() {
                                {atomic_store("x")},
                            }},
                            programs_checked,
+                           skipped_capped,
                            naive_total,
                            dpor_total,
                            cycle_counts);
 
     std::cout << "tso_oracle: programs checked=" << programs_checked
+              << " skipped_capped=" << skipped_capped
               << " alphabet=" << kActions.size()
               << " cap_per_length_pair=" << kProgramsPerLengthPairCap
               << " naive schedules total=" << naive_total
@@ -313,5 +340,8 @@ int main() {
               << " dpor_fair_cycles=" << cycle_counts.dpor_fair
               << " naive_unfair_cycles=" << cycle_counts.naive_unfair
               << " dpor_unfair_cycles=" << cycle_counts.dpor_unfair << '\n';
+    if (skipped_capped != 0) {
+        throw std::runtime_error("TSO oracle must not skip capped programs");
+    }
     return 0;
 }

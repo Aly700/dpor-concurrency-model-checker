@@ -2,6 +2,7 @@
 
 #include <cassert>
 #include <iostream>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -97,6 +98,21 @@ model::Action join(model::ThreadId target) {
     return action;
 }
 
+model::Action try_lock(std::string mutex, model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
+model::Action unlock(std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Unlock;
+    action.mutex = std::move(mutex);
+    return action;
+}
+
 model::Program store_buffering_program(bool fenced) {
     std::vector<model::Action> t0 = {
         write("x", 1),
@@ -166,7 +182,7 @@ void require_result_shape(const char* label,
                   << " error=" << result.first_error.has_value()
                   << " assertion=" << result.first_assertion.has_value()
                   << " schedules=" << result.schedules_explored << '\n';
-        assert(false && "unexpected litmus result shape");
+        throw std::runtime_error("unexpected TSO litmus result shape");
     }
 }
 
@@ -250,6 +266,40 @@ void plain_message_passing_flag_can_stay_stale_until_flush() {
     require_result_shape("plain MP TSO", tso_checker.explore_dpor(200000), true, false, false, true);
 }
 
+void try_lock_waits_for_an_explicit_tso_buffer_drain() {
+    const model::Program program{{{
+        write("buffered", 1),
+        try_lock("m", 0),
+        assert_nonzero(0),
+        unlock("m"),
+    }}};
+    const model::ModelChecker checker(program, 20, model::MemoryModel::TSO);
+
+    bool rejected_before_drain = false;
+    try {
+        (void)checker.replay({{0, 0}, {0, 1}});
+    } catch (const std::invalid_argument&) {
+        rejected_before_drain = true;
+    }
+    if (!rejected_before_drain) {
+        throw std::runtime_error("TSO TryLock executed with a pending store buffer");
+    }
+
+    const auto drained = checker.replay({
+        {0, 0},
+        {0, model::kFlushActionIndex},
+        {0, 1},
+        {0, 2},
+        {0, 3},
+    });
+    require_result_shape("TryLock TSO explicit drain",
+                         drained,
+                         false,
+                         false,
+                         false,
+                         false);
+}
+
 } // namespace
 
 int main() {
@@ -257,5 +307,6 @@ int main() {
     store_buffering_fences_restore_sc_observable_outcome();
     store_to_load_forwarding_is_observable();
     plain_message_passing_flag_can_stay_stale_until_flush();
+    try_lock_waits_for_an_explicit_tso_buffer_drain();
     return 0;
 }

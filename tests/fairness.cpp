@@ -73,6 +73,21 @@ model::Action lock(std::string mutex) {
     return action;
 }
 
+model::Action try_lock(std::string mutex, model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
+model::Action unlock(std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Unlock;
+    action.mutex = std::move(mutex);
+    return action;
+}
+
 model::Action wait(std::string condition, std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Wait;
@@ -256,6 +271,44 @@ void first_report_remains_first_found_while_counters_track_both_classes() {
     assert(dpor.fair_cycles > 0 && dpor.unfair_cycles > 0);
 }
 
+void failed_try_lock_spinner_is_unfair_while_the_holder_can_unlock() {
+    const model::Program program{{
+        {lock("m"), unlock("m")},
+        {
+            set(7, 1),
+            label("retry"),
+            try_lock("m", 0),
+            bnz(7, "retry"),
+        },
+    }};
+    const model::ModelChecker checker(program, 20);
+    const model::Schedule witness{
+        {0, 0, std::nullopt},
+        {1, 0, std::nullopt},
+        {1, 2, std::nullopt},
+        {1, 3, std::nullopt},
+    };
+
+    const model::CheckResult witnessed = checker.replay(witness);
+    assert(witnessed.first_nontermination.has_value());
+    assert(witnessed.first_nontermination->fairness ==
+           model::Fairness::UnfairScheduleWitness);
+    assert(witnessed.first_nontermination->schedule == witness);
+    assert(witnessed.first_nontermination->cycle ==
+           (model::Schedule{{1, 2, std::nullopt}, {1, 3, std::nullopt}}));
+    assert(std::all_of(witnessed.first_nontermination->cycle.begin(),
+                       witnessed.first_nontermination->cycle.end(),
+                       [](const model::ScheduleStep& step) {
+                           return step.thread == 1;
+                       }));
+    require_replay_identity(checker, witnessed);
+
+    const model::CheckResult naive = checker.explore_naive();
+    const model::CheckResult dpor = checker.explore_dpor();
+    assert(naive.unfair_cycles > 0);
+    assert(dpor.unfair_cycles > 0);
+}
+
 } // namespace
 
 int main() {
@@ -265,5 +318,6 @@ int main() {
     mutex_blocked_nonparticipant_does_not_make_the_cycle_unfair();
     a_pending_flush_is_enabled_for_weak_fairness_under_tso_and_pso();
     first_report_remains_first_found_while_counters_track_both_classes();
+    failed_try_lock_spinner_is_unfair_while_the_holder_can_unlock();
     return 0;
 }

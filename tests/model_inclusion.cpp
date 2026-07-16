@@ -62,6 +62,14 @@ model::Action lock(std::string mutex) {
     return action;
 }
 
+model::Action try_lock(std::string mutex, model::RegisterId destination = 0) {
+    model::Action action;
+    action.kind = model::ActionKind::TryLock;
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action unlock(std::string mutex) {
     model::Action action;
     action.kind = model::ActionKind::Unlock;
@@ -164,7 +172,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 19> kEnumeratedActions{
+const std::array<model::Action, 20> kEnumeratedActions{
     read("x"),
     write("x"),
     write("y"),
@@ -172,6 +180,7 @@ const std::array<model::Action, 19> kEnumeratedActions{
     atomic_store("f"),
     lock("m"),
     lock("n"),
+    try_lock("m", 0),
     unlock("m"),
     unlock("n"),
     join(0),
@@ -186,7 +195,7 @@ const std::array<model::Action, 19> kEnumeratedActions{
     barrier_wait("bar", 2),
 };
 
-const std::array<model::Action, 23> kFuzzActions{
+const std::array<model::Action, 24> kFuzzActions{
     read("x", 0),
     read("y", 1),
     write("x", 1),
@@ -195,6 +204,7 @@ const std::array<model::Action, 23> kFuzzActions{
     atomic_store("f", 1),
     lock("m"),
     lock("n"),
+    try_lock("m", 2),
     unlock("m"),
     unlock("n"),
     join(0),
@@ -245,6 +255,11 @@ const char* model_name(model::MemoryModel memory_model) {
 
 std::string action_text(const model::Action& action) {
     std::ostringstream out;
+    if (action.kind == model::ActionKind::TryLock) {
+        out << "try_lock " << action.mutex << " -> r"
+            << static_cast<unsigned>(action.destination.value_or(0));
+        return out.str();
+    }
     out << static_cast<int>(action.kind);
     if (!action.address.empty()) {
         out << " address=" << action.address;
@@ -268,6 +283,13 @@ std::string action_text(const model::Action& action) {
         out << " target=" << action.target;
     }
     return out.str();
+}
+
+void assert_try_lock_action_text() {
+    if (action_text(try_lock("m", 3)) != "try_lock m -> r3") {
+        throw std::runtime_error(
+            "model inclusion TryLock diagnostic spelling changed");
+    }
 }
 
 void print_program(const model::Program& program) {
@@ -316,6 +338,9 @@ struct InclusionStats {
     std::size_t barrier_attempted{0};
     std::size_t barrier_compared{0};
     std::size_t barrier_skipped{0};
+    std::size_t try_lock_attempted{0};
+    std::size_t try_lock_compared{0};
+    std::size_t try_lock_skipped{0};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> sc_antecedents{};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> tso_antecedents{};
 };
@@ -328,8 +353,12 @@ void compare_program(const model::Program& program,
     constexpr std::size_t kMaxSchedules = 50000;
     ++stats.attempted;
     const bool barrier_gate = std::string(source) == "barrier";
+    const bool try_lock_gate = std::string(source) == "try-lock";
     if (barrier_gate) {
         ++stats.barrier_attempted;
+    }
+    if (try_lock_gate) {
+        ++stats.try_lock_attempted;
     }
 
     std::array<model::CheckResult, 3> results;
@@ -343,6 +372,9 @@ void compare_program(const model::Program& program,
             ++stats.skipped;
             if (barrier_gate) {
                 ++stats.barrier_skipped;
+            }
+            if (try_lock_gate) {
+                ++stats.try_lock_skipped;
             }
             return;
         }
@@ -383,6 +415,9 @@ void compare_program(const model::Program& program,
     ++stats.compared;
     if (barrier_gate) {
         ++stats.barrier_compared;
+    }
+    if (try_lock_gate) {
+        ++stats.try_lock_compared;
     }
     if (std::string(source) == "enumerated") {
         ++stats.enumerated;
@@ -467,9 +502,30 @@ std::vector<model::Program> barrier_programs() {
     };
 }
 
+std::vector<model::Program> try_lock_programs() {
+    return {
+        // Either thread may win. The result register captures both outcomes.
+        model::Program{{{try_lock("m", 0)}, {try_lock("m", 1)}}},
+        // Pin the three-thread state-dependent DPOR case: once thread 2 owns
+        // m, both sibling TryLock actions fail without changing the owner.
+        model::Program{{{try_lock("m", 0)},
+                        {try_lock("m", 1)},
+                        {lock("m")}}},
+        // Exercise the success path as a full ordered point under TSO/PSO.
+        model::Program{{{write("x", 1), try_lock("m", 0), unlock("m")},
+                        {lock("m"), read("x", 1), unlock("m")}}},
+        // Feed the result into the existing branch/value machinery without a
+        // backward edge, so this corpus remains bounded in every model.
+        model::Program{{{lock("m")},
+                        {try_lock("m", 3), bnz(3, "acquired"), yield(),
+                         label("acquired")}}},
+    };
+}
+
 } // namespace
 
 int main() {
+    assert_try_lock_action_text();
     InclusionStats stats;
     std::size_t program_index = 0;
 
@@ -503,14 +559,22 @@ int main() {
     for (const model::Program& program : barrier_programs()) {
         compare_program(program, "barrier", program_index++, stats);
     }
+    for (const model::Program& program : try_lock_programs()) {
+        compare_program(program, "try-lock", program_index++, stats);
+    }
 
-    if (stats.skipped * 5 > stats.attempted) {
-        throw std::runtime_error("model inclusion skip rate exceeded 20 percent");
+    if (stats.skipped != 0) {
+        throw std::runtime_error("model inclusion corpus must have zero skips");
     }
     if (stats.barrier_attempted == 0 ||
         stats.barrier_compared != stats.barrier_attempted ||
         stats.barrier_skipped != 0) {
         throw std::runtime_error("model inclusion barrier corpus was skipped");
+    }
+    if (stats.try_lock_attempted == 0 ||
+        stats.try_lock_compared != stats.try_lock_attempted ||
+        stats.try_lock_skipped != 0) {
+        throw std::runtime_error("model inclusion TryLock corpus was skipped");
     }
     for (std::size_t bug = 0; bug < static_cast<std::size_t>(BugKind::Count); ++bug) {
         if (stats.sc_antecedents[bug] == 0 || stats.tso_antecedents[bug] == 0) {
@@ -528,6 +592,9 @@ int main() {
               << " barrier_attempted=" << stats.barrier_attempted
               << " barrier_compared=" << stats.barrier_compared
               << " barrier_skipped=" << stats.barrier_skipped
+              << " try_lock_attempted=" << stats.try_lock_attempted
+              << " try_lock_compared=" << stats.try_lock_compared
+              << " try_lock_skipped=" << stats.try_lock_skipped
               << " bug_kinds_exercised=5"
               << " seed=0x7b83d52fa9614c0d\n";
     return 0;
