@@ -340,6 +340,54 @@ beyond bounded verdicts:
   was handled with an explicit honest estimator; the initially failing 27.8%
   reading remains in the story.
 
+## The tenth campaign: collective barriers and the last arriver
+
+- **Barrier happens-before is collective, not pairwise** — for generation `g`,
+  each arrival joins its post-tick clock into `R_g`; release then joins that
+  clock, the join of **all** generation arrivals, into every participant before
+  any can continue. Completion clears both the arrival set and `R_g` before the
+  barrier name is reused, so a later generation cannot inherit a false edge
+  merely by naming the same barrier. Real cross-generation order survives in
+  the clocks of participants that actually carry it through program order and
+  arrive again.
+- **The first same-pc wait-like action forced an explicit proof amendment** —
+  a non-last `BarrierWait` is a completed transition whose participant remains
+  at the same source endpoint. ADR 0023's fingerprint-elision classifier could
+  not simply assume its old well-foundedness argument still applied: the
+  current generation's sorted arrival set had to enter the behavioral
+  fingerprint. In an acyclic program each non-last arrival strictly grows that
+  set and disables its thread; only another thread's source arrival can empty
+  it while advancing every parked pc, after which no participant can return to
+  the old endpoint without backward control flow. That extension, rather than
+  analogy, keeps elision legal.
+- **Early-arrival independence is state-dependent and deliberately narrow** —
+  with `k` arrivals and party count `p`, two co-enabled same-generation
+  arrivals commute only when `k + 2 < p`. Equality means the second transition
+  releases the generation and therefore stays dependent. Four safeguards make
+  that local diamond usable by the full reducer: persistent closure retains all
+  co-enabled same-generation arrival siblings; sleep inheritance uses the
+  parent's barrier snapshot and requires the exact occurrence to remain
+  enabled; incomplete-barrier repairs keep the conservative all-enabled
+  fallback while a last arrival depends on the later actions it releases; and
+  generation stamps distinguish cyclic occurrences that share the same public
+  `(thread, action_index)`.
+- **The pruning claim has an exact three-party witness** — three one-action
+  threads produce all `3! = 6` arrival orders under naive exploration. For each
+  possible last arriver, the other two arrive early at `k == 0` and commute, so
+  their two orders collapse to one representative. The completion transition
+  remains dependent, leaving exactly three DPOR schedules: one class per last
+  arriver, with no attempt to collapse the collective release itself.
+- **The gates widened while the meter did not move** — the two-thread oracle
+  checked 22,269 programs over 24 actions (79,060 naive / 35,882 DPOR), the
+  three-thread sweep checked 65,544 over 22 (833,863 / 336,551), TSO checked
+  10,698 over 12 (121,409 / 28,970), and PSO checked 5,579 over 12 with zero
+  capped skips (54,521 / 15,920). Fixed-seed fuzz generated 1,100 barrier waits
+  across 3,000 programs, comparing 2,977 and reporting 23 capped cases;
+  cross-model inclusion completed 17,170 checks over 1,717 programs, including
+  all four barrier programs with zero barrier skips. Both 26-suite build
+  flavors passed, and the optimality lines remained byte-identical at SC 1.067,
+  TSO 1.152, and PSO 1.154.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
