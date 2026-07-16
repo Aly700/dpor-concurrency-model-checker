@@ -11,6 +11,13 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
+option(DPOR_BUILD_EXPLORATION_PROFILE
+       "Build deterministic exploration-cost instrumentation targets"
+       OFF)
+option(DPOR_ENABLE_RESTORE_ASSERTS
+       "Enable deterministic sampled full-state/history restore assertions"
+       OFF)
+
 add_library(model_checker
     src/model/action.cpp
     src/model/vector_clock.cpp
@@ -18,6 +25,9 @@ add_library(model_checker
 )
 target_include_directories(model_checker PUBLIC include)
 target_compile_options(model_checker PRIVATE -Wall -Wextra -Wpedantic)
+if(DPOR_ENABLE_RESTORE_ASSERTS)
+    target_compile_definitions(model_checker PRIVATE DPOR_RESTORE_ASSERTS=1)
+endif()
 
 add_library(dpor_cli_lib
     src/cli/program_parser.cpp
@@ -111,6 +121,55 @@ add_executable(dpor_fuzz_differential
 )
 target_link_libraries(dpor_fuzz_differential PRIVATE dpor_cli_lib)
 target_compile_options(dpor_fuzz_differential PRIVATE -Wall -Wextra -Wpedantic)
+
+if(DPOR_BUILD_EXPLORATION_PROFILE)
+    add_library(model_checker_profiled
+        src/model/action.cpp
+        src/model/vector_clock.cpp
+        src/model/checker.cpp
+        src/model/exploration_metrics.cpp
+    )
+    target_include_directories(model_checker_profiled PUBLIC include)
+    target_compile_definitions(model_checker_profiled PRIVATE DPOR_EXPLORATION_METRICS=1)
+    if(DPOR_ENABLE_RESTORE_ASSERTS)
+        target_compile_definitions(model_checker_profiled PRIVATE DPOR_RESTORE_ASSERTS=1)
+    endif()
+    target_compile_options(model_checker_profiled PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_library(dpor_cli_lib_profiled
+        src/cli/program_parser.cpp
+        src/cli/report.cpp
+    )
+    target_include_directories(dpor_cli_lib_profiled PUBLIC src/cli)
+    target_link_libraries(dpor_cli_lib_profiled PUBLIC model_checker_profiled)
+    target_compile_options(dpor_cli_lib_profiled PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(exploration_metrics_tests tests/exploration_metrics.cpp)
+    target_link_libraries(exploration_metrics_tests PRIVATE model_checker_profiled)
+
+    add_executable(dpor_oracle_profile tests/dpor_oracle.cpp)
+    target_link_libraries(dpor_oracle_profile PRIVATE model_checker_profiled)
+
+    add_executable(dpor_optimality_profile tests/dpor_optimality.cpp)
+    target_link_libraries(dpor_optimality_profile PRIVATE model_checker_profiled)
+
+    add_executable(dpor_oracle_3threads_profile tests/dpor_oracle_3threads.cpp)
+    target_link_libraries(dpor_oracle_3threads_profile PRIVATE model_checker_profiled)
+
+    add_executable(tso_oracle_profile tests/tso_oracle.cpp)
+    target_link_libraries(tso_oracle_profile PRIVATE model_checker_profiled)
+
+    add_executable(pso_oracle_profile tests/pso_oracle.cpp)
+    target_link_libraries(pso_oracle_profile PRIVATE model_checker_profiled)
+
+    add_executable(classic_gallery_tests_profile tests/classic_gallery.cpp)
+    target_link_libraries(classic_gallery_tests_profile PRIVATE dpor_cli_lib_profiled)
+    target_compile_options(classic_gallery_tests_profile PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(dpor_fuzz_differential_profile tests/fuzz_differential.cpp)
+    target_link_libraries(dpor_fuzz_differential_profile PRIVATE dpor_cli_lib_profiled)
+    target_compile_options(dpor_fuzz_differential_profile PRIVATE -Wall -Wextra -Wpedantic)
+endif()
 
 include(CTest)
 add_test(NAME dpor_smoke COMMAND dpor_smoke)

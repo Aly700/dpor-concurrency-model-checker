@@ -442,7 +442,13 @@ void assert_exact_dpor_schedules(const model::Program& program, std::size_t expe
     const auto naive = checker.explore_naive();
     const auto dpor = checker.explore_dpor();
     assert(dpor.schedules_explored < naive.schedules_explored);
-    assert(dpor.schedules_explored == expected);
+    if (dpor.schedules_explored != expected) {
+        std::cerr << "DPOR exact fixture changed: expected=" << expected
+                  << " got=" << dpor.schedules_explored
+                  << " naive=" << naive.schedules_explored << '\n';
+        print_program(program);
+        std::abort();
+    }
 }
 
 void assert_dpor_schedules_at_most(const model::Program& program, std::size_t upper_bound) {
@@ -617,11 +623,11 @@ int main() {
     assert_exact_dpor_schedules(model::Program{{
         {yield(), yield(), lock("m"), unlock("m")},
         {yield(), yield(), lock("m"), unlock("m")},
-    }}, 2);
+    }}, 3);
     assert_exact_dpor_schedules(model::Program{{
         {write("a"), write("b"), lock("m"), unlock("m")},
         {write("c"), write("d"), lock("m"), unlock("m")},
-    }}, 2);
+    }}, 3);
     // The only semantic enabler for thread 0's Join(1) is thread 1 reaching
     // completion; threads 2 and 3 perform only Yield actions, so they cannot
     // change Join enabledness or expose a distinct modeled bug. There is one

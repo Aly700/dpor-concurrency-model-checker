@@ -14,6 +14,21 @@
   behavioral states on one execution path. A lossy hash is forbidden because a
   collision would fabricate a false divergence proof. Fingerprint history is
   reset on backtrack and must never deduplicate states across executions.
+- Fingerprint history is one path-local map shared by recursive DFS frames.
+  Every fingerprint inserted for a child must be erased exactly once on every
+  return path, including cycle cuts, schedule caps, and exceptions. Debug
+  restore sampling compares the complete parent execution state and history
+  with reference copies after the erase; sampling is a deterministic function
+  of the numeric schedule, never time, randomness, or host scheduling.
+- Cycle history may be omitted only when a static scan proves that the program
+  has no `BranchNonzero` whose label-normalized target is its own action or an
+  earlier action. In that case source transitions monotonically advance a
+  normalized pc, TSO/PSO-only transitions strictly drain a finite buffer, and
+  the first phase of `Wait` cannot return to its prior behavioral state without
+  a signaling source transition that advances a pc. Therefore a complete
+  behavioral state cannot recur. Any future action that can decrease a pc or
+  repeatedly mutate behavioral state without advancing a pc must extend or
+  invalidate this proof before fingerprint elision is allowed (adr/0023).
 - The behavioral state includes normalized per-thread PCs, startedness, wait
   phases, registers, memory values, mutex owners, nonzero semaphore permit
   counts, condition-variable wait sets, and ordered TSO store buffers or

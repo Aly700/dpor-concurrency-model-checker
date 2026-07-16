@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted (deferral).
+Superseded by ADR 0023 after the recorded revisit conditions fired.
 
 ## Context
 

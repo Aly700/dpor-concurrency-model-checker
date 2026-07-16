@@ -164,6 +164,41 @@ over every explored schedule is complete for this model: if a modeled race or
 deadlock is reachable in any enabled interleaving, the naive oracle will visit a
 prefix that reports it.
 
+## Exploration State and Cost Control
+
+Both explorers still copy `ExecutionState` for each executable child. ADR 0023
+measured that copy traffic, but found that the larger multiplier was copying
+the complete behavioral-fingerprint history alongside every child. DFS now
+owns one history map per active path: a child inserts its exact fingerprint and
+an RAII restore guard erases that precise insertion on return. Map iterators are
+stable across descendant insertions and erasures, so nested guards restore the
+same map value that a reference copy would have contained. A Debug-only,
+deterministically sampled boundary assertion compares both the complete parent
+`ExecutionState` and the restored history against reference copies.
+
+Programs without a normalized self/backward `BranchNonzero` do not allocate or
+construct cycle history. Every ordinary source step advances a normalized pc;
+the exceptional first `Wait` phase changes the fingerprinted wait/ownership
+state and needs a later pc-advancing signal before it can resume; and TSO/PSO
+flush-only progress strictly drains finite buffers. Those well-founded measures
+exclude an exact repeated behavioral state. This classifier must be revisited
+if the action set gains any other pc-decreasing or same-pc repeatable state
+transition.
+
+At a DPOR node, enabled schedule steps are collected once and that exact sorted
+vector is reused to materialize the effective-transition map. Sleep-set
+inheritance returns immediately when the parent sleep set is empty, since its
+result is necessarily empty. These changes remove duplicate enabledness scans
+without reconstructing or reordering a choice set.
+
+Default-off profile targets (`DPOR_BUILD_EXPLORATION_PROFILE`) add deterministic
+logical counters for state/history copy volume, fingerprints, clocks,
+enabledness, transition maps, replay, and report bookkeeping. They are a serial
+diagnostic facility, not part of normal exploration and not a source of timing
+inside the core. Some counters are intentionally lower-bound proxies (for
+example, gallery CLI child processes are separate), so wall-time claims come
+only from uninstrumented Release harness runs.
+
 ## DPOR Reduction
 
 DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, done, and
