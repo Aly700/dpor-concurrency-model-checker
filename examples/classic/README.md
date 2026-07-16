@@ -17,6 +17,7 @@ treated as findings, not as a reason to adjust core semantics.
 | Failed-CAS handoff (`failed_cas_handoff.dpor`) | A failed CAS acquire orders a later plain payload read after the writer's release store | Nontermination; no race/assertion | `failed_cas_handoff_broken_no_retry.dpor` reads payload after a successful pre-publication CAS |
 | Reader-writer lock publication (`readers_writers.dpor`) | A reader excludes the writer and sees the writer's published payload | Clean | `readers_writers_broken.dpor` skips the reader lock, exposing both the payload race and an overlapping-writer assertion |
 | Dining philosophers (`dining_philosophers.dpor`) | A total fork order lets all three philosophers finish | Clean | `dining_philosophers_broken.dpor` acquires every left fork first, exposing a three-thread circular-wait deadlock |
+| Cyclic barrier phases (`cyclic_barrier_phases.dpor`) | Every worker sees all publications made before each three-party phase boundary, and the same barrier resets for generation two | Clean | `cyclic_barrier_phases_broken_missing_worker.dpor` omits one worker from the final phase, leaving the other two waiting forever |
 
 ### SC/TSO/PSO verdicts
 
@@ -69,3 +70,7 @@ fences drain every pending address before the entry checks.
   The ordered variant breaks the cycle by making the last philosopher acquire
   `fork0` before `fork2`; the broken variant retains left-then-right order for
   all three philosophers.
+- The cyclic-barrier pair uses one named three-party barrier twice. All three
+  disjoint writes precede every read through generation one's all-arrivals
+  release. The broken variant deliberately ends worker 2 before generation
+  two, so workers 0 and 1 report `waiting_on_barrier` rather than completing.

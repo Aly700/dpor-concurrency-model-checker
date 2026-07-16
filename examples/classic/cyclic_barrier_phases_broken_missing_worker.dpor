@@ -1,0 +1,18 @@
+# The third worker omits the last phase boundary. The first generation still
+# releases correctly, but only two parties can reach generation two.
+thread:
+  write shard0 10
+  barrier_wait phase 3
+  read shard1 -> r0
+  barrier_wait phase 3
+
+thread:
+  write shard1 20
+  barrier_wait phase 3
+  read shard2 -> r0
+  barrier_wait phase 3
+
+thread:
+  write shard2 30
+  barrier_wait phase 3
+  read shard0 -> r0

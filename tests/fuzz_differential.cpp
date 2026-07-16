@@ -36,6 +36,7 @@ enum class Choice {
     WUnlock,
     SemPost,
     SemWait,
+    BarrierWait,
     Wait,
     Signal,
     Broadcast,
@@ -73,6 +74,8 @@ struct FuzzStats {
     std::array<std::size_t, 4> rwlock_actions{};
     // Rows are MostlyWellFormed/Adversarial; columns are SemPost/SemWait.
     std::array<std::array<std::size_t, 2>, 2> semaphore_actions{};
+    // MostlyWellFormed/Adversarial BarrierWait counts.
+    std::array<std::size_t, 2> barrier_waits{};
 };
 
 model::Action read(std::string address) {
@@ -160,6 +163,14 @@ model::Action sem_post(std::string semaphore) {
 
 model::Action sem_wait(std::string semaphore) {
     return semaphore_action(model::ActionKind::SemWait, std::move(semaphore));
+}
+
+model::Action barrier_wait(std::string barrier, std::uint32_t parties) {
+    model::Action action;
+    action.kind = model::ActionKind::BarrierWait;
+    action.barrier = std::move(barrier);
+    action.parties = parties;
+    return action;
 }
 
 model::Action wait(std::string condition, std::string mutex) {
@@ -376,6 +387,13 @@ std::string random_semaphore(std::mt19937_64& rng) {
     return bounded(rng, 2) == 0 ? "sem0" : "sem1";
 }
 
+model::Action random_barrier(std::mt19937_64& rng) {
+    // The name fixes the party count program-wide, so generated programs
+    // exercise barrier behavior instead of the separate static-mismatch path.
+    return bounded(rng, 2) == 0 ? barrier_wait("bar0", 2)
+                                : barrier_wait("bar1", 3);
+}
+
 std::string random_condition(std::mt19937_64& rng, std::size_t condition_count) {
     assert(condition_count >= 1 && condition_count <= 2);
     if (condition_count == 1 || bounded(rng, condition_count) == 0) {
@@ -481,6 +499,7 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         {Choice::Join, 14},
         {Choice::SemPost, 10},
         {Choice::SemWait, 10},
+        {Choice::BarrierWait, 12},
         {Choice::Fence, 5},
         {Choice::Yield, 4},
     };
@@ -537,6 +556,8 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         return sem_post(random_semaphore(rng));
     case Choice::SemWait:
         return sem_wait(random_semaphore(rng));
+    case Choice::BarrierWait:
+        return random_barrier(rng);
     case Choice::Wait:
         return wait(random_condition(rng, condition_count),
                     held_mutexes.at(bounded(rng, held_mutexes.size())));
@@ -580,6 +601,7 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         {Choice::Join, 14},
         {Choice::SemPost, 8},
         {Choice::SemWait, 12},
+        {Choice::BarrierWait, 10},
         {Choice::Fence, 5},
         {Choice::Yield, 4},
     };
@@ -605,6 +627,8 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         return sem_post(random_semaphore(rng));
     case Choice::SemWait:
         return sem_wait(random_semaphore(rng));
+    case Choice::BarrierWait:
+        return random_barrier(rng);
     case Choice::Wait:
         return wait(random_condition(rng, condition_count), random_mutex(rng));
     case Choice::Signal:
@@ -954,6 +978,21 @@ void assert_semaphore_spellings_round_trip() {
     }
 }
 
+void assert_barrier_spelling_round_trips() {
+    const model::Program program{{{
+        barrier_wait("bar0", 2),
+        barrier_wait("bar1", 3),
+    }}};
+    const std::string rendered = cli::render_program(program);
+    if (rendered !=
+            "thread:\n"
+            "  barrier_wait bar0 2\n"
+            "  barrier_wait bar1 3\n" ||
+        cli::parse_program_text(rendered).threads != program.threads) {
+        throw std::runtime_error("barrier spelling did not round-trip exactly");
+    }
+}
+
 void check_program(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
@@ -992,6 +1031,12 @@ void check_program(std::uint64_t seed,
                 if (mode != GenerationMode::Value) {
                     ++stats.semaphore_actions[
                         mode == GenerationMode::MostlyWellFormed ? 0 : 1][1];
+                }
+                break;
+            case model::ActionKind::BarrierWait:
+                if (mode != GenerationMode::Value) {
+                    ++stats.barrier_waits[
+                        mode == GenerationMode::MostlyWellFormed ? 0 : 1];
                 }
                 break;
             default:
@@ -1075,6 +1120,7 @@ std::uint64_t parse_seed(const char* text) {
 int main(int argc, char** argv) {
     assert_rwlock_spellings_round_trip();
     assert_semaphore_spellings_round_trip();
+    assert_barrier_spelling_round_trips();
 
     // CTest uses these fixed seeds for deterministic coverage. Supplying one
     // or more argv seeds replaces the fixed set for manual exploration, e.g.
@@ -1146,6 +1192,8 @@ int main(int argc, char** argv) {
               << stats.semaphore_actions[0][0] + stats.semaphore_actions[1][0]
               << " sem_wait_actions="
               << stats.semaphore_actions[0][1] + stats.semaphore_actions[1][1]
+              << " barrier_waits_generated="
+              << stats.barrier_waits[0] + stats.barrier_waits[1]
               << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
@@ -1160,6 +1208,12 @@ int main(int argc, char** argv) {
             throw std::runtime_error(
                 "fuzz lane did not generate both semaphore actions");
         }
+    }
+    if (argc == 1 &&
+        (stats.barrier_waits[0] == 0 || stats.barrier_waits[1] == 0 ||
+         stats.barrier_waits[0] + stats.barrier_waits[1] < 200)) {
+        throw std::runtime_error(
+            "fuzz lanes did not generate hundreds of BarrierWait actions");
     }
     return 0;
 }

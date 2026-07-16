@@ -755,6 +755,128 @@ void assert_semaphore_parser_is_strict_and_namespace_is_distinct(
     }
 }
 
+void assert_barrier_syntax_and_witnesses_round_trip_byte_identically(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    // parties==1 exercises immediate cyclic-barrier release and canonical
+    // action rendering while preserving exact check/replay report identity.
+    assert_check_replay_byte_identity(
+        binary,
+        work_dir,
+        "cli_barrier_spelling",
+        "thread:\n"
+        "  barrier_wait phase 1\n"
+        "  assert r0\n",
+        "assertion",
+        {"barrier_wait phase 1"});
+
+    assert_check_replay_byte_identity(
+        binary,
+        work_dir,
+        "cli_barrier_waiting",
+        "thread:\n"
+        "  barrier_wait phase 2\n",
+        "deadlock",
+        {"barrier_wait phase 2", "barrier phase waiting_on_barrier"});
+}
+
+void assert_barrier_parser_is_strict_and_namespace_is_distinct(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    struct ParseCase {
+        std::string stem;
+        std::string action;
+        std::string expected;
+    };
+    const std::vector<ParseCase> parse_cases = {
+        {"uppercase", "BarrierWait phase 2", "unknown keyword 'BarrierWait'"},
+        {"missing_name_and_parties", "barrier_wait", "expects 2 operands"},
+        {"missing_parties", "barrier_wait phase", "expects 2 operands"},
+        {"extra", "barrier_wait phase 2 extra", "expects 2 operands"},
+        {"zero", "barrier_wait phase 0", "parties must be greater than zero"},
+        {"negative", "barrier_wait phase -1", "invalid barrier parties '-1'"},
+        {"nonnumeric", "barrier_wait phase two", "invalid barrier parties 'two'"},
+        {"overflow", "barrier_wait phase 4294967296", "barrier parties is too large"},
+    };
+    for (const ParseCase& parse_case : parse_cases) {
+        const auto program_path = work_dir / ("cli_barrier_" + parse_case.stem + ".dpor");
+        write_file(program_path, "thread:\n  " + parse_case.action + "\n");
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_barrier_" + parse_case.stem + ".out"),
+            work_dir / ("cli_barrier_" + parse_case.stem + ".err"));
+        require_cli(result.exit_code == 2,
+                    parse_case.stem + " barrier syntax should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    parse_case.stem + " barrier syntax wrote stdout");
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    parse_case.stem + " barrier syntax omitted its line");
+        require_cli(result.stderr_text.find(parse_case.expected) != std::string::npos,
+                    parse_case.stem + " barrier syntax diagnostic mismatch: " +
+                        result.stderr_text);
+    }
+
+    const auto mismatch_path = work_dir / "cli_barrier_party_mismatch.dpor";
+    write_file(mismatch_path,
+               "thread:\n"
+               "  barrier_wait phase 2\n"
+               "thread:\n"
+               "  barrier_wait phase 3\n");
+    const auto mismatch = run_command(
+        binary,
+        {"check", mismatch_path.string()},
+        work_dir / "cli_barrier_party_mismatch.out",
+        work_dir / "cli_barrier_party_mismatch.err");
+    require_cli(mismatch.exit_code == 2, "barrier party mismatch should be rejected");
+    require_cli(mismatch.stdout_text.empty(), "barrier party mismatch wrote stdout");
+    require_cli(mismatch.stderr_text.find("line 4") != std::string::npos,
+                "barrier party mismatch omitted the mismatch line");
+    require_cli(mismatch.stderr_text.find("requires 2 parties") != std::string::npos,
+                "barrier party mismatch omitted the required party count");
+    require_cli(mismatch.stderr_text.find("first use on line 2") != std::string::npos,
+                "barrier party mismatch omitted the first-use line");
+    require_cli(mismatch.stderr_text.find("specifies 3") != std::string::npos,
+                "barrier party mismatch omitted the conflicting party count");
+
+    struct CollisionCase {
+        std::string stem;
+        std::string program_text;
+        std::string other_namespace;
+    };
+    const std::vector<CollisionCase> collisions = {
+        {"barrier_then_mutex", "thread:\n  barrier_wait shared 1\n  lock shared\n", "mutex"},
+        {"mutex_then_barrier", "thread:\n  lock shared\n  barrier_wait shared 1\n", "mutex"},
+        {"barrier_then_rwlock", "thread:\n  barrier_wait shared 1\n  rlock shared\n", "rwlock"},
+        {"rwlock_then_barrier", "thread:\n  wlock shared\n  barrier_wait shared 1\n", "rwlock"},
+        {"barrier_then_semaphore", "thread:\n  barrier_wait shared 1\n  sem_post shared\n", "semaphore"},
+        {"semaphore_then_barrier", "thread:\n  sem_wait shared\n  barrier_wait shared 1\n", "semaphore"},
+        {"barrier_then_condition", "thread:\n  barrier_wait shared 1\n  signal shared\n", "condition variable"},
+        {"condition_then_barrier", "thread:\n  broadcast shared\n  barrier_wait shared 1\n", "condition variable"},
+    };
+    for (const CollisionCase& collision : collisions) {
+        const auto program_path = work_dir / ("cli_" + collision.stem + ".dpor");
+        write_file(program_path, collision.program_text);
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_" + collision.stem + ".out"),
+            work_dir / ("cli_" + collision.stem + ".err"));
+        require_cli(result.exit_code == 2,
+                    collision.stem + " namespace collision should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    collision.stem + " namespace collision wrote stdout");
+        require_cli(result.stderr_text.find("line 3") != std::string::npos,
+                    collision.stem + " collision omitted the conflict line");
+        require_cli(result.stderr_text.find("barrier") != std::string::npos,
+                    collision.stem + " collision omitted barrier");
+        require_cli(result.stderr_text.find(collision.other_namespace) != std::string::npos,
+                    collision.stem + " collision omitted " + collision.other_namespace);
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    collision.stem + " collision omitted the first-use line");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -781,5 +903,7 @@ int main(int argc, char** argv) {
     assert_rwlock_parser_is_strict_and_namespaces_are_distinct(binary, work_dir);
     assert_semaphore_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
     assert_semaphore_parser_is_strict_and_namespace_is_distinct(binary, work_dir);
+    assert_barrier_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
+    assert_barrier_parser_is_strict_and_namespace_is_distinct(binary, work_dir);
     return 0;
 }

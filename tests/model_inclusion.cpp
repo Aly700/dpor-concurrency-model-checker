@@ -107,6 +107,14 @@ model::Action sem_wait(std::string semaphore) {
     return semaphore_action(model::ActionKind::SemWait, std::move(semaphore));
 }
 
+model::Action barrier_wait(std::string barrier, std::uint32_t parties) {
+    model::Action action;
+    action.kind = model::ActionKind::BarrierWait;
+    action.barrier = std::move(barrier);
+    action.parties = parties;
+    return action;
+}
+
 model::Action join(model::ThreadId target) {
     model::Action action;
     action.kind = model::ActionKind::Join;
@@ -156,7 +164,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 18> kEnumeratedActions{
+const std::array<model::Action, 19> kEnumeratedActions{
     read("x"),
     write("x"),
     write("y"),
@@ -175,9 +183,10 @@ const std::array<model::Action, 18> kEnumeratedActions{
     wunlock("rw"),
     sem_post("sem"),
     sem_wait("sem"),
+    barrier_wait("bar", 2),
 };
 
-const std::array<model::Action, 22> kFuzzActions{
+const std::array<model::Action, 23> kFuzzActions{
     read("x", 0),
     read("y", 1),
     write("x", 1),
@@ -200,6 +209,7 @@ const std::array<model::Action, 22> kFuzzActions{
     wunlock("rw"),
     sem_post("sem"),
     sem_wait("sem"),
+    barrier_wait("bar", 2),
 };
 
 using BugVector = std::array<bool, static_cast<std::size_t>(BugKind::Count)>;
@@ -247,6 +257,9 @@ std::string action_text(const model::Action& action) {
     }
     if (!action.semaphore.empty()) {
         out << " semaphore=" << action.semaphore;
+    }
+    if (!action.barrier.empty()) {
+        out << " barrier=" << action.barrier << " parties=" << action.parties;
     }
     if (!action.label.empty()) {
         out << " label=" << action.label;
@@ -300,6 +313,9 @@ struct InclusionStats {
     std::size_t enumerated{0};
     std::size_t fuzz{0};
     std::size_t hand_picked{0};
+    std::size_t barrier_attempted{0};
+    std::size_t barrier_compared{0};
+    std::size_t barrier_skipped{0};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> sc_antecedents{};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> tso_antecedents{};
 };
@@ -311,6 +327,10 @@ void compare_program(const model::Program& program,
     constexpr std::size_t kStepBound = 24;
     constexpr std::size_t kMaxSchedules = 50000;
     ++stats.attempted;
+    const bool barrier_gate = std::string(source) == "barrier";
+    if (barrier_gate) {
+        ++stats.barrier_attempted;
+    }
 
     std::array<model::CheckResult, 3> results;
     for (std::size_t index = 0; index < results.size(); ++index) {
@@ -321,6 +341,9 @@ void compare_program(const model::Program& program,
     for (const model::CheckResult& result : results) {
         if (result.exploration_capped || result.bound_exceeded_executions > 0) {
             ++stats.skipped;
+            if (barrier_gate) {
+                ++stats.barrier_skipped;
+            }
             return;
         }
     }
@@ -358,11 +381,14 @@ void compare_program(const model::Program& program,
     }
 
     ++stats.compared;
+    if (barrier_gate) {
+        ++stats.barrier_compared;
+    }
     if (std::string(source) == "enumerated") {
         ++stats.enumerated;
     } else if (std::string(source) == "fuzz") {
         ++stats.fuzz;
-    } else {
+    } else if (std::string(source) == "hand-picked") {
         ++stats.hand_picked;
     }
 }
@@ -423,6 +449,24 @@ std::vector<model::Program> hand_picked_programs() {
     };
 }
 
+std::vector<model::Program> barrier_programs() {
+    return {
+        // A complete generation drains buffered publications and joins both
+        // arrivals before either participant continues.
+        model::Program{{{write("x", 1), barrier_wait("bar", 2), read("y", 0)},
+                        {write("y", 1), barrier_wait("bar", 2), read("x", 1)}}},
+        // The same object resets and releases a second generation.
+        model::Program{{{barrier_wait("bar", 2), barrier_wait("bar", 2)},
+                        {barrier_wait("bar", 2), barrier_wait("bar", 2)}}},
+        // An incomplete generation is a model-independent barrier deadlock.
+        model::Program{{{barrier_wait("bar", 3)}, {barrier_wait("bar", 3)}}},
+        // Exercise three-party last arrival under every memory model.
+        model::Program{{{barrier_wait("bar", 3)},
+                        {barrier_wait("bar", 3)},
+                        {barrier_wait("bar", 3)}}},
+    };
+}
+
 } // namespace
 
 int main() {
@@ -456,9 +500,17 @@ int main() {
     for (const model::Program& program : hand_picked_programs()) {
         compare_program(program, "hand-picked", program_index++, stats);
     }
+    for (const model::Program& program : barrier_programs()) {
+        compare_program(program, "barrier", program_index++, stats);
+    }
 
     if (stats.skipped * 5 > stats.attempted) {
         throw std::runtime_error("model inclusion skip rate exceeded 20 percent");
+    }
+    if (stats.barrier_attempted == 0 ||
+        stats.barrier_compared != stats.barrier_attempted ||
+        stats.barrier_skipped != 0) {
+        throw std::runtime_error("model inclusion barrier corpus was skipped");
     }
     for (std::size_t bug = 0; bug < static_cast<std::size_t>(BugKind::Count); ++bug) {
         if (stats.sc_antecedents[bug] == 0 || stats.tso_antecedents[bug] == 0) {
@@ -473,6 +525,9 @@ int main() {
               << " enumerated=" << stats.enumerated
               << " fuzz=" << stats.fuzz
               << " hand_picked=" << stats.hand_picked
+              << " barrier_attempted=" << stats.barrier_attempted
+              << " barrier_compared=" << stats.barrier_compared
+              << " barrier_skipped=" << stats.barrier_skipped
               << " bug_kinds_exercised=5"
               << " seed=0x7b83d52fa9614c0d\n";
     return 0;

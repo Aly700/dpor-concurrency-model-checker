@@ -70,6 +70,18 @@ struct SemaphoreState {
     bool operator==(const SemaphoreState&) const = default;
 };
 
+struct BarrierState {
+    // The ordinal is private occurrence identity for DPOR/replay bookkeeping.
+    // It is deliberately excluded from behavioral fingerprints because source
+    // programs cannot observe it.
+    std::uint64_t generation{0};
+    std::uint32_t parties{0};
+    std::set<ThreadId> arrivals;
+    VectorClock arrival_releases;
+
+    bool operator==(const BarrierState&) const = default;
+};
+
 struct ExecutionState {
     MemoryModel memory_model{MemoryModel::SC};
     std::vector<std::uint32_t> pc;
@@ -78,6 +90,7 @@ struct ExecutionState {
     std::map<std::string, VectorClock> mutex_clock;
     std::map<std::string, RwLockState> rwlocks;
     std::map<std::string, SemaphoreState> semaphores;
+    std::map<std::string, BarrierState> barriers;
     std::map<std::string, std::vector<ThreadId>> condition_waiters;
     std::vector<VectorClock> thread_clock;
     std::vector<std::array<Value, kRegisterCount>> registers;
@@ -107,7 +120,8 @@ std::uint64_t diagnostic_clock_components(const VectorClock& clock) {
 
 std::uint64_t diagnostic_action_string_bytes(const Action& action) {
     return action.address.size() + action.mutex.size() + action.rwlock.size() +
-           action.semaphore.size() + action.condition.size() + action.label.size();
+           action.semaphore.size() + action.condition.size() + action.label.size() +
+           action.barrier.size();
 }
 
 void record_branch_state_copy(const ExecutionState& state, bool collector = false) {
@@ -125,7 +139,8 @@ void record_branch_state_copy(const ExecutionState& state, bool collector = fals
         state.flush_addresses.size();
     metrics.branch_state_map_nodes_copied +=
         state.mutex_owner.size() + state.mutex_clock.size() + state.rwlocks.size() +
-        state.semaphores.size() + state.condition_waiters.size() + state.memory.size() +
+        state.semaphores.size() + state.barriers.size() +
+        state.condition_waiters.size() + state.memory.size() +
         state.memory_values.size() + state.atomic_location_clock.size();
 
     for (const auto& [name, owner] : state.mutex_owner) {
@@ -148,6 +163,13 @@ void record_branch_state_copy(const ExecutionState& state, bool collector = fals
         metrics.branch_state_string_bytes_copied += name.size();
         metrics.branch_state_clock_components_copied +=
             diagnostic_clock_components(semaphore.post_releases);
+    }
+    for (const auto& [name, barrier] : state.barriers) {
+        metrics.branch_state_string_bytes_copied += name.size();
+        metrics.branch_state_map_nodes_copied += barrier.arrivals.size();
+        metrics.branch_state_container_elements_copied += barrier.arrivals.size();
+        metrics.branch_state_clock_components_copied +=
+            diagnostic_clock_components(barrier.arrival_releases);
     }
     for (const auto& [condition, waiters] : state.condition_waiters) {
         metrics.branch_state_string_bytes_copied += condition.size();
@@ -305,6 +327,32 @@ StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
         append_u64(fingerprint, static_cast<std::uint64_t>(semaphore.permits));
     }
 
+    // A parked arrival changes enabledness while leaving its source PC on the
+    // BarrierWait action, so every active generation belongs to exact
+    // behavioral state. Empty generations canonicalize to absence. The
+    // absolute generation ordinal and accumulated release clock are excluded:
+    // they are unobservable occurrence/HB instrumentation and including either
+    // would prevent a genuine cyclic barrier loop from closing a lasso.
+    std::size_t active_barriers = 0;
+    for (const auto& [_, barrier] : state.barriers) {
+        if (!barrier.arrivals.empty()) {
+            ++active_barriers;
+        }
+    }
+    append_u64(fingerprint, static_cast<std::uint64_t>(active_barriers));
+    for (const auto& [name, barrier] : state.barriers) {
+        if (barrier.arrivals.empty()) {
+            continue;
+        }
+        append_string(fingerprint, name);
+        append_u64(fingerprint, barrier.parties);
+        append_u64(fingerprint,
+                   static_cast<std::uint64_t>(barrier.arrivals.size()));
+        for (const ThreadId arrival : barrier.arrivals) {
+            append_u64(fingerprint, arrival);
+        }
+    }
+
     // Empty waiter-map entries are observationally identical to absence:
     // Signal/Broadcast treat both as no waiters. Canonicalize them away while
     // preserving each nonempty wait set's deterministic wake order.
@@ -383,7 +431,7 @@ StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
         }
     }
 
-    // Excluded deliberately: mutex/rwlock/semaphore/thread/atomic vector
+    // Excluded deliberately: mutex/rwlock/semaphore/barrier/thread/atomic vector
     // clocks and AddressState race metadata are analysis instrumentation;
     // thread_steps is the exploration budget; schedule is history. None
     // changes program control, enabledness, or modeled values. A repeated
@@ -520,6 +568,7 @@ struct StepReport {
 struct EnabledTransition {
     ScheduleStep endpoint;
     Action effective_action;
+    std::optional<std::uint64_t> barrier_generation;
 };
 
 struct DporNode {
@@ -535,6 +584,7 @@ struct DporNode {
     std::vector<WaitPhase> wait_phase;
     std::vector<std::deque<StoreBufferEntry>> store_buffers;
     std::vector<PsoAddressBuffer> pso_store_buffers;
+    std::map<std::string, BarrierState> barriers;
 };
 
 #if defined(DPOR_EXPLORATION_METRICS)
@@ -544,7 +594,8 @@ void record_dpor_node_snapshot(const ExecutionState& state) {
     metrics.dpor_node_sequence_elements_copied +=
         state.pc.size() + state.started.size() + state.wait_phase.size() +
         state.store_buffers.size() + state.pso_store_buffers.size();
-    metrics.dpor_node_map_nodes_copied += state.mutex_owner.size() + state.rwlocks.size();
+    metrics.dpor_node_map_nodes_copied +=
+        state.mutex_owner.size() + state.rwlocks.size() + state.barriers.size();
     for (const auto& [name, rwlock] : state.rwlocks) {
         metrics.dpor_node_map_nodes_copied += rwlock.reader_holders.size();
         metrics.dpor_node_sequence_elements_copied += rwlock.reader_holders.size();
@@ -556,6 +607,13 @@ void record_dpor_node_snapshot(const ExecutionState& state) {
     for (const auto& buffer : state.store_buffers) {
         metrics.dpor_node_buffer_entries_copied += buffer.size();
         metrics.dpor_node_sequence_elements_copied += buffer.size();
+    }
+    for (const auto& [name, barrier] : state.barriers) {
+        metrics.dpor_node_map_nodes_copied += barrier.arrivals.size();
+        metrics.dpor_node_sequence_elements_copied += barrier.arrivals.size();
+        metrics.dpor_node_clock_components_copied +=
+            diagnostic_clock_components(barrier.arrival_releases);
+        (void)name;
     }
     for (const PsoAddressBuffer& buffers : state.pso_store_buffers) {
         metrics.dpor_node_map_nodes_copied += buffers.size();
@@ -574,6 +632,7 @@ struct ExecutedTransition {
     ScheduleStep endpoint;
     VectorClock clock;
     std::optional<ThreadId> spawned_thread;
+    std::optional<std::uint64_t> barrier_generation;
 };
 
 std::vector<bool> initially_started_threads(const Program& program) {
@@ -610,6 +669,24 @@ std::vector<std::string> program_addresses(const Program& program) {
     return {addresses.begin(), addresses.end()};
 }
 
+std::map<std::string, BarrierState> initial_barriers(const Program& program) {
+    std::map<std::string, BarrierState> barriers;
+    for (const auto& thread : program.threads) {
+        for (const Action& action : thread) {
+            if (action.kind != ActionKind::BarrierWait ||
+                barriers.find(action.barrier) != barriers.end()) {
+                continue;
+            }
+            BarrierState barrier;
+            // Static thread/action order, never execution order, chooses the
+            // canonical program-wide count used by forward model errors.
+            barrier.parties = action.parties;
+            barriers.emplace(action.barrier, std::move(barrier));
+        }
+    }
+    return barriers;
+}
+
 bool is_label_action(const Program& program, ThreadId tid, std::uint32_t pc) {
     return pc < program.threads.at(tid).size() &&
            program.threads.at(tid).at(pc).kind == ActionKind::Label;
@@ -636,6 +713,7 @@ ExecutionState initial_state(const Program& program, MemoryModel memory_model) {
         {},
         {},
         {},
+        initial_barriers(program),
         {},
         std::vector<VectorClock>(program.threads.size()),
         initial_registers(program.threads.size()),
@@ -799,6 +877,7 @@ bool is_buffered_ordered_point(const Action& action) {
     case ActionKind::WUnlock:
     case ActionKind::SemPost:
     case ActionKind::SemWait:
+    case ActionKind::BarrierWait:
     case ActionKind::Wait:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
@@ -920,6 +999,19 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
     case ActionKind::SemWait: {
         const auto semaphore = state.semaphores.find(action.semaphore);
         return semaphore != state.semaphores.end() && semaphore->second.permits > 0;
+    }
+    case ActionKind::BarrierWait: {
+        const auto barrier = state.barriers.find(action.barrier);
+        assert(barrier != state.barriers.end());
+        // Invalid counts remain executable so the forward interpreter reaches
+        // a deterministic modeled-error endpoint. A valid participant parks
+        // at this source PC after its one arrival transition and cannot arrive
+        // again until another thread completes the generation.
+        if (action.parties == 0 || action.parties != barrier->second.parties) {
+            return true;
+        }
+        return barrier->second.arrivals.find(tid) ==
+               barrier->second.arrivals.end();
     }
     case ActionKind::Join:
         if (join_target_is_invalid(program, tid, action)) {
@@ -1049,6 +1141,17 @@ Action effective_action_for_step(const Program& program,
     return effective_next_action(program, state, step.thread);
 }
 
+std::optional<std::uint64_t> barrier_generation_for(
+    const ExecutionState& state,
+    const Action& action) {
+    if (action.kind != ActionKind::BarrierWait) {
+        return std::nullopt;
+    }
+    const auto barrier = state.barriers.find(action.barrier);
+    assert(barrier != state.barriers.end());
+    return barrier->second.generation;
+}
+
 std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& program,
                                                               const ExecutionState& state,
                                                               const std::vector<ScheduleStep>& enabled) {
@@ -1060,6 +1163,7 @@ std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& pro
     for (const ScheduleStep& step : enabled) {
 #if defined(DPOR_EXPLORATION_METRICS)
         Action action = effective_action_for_step(program, state, step);
+        const auto barrier_generation = barrier_generation_for(state, action);
         ++metrics.dpor_enabled_transition_entries;
         ++metrics.effective_actions_materialized;
         metrics.action_string_bytes_materialized += diagnostic_action_string_bytes(action);
@@ -1068,13 +1172,16 @@ std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& pro
             EnabledTransition{
                 step,
                 std::move(action),
+                barrier_generation,
             });
 #else
+        Action action = effective_action_for_step(program, state, step);
         transitions.emplace(
             step,
             EnabledTransition{
                 step,
-                effective_action_for_step(program, state, step),
+                action,
+                barrier_generation_for(state, action),
             });
 #endif
     }
@@ -1109,7 +1216,8 @@ bool transition_enabled_at_node(const DporNode& node, const ExecutedTransition& 
     const auto enabled = node.enabled_transitions.find(transition.endpoint);
     return enabled != node.enabled_transitions.end() &&
            enabled->second.endpoint == transition.endpoint &&
-           enabled->second.effective_action == transition.effective_action;
+           enabled->second.effective_action == transition.effective_action &&
+           enabled->second.barrier_generation == transition.barrier_generation;
 }
 
 bool has_next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
@@ -1369,6 +1477,11 @@ std::optional<std::vector<ScheduleStep>> enabler_heads_for_thread(const Program&
         // unique ownership chain to follow, so preserve the caller's
         // conservative all-enabled fallback.
         break;
+    case ActionKind::BarrierWait:
+        // Any not-yet-arrived participant on this name may complete the
+        // generation. There is no unique enabler, so keep the conservative
+        // all-enabled fallback.
+        break;
     default:
         break;
     }
@@ -1437,6 +1550,10 @@ std::optional<std::vector<ScheduleStep>> disabled_repair_steps(const Program& pr
     case ActionKind::SemWait:
         // Anonymous permits do not identify one concrete posting enabler.
         // Returning no narrowed repair keeps every enabled candidate poster.
+        break;
+    case ActionKind::BarrierWait:
+        // An incomplete generation likewise has no unique last-arrival
+        // enabler. Returning no narrowed repair keeps every enabled candidate.
         break;
     default:
         break;
@@ -1570,6 +1687,144 @@ bool transitions_independent(const Program& program,
     }
 
     return independent(lhs, rhs);
+}
+
+bool node_enabled_transition_matches(
+    const DporNode& node,
+    ThreadId thread,
+    const Action& action,
+    const ScheduleStep& endpoint,
+    std::optional<std::uint64_t> barrier_generation) {
+    if (endpoint.thread != thread) {
+        return false;
+    }
+    const auto enabled = node.enabled_transitions.find(endpoint);
+    return enabled != node.enabled_transitions.end() &&
+           enabled->second.endpoint == endpoint &&
+           enabled->second.effective_action == action &&
+           enabled->second.barrier_generation == barrier_generation;
+}
+
+bool same_barrier_arrivals_independent_at_node(
+    const DporNode& node,
+    ThreadId lhs_thread,
+    const Action& lhs,
+    const ScheduleStep& lhs_endpoint,
+    std::optional<std::uint64_t> lhs_generation,
+    ThreadId rhs_thread,
+    const Action& rhs,
+    const ScheduleStep& rhs_endpoint,
+    std::optional<std::uint64_t> rhs_generation) {
+    assert(lhs.kind == ActionKind::BarrierWait);
+    assert(rhs.kind == ActionKind::BarrierWait);
+    assert(lhs.barrier == rhs.barrier);
+
+    const auto barrier = node.barriers.find(lhs.barrier);
+    if (barrier == node.barriers.end() || lhs.parties == 0 ||
+        lhs.parties != barrier->second.parties ||
+        rhs.parties != barrier->second.parties || !lhs_generation.has_value() ||
+        lhs_generation != rhs_generation ||
+        *lhs_generation != barrier->second.generation ||
+        !node_enabled_transition_matches(
+            node, lhs_thread, lhs, lhs_endpoint, lhs_generation) ||
+        !node_enabled_transition_matches(
+            node, rhs_thread, rhs, rhs_endpoint, rhs_generation) ||
+        barrier->second.arrivals.find(lhs_thread) !=
+            barrier->second.arrivals.end() ||
+        barrier->second.arrivals.find(rhs_thread) !=
+            barrier->second.arrivals.end()) {
+        return false;
+    }
+
+    // Both orders insert exactly the same two thread IDs and join the same two
+    // clocks. They commute only while neither second arrival can complete the
+    // generation. Equality is deliberately dependent: whichever transition
+    // is second performs the all-participant release and changes enabledness.
+    return barrier->second.arrivals.size() + 2 < barrier->second.parties;
+}
+
+bool barrier_arrival_releases_parked_thread(
+    const DporNode& node,
+    ThreadId barrier_thread,
+    const Action& barrier_action,
+    const ScheduleStep& barrier_endpoint,
+    std::optional<std::uint64_t> barrier_generation,
+    ThreadId other_thread) {
+    if (barrier_action.kind != ActionKind::BarrierWait ||
+        !node_enabled_transition_matches(node,
+                                         barrier_thread,
+                                         barrier_action,
+                                         barrier_endpoint,
+                                         barrier_generation)) {
+        return false;
+    }
+    const auto barrier = node.barriers.find(barrier_action.barrier);
+    if (barrier == node.barriers.end() || barrier_action.parties == 0 ||
+        barrier_action.parties != barrier->second.parties ||
+        barrier_generation !=
+            std::optional<std::uint64_t>{barrier->second.generation}) {
+        return false;
+    }
+    return barrier->second.arrivals.size() + 1 == barrier->second.parties &&
+           barrier->second.arrivals.find(other_thread) !=
+               barrier->second.arrivals.end();
+}
+
+bool transitions_independent_at_node(
+    const Program& program,
+    MemoryModel memory_model,
+    const DporNode& node,
+    ThreadId lhs_thread,
+    const Action& lhs,
+    const ScheduleStep& lhs_endpoint,
+    std::optional<std::uint64_t> lhs_generation,
+    ThreadId rhs_thread,
+    const Action& rhs,
+    const ScheduleStep& rhs_endpoint,
+    std::optional<std::uint64_t> rhs_generation) {
+    if (lhs.kind == ActionKind::BarrierWait &&
+        rhs.kind == ActionKind::BarrierWait && lhs.barrier == rhs.barrier) {
+#if defined(DPOR_EXPLORATION_METRICS)
+        ++profile_metrics().dpor_independence_checks;
+#endif
+        return same_barrier_arrivals_independent_at_node(
+            node,
+            lhs_thread,
+            lhs,
+            lhs_endpoint,
+            lhs_generation,
+            rhs_thread,
+            rhs,
+            rhs_endpoint,
+            rhs_generation);
+    }
+
+    // A last arrival advances every already-parked participant to its next
+    // source action and joins its clock. That enabledness/HB edge makes the
+    // release transition dependent with such a participant's later action,
+    // even though the public action-only predicate cannot see the parked set.
+    const bool release_changes_enabledness =
+        barrier_arrival_releases_parked_thread(node,
+                                               lhs_thread,
+                                               lhs,
+                                               lhs_endpoint,
+                                               lhs_generation,
+                                               rhs_thread) ||
+        barrier_arrival_releases_parked_thread(node,
+                                               rhs_thread,
+                                               rhs,
+                                               rhs_endpoint,
+                                               rhs_generation,
+                                               lhs_thread);
+    if (release_changes_enabledness) {
+#if defined(DPOR_EXPLORATION_METRICS)
+        ++profile_metrics().dpor_independence_checks;
+#endif
+        return false;
+    }
+
+    return transitions_independent(
+        program, memory_model, lhs_thread, lhs, rhs_thread, rhs);
 }
 
 std::optional<ScheduleStep> next_unexplored_backtrack(const DporNode& node) {
@@ -1786,6 +2041,25 @@ ModelErrorReport make_branch_error(const Action& action, ScheduleStep endpoint, 
 #endif
     std::ostringstream message;
     message << "thread " << endpoint.thread << " branched to unknown label '" << action.label << "'";
+    return ModelErrorReport{endpoint, message.str(), schedule};
+}
+
+ModelErrorReport make_barrier_error(const Action& action,
+                                    std::uint32_t required_parties,
+                                    ScheduleStep endpoint,
+                                    const Schedule& schedule) {
+#if defined(DPOR_EXPLORATION_METRICS)
+    record_report_schedule_copy(schedule);
+#endif
+    std::ostringstream message;
+    message << "thread " << endpoint.thread << " attempted to wait on barrier '"
+            << action.barrier << "' with " << action.parties << " parties";
+    if (action.parties == 0) {
+        message << ", but parties must be greater than zero";
+    } else {
+        message << ", but the program-wide barrier requires "
+                << required_parties;
+    }
     return ModelErrorReport{endpoint, message.str(), schedule};
 }
 
@@ -2057,6 +2331,48 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         state.thread_clock.at(tid).join(found->second.post_releases);
         break;
     }
+    case ActionKind::BarrierWait: {
+        BarrierState& barrier = state.barriers.at(action.barrier);
+        if (action.parties == 0 || action.parties != barrier.parties) {
+            advance_pc(program, state, tid);
+            report.error = make_barrier_error(
+                action, barrier.parties, endpoint, state.schedule);
+            break;
+        }
+
+        const bool inserted = barrier.arrivals.insert(tid).second;
+        assert(inserted && "one thread arrived twice in one barrier generation");
+        (void)inserted;
+        barrier.arrival_releases.join(state.thread_clock.at(tid));
+        if (barrier.arrivals.size() < barrier.parties) {
+            // A non-last arrival remains at this source action. Enabledness
+            // excludes it until the last participant atomically releases the
+            // whole generation and advances every parked PC.
+            break;
+        }
+
+        assert(barrier.arrivals.size() == barrier.parties);
+        const std::vector<ThreadId> participants(
+            barrier.arrivals.begin(), barrier.arrivals.end());
+        const VectorClock release_clock = barrier.arrival_releases;
+        for (const ThreadId participant : participants) {
+            assert(state.started.at(participant));
+            assert(has_next_action(program, state, participant));
+            const Action& participant_action = next_action(program, state, participant);
+            assert(participant_action.kind == ActionKind::BarrierWait);
+            assert(participant_action.barrier == action.barrier);
+            assert(participant_action.parties == barrier.parties);
+            (void)participant_action;
+            state.thread_clock.at(participant).join(release_clock);
+            advance_pc(program, state, participant);
+        }
+
+        barrier.arrivals.clear();
+        barrier.arrival_releases = VectorClock{};
+        assert(barrier.generation < std::numeric_limits<std::uint64_t>::max());
+        ++barrier.generation;
+        break;
+    }
     case ActionKind::Wait: {
         if (state.wait_phase.at(tid) == WaitPhase::Woken) {
             assert(state.mutex_owner.find(action.mutex) == state.mutex_owner.end());
@@ -2251,7 +2567,8 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
         // distinguish a writer owner from readers that must drain; Join waits
         // on its target thread; sleeping Wait waits on its condition variable
         // without inventing a queued permit; SemWait names its zero-permit
-        // semaphore.
+        // semaphore; BarrierWait names the incomplete generation that parked
+        // the participant.
         if (action.kind == ActionKind::Lock) {
             const auto owner = state.mutex_owner.find(action.mutex);
             BlockedThread blocked;
@@ -2310,6 +2627,19 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
             blocked.kind = BlockedOnKind::Semaphore;
             blocked.semaphore = action.semaphore;
             report.blocked_threads.push_back(std::move(blocked));
+        } else if (action.kind == ActionKind::BarrierWait) {
+            const auto barrier = state.barriers.find(action.barrier);
+            assert(barrier != state.barriers.end());
+            assert(action.parties != 0 &&
+                   action.parties == barrier->second.parties);
+            assert(barrier->second.arrivals.find(tid) !=
+                   barrier->second.arrivals.end());
+            (void)barrier;
+            BlockedThread blocked;
+            blocked.thread = tid;
+            blocked.kind = BlockedOnKind::Barrier;
+            blocked.barrier = action.barrier;
+            report.blocked_threads.push_back(std::move(blocked));
         }
     }
 #if defined(DPOR_EXPLORATION_METRICS)
@@ -2360,8 +2690,14 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
             }
 
             for (const ScheduleStep& selected : node.backtrack) {
-                const Action& candidate_action = node.enabled_transitions.at(candidate).effective_action;
-                const Action& selected_action = node.enabled_transitions.at(selected).effective_action;
+                const EnabledTransition& candidate_transition =
+                    node.enabled_transitions.at(candidate);
+                const EnabledTransition& selected_transition =
+                    node.enabled_transitions.at(selected);
+                const Action& candidate_action =
+                    candidate_transition.effective_action;
+                const Action& selected_action =
+                    selected_transition.effective_action;
                 if (candidate.thread == selected.thread &&
                     candidate_action.kind == ActionKind::Flush &&
                     selected_action.kind == ActionKind::Flush &&
@@ -2375,12 +2711,41 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
                     changed = true;
                     break;
                 }
-                if (!transitions_independent(program,
-                                             state.memory_model,
-                                             candidate.thread,
-                                             candidate_action,
-                                             selected.thread,
-                                             selected_action)) {
+                if (candidate_action.kind == ActionKind::BarrierWait &&
+                    selected_action.kind == ActionKind::BarrierWait &&
+                    candidate_action.barrier == selected_action.barrier) {
+                    const auto barrier = state.barriers.find(
+                        candidate_action.barrier);
+                    if (barrier != state.barriers.end() &&
+                        candidate_action.parties != 0 &&
+                        candidate_action.parties == barrier->second.parties &&
+                        selected_action.parties == barrier->second.parties &&
+                        candidate_transition.barrier_generation ==
+                            selected_transition.barrier_generation &&
+                        candidate_transition.barrier_generation ==
+                            std::optional<std::uint64_t>{
+                                barrier->second.generation}) {
+                        // Early arrivals commute directly, but a persistent
+                        // set must still retain every co-enabled sibling so a
+                        // later thread may run between them and choose a
+                        // different last arriver/generation cohort.
+                        insert_step(node.backtrack, candidate);
+                        changed = true;
+                        break;
+                    }
+                }
+                if (!transitions_independent_at_node(
+                        program,
+                        state.memory_model,
+                        node,
+                        candidate.thread,
+                        candidate_action,
+                        candidate_transition.endpoint,
+                        candidate_transition.barrier_generation,
+                        selected.thread,
+                        selected_action,
+                        selected_transition.endpoint,
+                        selected_transition.barrier_generation)) {
                     // INVARIANTS.md Soundness/Independence: an enabled
                     // transition is pruned from the initial persistent set
                     // only when the transition predicate says it commutes
@@ -2425,12 +2790,18 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
             continue;
         }
 
-        if (transitions_independent(program,
-                                    memory_model,
-                                    previous.thread,
-                                    previous.effective_action,
-                                    current.thread,
-                                    current.effective_action)) {
+        DporNode& backtrack_point = nodes.at(previous_index);
+        if (transitions_independent_at_node(program,
+                                            memory_model,
+                                            backtrack_point,
+                                            previous.thread,
+                                            previous.effective_action,
+                                            previous.endpoint,
+                                            previous.barrier_generation,
+                                            current.thread,
+                                            current.effective_action,
+                                            current.endpoint,
+                                            current.barrier_generation)) {
             // INVARIANTS.md Soundness/Independence: this is the DPOR pruning
             // predicate. We may commute and therefore avoid a backtrack only
             // when the transition predicate says ordering cannot affect
@@ -2438,7 +2809,6 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
             continue;
         }
 
-        DporNode& backtrack_point = nodes.at(previous_index);
         if (!transition_enabled_at_node(backtrack_point, current)) {
             if (spawn_enabler_index.has_value() && previous_index <= *spawn_enabler_index) {
                 // Spawn(t) is the enabler for all later transitions in t. If
@@ -2501,10 +2871,10 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
             add_repair_steps(backtrack_point, *repair_steps);
         } else {
             // Conservative fallback for blocked mutex/rwlock acquisitions,
-            // zero-permit semaphore waits, woken reacquires, self-wait cycles,
-            // and any chain we cannot compute. The later effective transition
-            // could not be scheduled here, so add every enabled thread just as
-            // ADR 0010 required.
+            // zero-permit semaphore waits, incomplete barrier generations,
+            // woken reacquires, self-wait cycles, and any chain we cannot
+            // compute. The later effective transition could not be scheduled
+            // here, so add every enabled thread just as ADR 0010 required.
             add_all_enabled_repair_steps(backtrack_point);
         }
     }
@@ -2541,9 +2911,12 @@ void add_disabled_backtracks(const Program& program,
             ScheduleStep{tid, state.pc.at(tid), std::nullopt},
             state.thread_clock.at(tid),
             std::nullopt,
+            barrier_generation_for(
+                state, effective_next_action(program, state, tid)),
         };
         // INVARIANTS.md Soundness/Deadlock: a blocked mutex/rwlock acquisition,
-        // zero-permit SemWait, Join, sleeping Wait, or woken-Wait reacquire
+        // zero-permit SemWait, incomplete BarrierWait, Join, sleeping Wait, or
+        // woken-Wait reacquire
         // absent from the executed trace may be exactly the dependent action
         // needed to expose another deadlock, race, or error schedule. We
         // therefore apply the same independent()-guarded backtrack rule to
@@ -2570,23 +2943,36 @@ std::vector<ScheduleStep> inherited_sleep_set(const Program& program,
         if (slept == transition.endpoint) {
             continue;
         }
+        const auto parent_slept = parent.enabled_transitions.find(slept);
         const auto child = child_transitions.find(slept);
-        if (child == child_transitions.end()) {
+        if (parent_slept == parent.enabled_transitions.end() ||
+            child == child_transitions.end() ||
+            child->second.effective_action !=
+                parent_slept->second.effective_action ||
+            child->second.barrier_generation !=
+                parent_slept->second.barrier_generation) {
             continue;
         }
 
-        const Action& slept_action = child->second.effective_action;
-        if (transitions_independent(program,
-                                    state_after_transition.memory_model,
-                                    slept.thread,
-                                    slept_action,
-                                    transition.thread,
-                                    transition.effective_action)) {
+        const EnabledTransition& slept_transition = parent_slept->second;
+        if (transitions_independent_at_node(
+                program,
+                state_after_transition.memory_model,
+                parent,
+                slept.thread,
+                slept_transition.effective_action,
+                slept_transition.endpoint,
+                slept_transition.barrier_generation,
+                transition.thread,
+                transition.effective_action,
+                transition.endpoint,
+                transition.barrier_generation)) {
             // Classic Godefroid sleep-set propagation: a slept transition is
-            // inherited only while its phase-aware next action still commutes
-            // with the transition just executed. If it is dependent, it must
-            // be removed so the child prefix can keep a representative for any
-            // newly distinct Mazurkiewicz class.
+            // inherited only when its parent/pre-transition occurrence
+            // commutes with the transition just executed and that exact
+            // occurrence survives in the child. Barrier arrival independence
+            // must use the parent's count: using k+1 after the first arrival
+            // would spuriously classify a parties=3 early pair as dependent.
             insert_step(inherited, slept);
         }
     }
@@ -2655,6 +3041,7 @@ void dpor_dfs(const Program& program,
         state.wait_phase,
         state.store_buffers,
         state.pso_store_buffers,
+        state.barriers,
     });
 
     if (nodes.at(depth).enabled.empty()) {
@@ -2674,11 +3061,12 @@ void dpor_dfs(const Program& program,
         if (!all_finished(program, state)) {
             // A sleep-blocked prefix is equivalent to an explored execution
             // only for the enabled transitions it would run. Disabled mutex
-            // or rwlock acquisitions, zero-permit semaphore waits, Join,
-            // not-started Spawn targets, and Wait-reacquire transitions can
-            // still evidence an earlier enabledness repair, especially before
-            // a slept modeled-error endpoint. Apply the terminal disabled
-            // fallback before pruning the slept representative.
+            // or rwlock acquisitions, zero-permit semaphore waits, incomplete
+            // barrier generations, Join, not-started Spawn targets, and
+            // Wait-reacquire transitions can still evidence an earlier
+            // enabledness repair, especially before a slept modeled-error
+            // endpoint. Apply the terminal disabled fallback before pruning
+            // the slept representative.
             add_disabled_backtracks(program, state, nodes, trace);
         }
         nodes.pop_back();
@@ -2713,7 +3101,11 @@ void dpor_dfs(const Program& program,
             continue;
         }
 
-        const Action effective_action = effective_action_for_step(program, state, *next_step);
+        const EnabledTransition& selected_transition =
+            nodes.at(depth).enabled_transitions.at(*next_step);
+        const Action effective_action = selected_transition.effective_action;
+        const auto barrier_generation =
+            selected_transition.barrier_generation;
         bool cycle_cut = false;
 
 #if defined(DPOR_EXPLORATION_METRICS)
@@ -2727,6 +3119,7 @@ void dpor_dfs(const Program& program,
             *next_step,
             next.thread_clock.at(next_step->thread),
             step_report.spawned_thread,
+            barrier_generation,
         };
         trace.push_back(transition);
         add_backtracks_for_transition(program, state.memory_model, nodes, trace);
@@ -3251,6 +3644,9 @@ bool blocked_thread_less(const BlockedThread& lhs, const BlockedThread& rhs) {
     if (lhs.semaphore != rhs.semaphore) {
         return lhs.semaphore < rhs.semaphore;
     }
+    if (lhs.barrier != rhs.barrier) {
+        return lhs.barrier < rhs.barrier;
+    }
     if (lhs.owner.has_value() != rhs.owner.has_value()) {
         return !lhs.owner.has_value();
     }
@@ -3507,13 +3903,22 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
     std::set<std::string> mutex_names;
     std::set<std::string> rwlock_names;
     std::set<std::string> semaphore_names;
+    std::set<std::string> condition_names;
+    std::set<std::string> barrier_names;
     for (const auto& thread : program_.threads) {
         for (const Action& action : thread) {
             switch (action.kind) {
             case ActionKind::Lock:
             case ActionKind::Unlock:
+                mutex_names.insert(action.mutex);
+                break;
             case ActionKind::Wait:
                 mutex_names.insert(action.mutex);
+                condition_names.insert(action.condition);
+                break;
+            case ActionKind::Signal:
+            case ActionKind::Broadcast:
+                condition_names.insert(action.condition);
                 break;
             case ActionKind::RLock:
             case ActionKind::RUnlock:
@@ -3524,6 +3929,9 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
             case ActionKind::SemPost:
             case ActionKind::SemWait:
                 semaphore_names.insert(action.semaphore);
+                break;
+            case ActionKind::BarrierWait:
+                barrier_names.insert(action.barrier);
                 break;
             default:
                 break;
@@ -3544,6 +3952,25 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
         if (rwlock_names.find(name) != rwlock_names.end()) {
             throw std::invalid_argument(
                 "name '" + name + "' cannot be used as both an rwlock and semaphore");
+        }
+    }
+    for (const std::string& name : barrier_names) {
+        if (mutex_names.find(name) != mutex_names.end()) {
+            throw std::invalid_argument(
+                "name '" + name + "' cannot be used as both a barrier and mutex");
+        }
+        if (rwlock_names.find(name) != rwlock_names.end()) {
+            throw std::invalid_argument(
+                "name '" + name + "' cannot be used as both a barrier and rwlock");
+        }
+        if (semaphore_names.find(name) != semaphore_names.end()) {
+            throw std::invalid_argument(
+                "name '" + name + "' cannot be used as both a barrier and semaphore");
+        }
+        if (condition_names.find(name) != condition_names.end()) {
+            throw std::invalid_argument(
+                "name '" + name +
+                "' cannot be used as both a barrier and condition variable");
         }
     }
 }

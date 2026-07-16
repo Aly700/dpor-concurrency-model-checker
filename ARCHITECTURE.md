@@ -17,8 +17,8 @@
 - `ModelChecker::explore_naive` is the exhaustive oracle.
 - `ModelChecker::explore_dpor` is the reduced oracle added beside the naive
   DFS. It uses deterministic backtrack/done sets, the public action-level
-  `independent()` predicate, and a checker-local transition refinement for
-  enabled valid `Join` operations.
+  `independent()` predicate, and checker-local transition refinements for
+  enabled valid `Join` operations and generation-stamped barrier arrivals.
 - `ModelChecker::replay` re-executes a deterministic schedule under the same
   step bound and rejects disabled, out-of-range, or post-terminal steps with a
   clear error.
@@ -48,6 +48,11 @@ The checker interprets a program as a small-step state machine:
 - `semaphores[name]` records a zero-initialized unbounded modeled permit count
   and the lifetime componentwise join of every post-release clock. Zero-count
   entries are behaviorally equivalent to absence.
+- `barriers[name]` records the canonical program-wide party count (positive in
+  a valid program), a private generation ordinal, the sorted set of
+  participants parked in the current generation, and the componentwise join
+  of those participants' arrival clocks. The arrival set is behavioral; the
+  ordinal and clock are analysis bookkeeping.
 - `atomic_location_clock[address]` records the per-address release sequence for
   modeled atomic operations. The model supports acquire loads, release stores,
   acquire-release RMWs, and SC-per-location; it does not model relaxed atomics.
@@ -88,12 +93,21 @@ forms a tagged self-wait deadlock.
 permit count; it consumes one permit. `SemPost(name)` always increments and
 queues a permit even when no waiter exists. There is no declaration or hidden
 initial permit.
+`BarrierWait(name, parties)` records one arrival. A non-last arrival remains at
+the same source pc and is disabled until the generation completes. The last of
+`parties` distinct participants atomically releases the complete arrival set,
+advances every participant past its wait, clears the generation state, and
+increments the private generation ordinal. `parties == 1` therefore releases
+immediately. One arrival is one schedule step; release is not a second
+transition. Every use of a barrier name must specify the same positive party
+count.
 `Join(target)` is enabled only when `target` has started and finished.
 `Wait(cv, mutex)` is one IR action with two schedule steps at the same action
 index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
 started unfinished threads and no enabled action is a deadlock; the report
 tags each started blocked thread as waiting on a mutex, join target, condition
-variable, rwlock writer, rwlock reader set, or semaphore. A state where all started
+variable, rwlock writer, rwlock reader set, semaphore, or incomplete barrier
+generation. A state where all started
 threads are finished is normal
 termination, even if some static thread bodies were never spawned. If an
 enabled choice names a thread that has already executed its per-thread step
@@ -101,10 +115,28 @@ bound, that execution terminates with a bound outcome and increments
 `bound_exceeded_executions`.
 
 Under TSO and PSO, atomics, CAS, mutex/condition-variable operations, all four
-rwlock operations, both semaphore operations, spawn, join, and `Fence` are ordered points: they are
+rwlock operations, both semaphore operations, barrier waits, spawn, join, and
+`Fence` are ordered points: they are
 disabled until all of the
 executing thread's buffers are empty. A nonempty buffer always enables a flush for that thread,
 including after the source pc is done, so buffered completion is not deadlock.
+
+## Cyclic Barriers
+
+`BarrierWait(name, parties)` has one program-wide positive party count per
+name. The CLI rejects zero and disagreement during parsing. A directly
+constructed `Program` instead preserves either invalid action as a forward
+modeled error, so the endpoint and report remain replayable. Barrier names are
+distinct from mutex, reader-writer-lock, semaphore, and condition-variable
+names; parser and direct-API construction reject a collision in either order.
+
+One scheduled arrival either parks at its unchanged source pc or, when it is
+last, releases and advances the complete sorted participant set. The release is
+part of that last arrival rather than a hidden second transition. Deadlock
+reports tag every participant left in an incomplete generation as
+`barrier NAME waiting_on_barrier`. Replay uses the ordinary numeric source
+endpoint, while DPOR stamps its internal enabled and executed occurrences with
+the generation ordinal so cyclic reuse cannot alias two generations.
 
 ## Happens-Before Analysis
 
@@ -124,6 +156,21 @@ accumulator without acquiring it. A successful `SemWait` joins that entire
 accumulator into the waiter and never clears it. This deterministic strong
 model can order a waiter after posts whose anonymous permit it did not consume;
 ADR 0022 makes that verification-model caveat explicit.
+For barrier generation `g`, let `C_i` be participant `i`'s clock after its
+arrival step ticks. The generation release clock is exactly
+
+```text
+R_g = join over all arrivals i in g of C_i
+C_i := C_i join R_g                 for every released participant i
+```
+
+No participant advances past the wait before that join. Release then clears
+both the arrival set and its accumulator before incrementing the generation,
+so a later generation cannot acquire an earlier generation's clocks merely by
+reusing the name. Cross-generation HB exists only through a real participant's
+joined thread clock and program order into a later arrival. Fixed positive and
+negative probes pin both arrival directions, reject leaked old-generation
+edges, and retain genuine participant-carried chains.
 `Spawn(target)` marks the target started and joins the target thread's clock
 with the spawner's post-tick clock, so pre-spawn actions happen-before all
 target actions.
@@ -179,8 +226,12 @@ deterministically sampled boundary assertion compares both the complete parent
 Programs without a normalized self/backward `BranchNonzero` do not allocate or
 construct cycle history. Every ordinary source step advances a normalized pc;
 the exceptional first `Wait` phase changes the fingerprinted wait/ownership
-state and needs a later pc-advancing signal before it can resume; and TSO/PSO
-flush-only progress strictly drains finite buffers. Those well-founded measures
+state and needs a later pc-advancing signal before it can resume; a non-last
+`BarrierWait` strictly grows the fingerprinted arrival set and disables that
+participant until another participant's pc-advancing arrival releases the
+generation; and TSO/PSO flush-only progress strictly drains finite buffers.
+The release advances every parked participant, so without backward control
+flow none can return to the same barrier pc. Those well-founded measures
 exclude an exact repeated behavioral state. This classifier must be revisited
 if the action set gains any other pc-decreasing or same-pc repeatable state
 transition.
@@ -205,7 +256,10 @@ DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, done, and
 sleep schedule-step sets. Each enabled node records both the replay endpoint and the
 phase-aware effective action for each enabled thread, so `Wait` release/sleep
 and woken mutex reacquire are reduced as different transition semantics while
-source and TSO schedule steps remain `(thread, action_index)` pairs.
+source and TSO schedule steps remain `(thread, action_index)` pairs. Barrier
+occurrences additionally carry the current generation ordinal internally,
+because a cyclic program can execute the same `(thread, action_index)` in more
+than one generation.
 
 TSO and PSO flushes use the reserved action index `kFlushActionIndex` in those
 same sets. TSO keeps the original two-number endpoint; PSO adds the canonical
@@ -280,6 +334,31 @@ this retains both alternate-poster middle-wait traces when posts commute.
 Different semaphore names use the ordinary disjoint-resource independence
 rule.
 
+Two valid, co-enabled arrivals on one barrier generation are independent only
+at a node with current arrival count `k` satisfying `k + 2 < parties`. In that
+case neither adjacent order releases the generation: both orders leave the
+same two newly parked threads, sorted arrival set, joined accumulator, PCs,
+clocks, values, race state, and enabled set. If `k + 2 == parties`, the second
+arrival releases everyone and the identity of the last arriver affects the
+effective transition, so the pair is dependent. The public action-only
+`independent()` remains conservative for all same-name barrier pairs because it
+cannot observe `k` or the generation; different names commute under the usual
+cross-cutting safeguards.
+
+That local diamond is not sufficient by itself. Initial persistent-set closure
+keeps every co-enabled sibling arrival on the same generation, preserving a
+third thread's opportunity to run between early arrivals and choose a different
+last arriver or generation cohort. Sleep inheritance evaluates independence
+from the parent snapshot and inherits an entry only if the identical
+generation-stamped occurrence remains enabled in the child. A last arrival is
+dependent with every parked participant action that it releases. Incomplete
+barrier generations have no unique enabler and therefore use the all-enabled
+disabled-transition repair at ordinary, terminal, and sleep-blocked prefixes.
+The three-thread `parties == 3` discriminator has six naive arrival orders and
+three DPOR representatives: the first two arrivals commute for each choice of
+last arriver, while the three possible last arrivers are distinct dependent
+classes.
+
 Spawn adds dynamic enabledness. Not-started threads are absent from enabled
 sets and sleep sets, and replay rejects target-thread steps before the
 corresponding spawn. At terminal leaves, a not-started thread with a non-empty
@@ -298,20 +377,30 @@ because it was previously slept.
 ## Verification Gates
 
 The DPOR implementation is checked against deterministic gates. The 2-thread
-oracle sweep enumerates small programs by length pair over a 23-action alphabet
+oracle sweep enumerates small programs by length pair over a 24-action alphabet
 and compares naive vs. DPOR race/deadlock/error/assertion existence, the
 bound-hit boolean, schedule dominance, and report replay identity. The
 3-thread oracle sweep uses an evenly strided deterministic sample of the larger
-21-action, 6-slot space, plus hand-picked disabled-transition cases, to
-exercise spawn, join, condition-variable, rwlock, and semaphore enabledness. A
+22-action, 6-slot space, plus hand-picked disabled-transition cases, to
+exercise spawn, join, condition-variable, rwlock, semaphore, and barrier
+enabledness. A
 separate three-reader fixture pins 1680 naive leaves and one DPOR
 representative. The seeded differential fuzz gate generates 3000 fixed-seed
 programs across 2-5 threads, 1-6 actions per thread, plain and atomic memory,
-mutexes, rwlocks, semaphores, condition variables, joins, yields, spawn-shaped
-programs, and modeled-error cases, plus a value-mode lane with registers,
+mutexes, rwlocks, semaphores, barriers, condition variables, joins, yields,
+spawn-shaped programs, and modeled-error cases, plus a value-mode lane with registers,
 branches, CAS, fetch-add, assertions, and deliberate bound hits; capped
 explorations are counted but excluded from verdict equality because truncation
 can legitimately hide a later endpoint.
+
+The barrier-widened acceptance run checked 22,269 two-thread programs, 65,544
+three-thread programs (833,863 naive versus 336,551 DPOR schedules), 10,698 TSO
+programs, and 5,579 PSO programs. Their action alphabets were respectively 24,
+22, 12, and 12. The fixed fuzz run generated 1,100 `BarrierWait` actions; 2,977
+of its 3,000 programs were compared and 23 capped programs were reported. A
+dedicated cross-model barrier corpus compared all 4 of 4 programs with zero
+skips. The unchanged optimality corpora retain byte-identical meter ratios SC
+1.067, TSO 1.152, and PSO 1.154.
 
 The optimality meter is the fourth gate. Its SC corpus collects all naive
 maximal schedules for small non-error/non-assertion programs, replays them into

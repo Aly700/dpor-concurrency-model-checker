@@ -52,7 +52,8 @@ enum class ActionKind {
     WLock,
     WUnlock,
     SemPost,
-    SemWait
+    SemWait,
+    BarrierWait
 };
 
 struct Action {
@@ -68,6 +69,10 @@ struct Action {
     std::optional<ValueOperand> value;
     std::optional<ValueOperand> expected;
     std::string label;
+    // Kept at the end so existing aggregate initializers for older action
+    // kinds retain their field positions.
+    std::string barrier;
+    std::uint32_t parties{0};
 
     bool operator==(const Action&) const = default;
 };

@@ -25,15 +25,23 @@
   earlier action. In that case source transitions monotonically advance a
   normalized pc, TSO/PSO-only transitions strictly drain a finite buffer, and
   the first phase of `Wait` cannot return to its prior behavioral state without
-  a signaling source transition that advances a pc. Therefore a complete
-  behavioral state cannot recur. Any future action that can decrease a pc or
-  repeatedly mutate behavioral state without advancing a pc must extend or
-  invalidate this proof before fingerprint elision is allowed (adr/0023).
+  a signaling source transition that advances a pc. A non-last `BarrierWait`
+  arrival likewise leaves its source pc unchanged, but strictly grows the
+  fingerprinted arrival set and disables that participant. The set can return
+  to empty only when a last arrival advances every participant past the
+  barrier; without a backward branch none can return to that source pc.
+  Therefore a complete behavioral state cannot recur. Any future action that
+  can decrease a pc or repeatedly mutate behavioral state without advancing a
+  pc must extend or invalidate this proof before fingerprint elision is allowed
+  (adr/0023, adr/0024).
 - The behavioral state includes normalized per-thread PCs, startedness, wait
-  phases, registers, memory values, mutex owners, nonzero semaphore permit
-  counts, condition-variable wait sets, and ordered TSO store buffers or
-  canonical per-address PSO FIFO maps. Vector clocks, atomic/mutex/semaphore
-  clocks, race metadata, step counters, and schedule history are
+  phases, registers, memory values, mutex owners, reader-writer lock holders,
+  nonzero semaphore permit counts, every nonempty barrier's configured party
+  count and sorted current-generation arrival set, condition-variable wait
+  sets, and ordered TSO store buffers or canonical per-address PSO FIFO maps.
+  Vector clocks, absolute barrier generation ordinals,
+  atomic/mutex/rwlock/semaphore/barrier clocks, race metadata, step counters,
+  and schedule history are
   analysis/budget/history state and are excluded. Consequently a
   lasso proves schedule-existence of non-termination only, not repetition of
   analysis instrumentation.
@@ -57,6 +65,12 @@
 - A schedule is a deterministic sequence of thread IDs and action indexes,
   plus a numeric canonical address ID on PSO flush steps only.
 - Replaying a schedule must produce the same state, report, and trace.
+- One `BarrierWait` arrival is one replay step. A non-last participant remains
+  at that action index but is disabled; the last arrival advances every parked
+  participant atomically. Repeating a parked participant's endpoint before a
+  release is invalid, and cyclic reuse of an endpoint is distinguished
+  internally by the barrier generation even though the numeric schedule format
+  remains unchanged.
 - Labels are pseudo-actions and are never scheduled; replay validates each
   step against the normalized executable pc after skipping labels.
 - Under TSO, an internal flush is scheduled as the executing thread with the
@@ -114,6 +128,13 @@
   the documented strong-semaphore model: a waiter can be ordered after posts
   whose anonymous permits it did not consume, and safe verdicts are relative
   to that stronger model (adr/0022).
+- For one barrier generation with participant post-tick clocks `C_i`, the
+  release clock is exactly `R_g = join_i(C_i)`. Before any participant advances
+  past that `BarrierWait`, its thread clock joins `R_g`. The arrival set and
+  accumulator are then cleared and the generation increments. No prior-
+  generation accumulator survives the reset: cross-generation HB exists only
+  when an actual participant carries its joined thread clock into a later
+  generation. `parties == 1` applies this rule immediately (adr/0024).
 - `Signal(cv)` and `Broadcast(cv)` must add a happens-before edge from the
   signaling thread to every waiter they wake. They must not queue permits when
   no waiter exists.
@@ -134,6 +155,9 @@
 - Under TSO and PSO, both semaphore actions are ordered points and remain
   disabled until every buffer owned by the executing thread is empty. They do
   not perform hidden flushes.
+- Under TSO and PSO, `BarrierWait` is also an ordered point: an arrival remains
+  disabled until all buffers owned by that thread are empty and performs no
+  hidden flush.
 - Atomic/atomic accesses are never races. Mixed plain/atomic same-address
   accesses are races when unordered by happens-before and at least one side is
   write-like: plain write, atomic store, successful CAS, or atomic RMW. CAS is
@@ -167,19 +191,39 @@
   all-enabled disabled-transition repair so both alternate-poster middle-wait
   classes survive; selecting only one observed poster is forbidden
   (adr/0022). Different semaphore names are independent.
+- The public action-only relation keeps same-name `BarrierWait` actions
+  dependent because it cannot observe generation state. Checker-local DPOR may
+  commute two valid co-enabled arrivals on the same barrier only when their
+  stamped generation matches the node and `arrived_count + 2 < parties`.
+  Both orders then produce the same sorted arrivals, accumulated clock, PCs,
+  values, race state, and enabled set. Equality is dependent because the second
+  arrival releases the generation. Every co-enabled same-generation sibling is
+  nevertheless an initial persistent choice; sleep inheritance evaluates the
+  relation at the parent count and retains only the identical child occurrence.
+  A last arrival is dependent with the later action of every parked participant
+  it releases. An incomplete barrier has no unique enabler and uses the
+  all-enabled disabled-transition repair. Different barrier names commute when
+  co-enabled (adr/0024).
 - Assertion failures are first-class terminal reports with replayable,
   minimized schedules. They must not be downgraded to modeled errors.
+- A barrier name has one program-wide positive party count. The strict CLI
+  rejects zero or disagreement while loading; the direct `Program` API reaches
+  the invalid `BarrierWait` as a deterministic forward modeled error so its
+  endpoint and schedule remain replayable.
 - Deadlock detection must distinguish a true cycle from a voluntarily finished
   thread, and must identify whether each unfinished disabled thread is waiting
   on a mutex, a join target, a condition variable, an rwlock writer, an rwlock
-  reader set, or a zero-permit semaphore. A write-lock attempt by one of the
-  current readers is a readers-to-drain deadlock with `self_wait`, not a
-  modeled reentrancy error.
+  reader set, a zero-permit semaphore, or an incomplete barrier generation. A
+  barrier blocker is rendered `barrier NAME waiting_on_barrier`. A write-lock
+  attempt by one of the current readers is a readers-to-drain deadlock with
+  `self_wait`, not a modeled reentrancy error.
 - Reader-writer-lock ownership is a reader-holder set plus an optional writer;
   non-holder or wrong-mode unlock and read/write reentrancy are modeled errors.
-  A resource name may not be interpreted as more than one of mutex (including
-  a Wait mutex), rwlock, and semaphore, protecting deterministic ownership,
-  permit, and HB semantics.
+  A barrier resource name may not also be interpreted as a mutex (including a
+  Wait mutex), rwlock, semaphore, or condition variable. Mutex, rwlock, and
+  semaphore names retain their established pairwise separation. These distinct
+  domains protect deterministic ownership, permit, generation, and HB
+  semantics.
 - Thread completion is started-aware: a not-started static thread body is not
   finished for `Join` enabledness, even if the body is empty, but unstarted
   and unjoined bodies do not by themselves make clean termination a deadlock.

@@ -72,16 +72,44 @@ remain useful isolation around the invariant-dense interpreter.
    fingerprint/history construction entirely. Without such a branch, ordinary
    source actions advance a normalized pc; the first `Wait` phase changes
    fingerprinted wait/ownership state and cannot return without a pc-advancing
-   signal; and TSO/PSO flushes strictly drain finite pending buffers. Therefore
-   no complete behavioral state can repeat. Missing labels remain forward
-   terminal errors. A future same-pc repeatable or pc-decreasing action must
-   update this classifier and proof.
+   signal; a non-last `BarrierWait` changes the fingerprinted arrival set and
+   cannot return without another participant's pc-advancing arrival releasing
+   the generation; and TSO/PSO flushes strictly drain finite pending buffers.
+   Therefore no complete behavioral state can repeat. Missing labels remain
+   forward terminal errors. A future same-pc repeatable or pc-decreasing action
+   must update this classifier and proof.
 4. DPOR collects the sorted enabled vector once per node and builds its
    effective-transition map from that same vector. Empty parent sleep sets
    bypass child transition-map construction because inheritance must return the
    empty set. Ordering and map type remain unchanged.
 5. Retain the default-off deterministic counter harness and its focused test.
-   Normal Release targets contain no metric counter branches or metric output.
+Normal Release targets contain no metric counter branches or metric output.
+
+### Classifier extension for cyclic barriers
+
+ADR 0024 adds the first same-pc wait-like action since this proof was accepted.
+It extends, rather than invalidates, the well-foundedness argument. A valid
+non-last barrier arrival strictly grows the fingerprinted sorted arrival set
+and disables that participant, so the same thread cannot execute the action
+again in that generation. The set can shrink back to empty only when another
+participant performs the last arrival; that source step advances every parked
+participant beyond its barrier pc. With no self/backward branch, none of those
+participants can return to that action index. `parties == 1` advances
+immediately, while zero or mismatched party counts advance into a terminal
+modeled error. A buffered-model arrival first requires finite pending buffers
+to drain through the already proved flush measure.
+
+The barrier's absolute generation ordinal and accumulated arrival clock are
+excluded from behavioral fingerprints because neither is program-observable.
+Including the ordinal would prevent a balanced cyclic-barrier loop from ever
+closing a real lasso. Every nonempty barrier instead contributes its name,
+configured party count, and sorted current-generation arrival set. Thus an
+undersubscribed barrier cannot be mistaken for its pre-arrival state, while an
+actual released generation can return to an equal behavioral state only when
+backward control flow makes cycle detection active. Focused classifier tests
+cover an acyclic completed generation, an acyclic undersubscribed generation,
+a blocked backward loop, and a balanced cyclic-barrier lasso with exact history
+restore.
 
 After these changes, the profiled three-thread sweep retained all 2,701,592
 branch state copies but reduced history copies and fingerprint bytes to zero.
@@ -155,7 +183,8 @@ an exploration change.
 ## Consequences
 
 - Exact lasso detection retains its canonical, collision-free state equality
-  on every program capable of backward control flow.
+  on every program capable of backward control flow, including cyclic-barrier
+  programs whose observable state repeats across absolute generations.
 - The dominant history-copy and acyclic-fingerprint traffic is removed without
   applying/undoing interpreter mutations or weakening branch isolation.
 - Exploration choice order, ordered containers, reports, and public API remain
@@ -170,7 +199,9 @@ an exploration change.
 ## Invariants protected
 
 - **Soundness:** history is scoped to one DFS path and exact cycle equality is
-  unchanged wherever a cycle is possible.
+  unchanged wherever a cycle is possible; same-pc barrier arrivals satisfy the
+  extended acyclic-classifier proof because arrivals are fingerprinted and
+  release advances every parked pc.
 - **Restore exactness:** every inserted key is erased once, with deterministic
   sampled comparison against full reference values in Debug builds.
 - **Replay and behavior:** schedules, order, verdicts, witness bytes, oracle

@@ -89,6 +89,9 @@ void print_deadlock_blocker(std::ostream& output, const model::BlockedThread& bl
     case model::BlockedOnKind::Semaphore:
         output << "semaphore " << blocked.semaphore << " waiting_for_post";
         break;
+    case model::BlockedOnKind::Barrier:
+        output << "barrier " << blocked.barrier << " waiting_on_barrier";
+        break;
     }
     output << '\n';
 }

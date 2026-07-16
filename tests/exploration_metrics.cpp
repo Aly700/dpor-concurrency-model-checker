@@ -96,6 +96,14 @@ model::Action join(model::ThreadId target) {
     return action;
 }
 
+model::Action barrier_wait(std::string barrier, std::uint32_t parties) {
+    model::Action action;
+    action.kind = model::ActionKind::BarrierWait;
+    action.barrier = std::move(barrier);
+    action.parties = parties;
+    return action;
+}
+
 void require(bool condition, const char* message) {
     if (!condition) {
         throw std::runtime_error(message);
@@ -250,6 +258,65 @@ int main() {
     REQUIRE(!joined.first_error.has_value());
     REQUIRE(!joined.first_nontermination.has_value());
     REQUIRE(spawned_metrics.fingerprint_builds == 0);
+
+    model::diagnostics::reset_exploration_metrics();
+    const model::Program completed_barrier{{
+        {barrier_wait("phase", 2)},
+        {barrier_wait("phase", 2)},
+    }};
+    const model::CheckResult completed =
+        model::ModelChecker(completed_barrier).explore_naive();
+    const auto completed_barrier_metrics =
+        model::diagnostics::exploration_metrics();
+    REQUIRE(completed.schedules_explored > 0);
+    REQUIRE(!completed.first_deadlock.has_value());
+    REQUIRE(!completed.first_nontermination.has_value());
+    REQUIRE(completed_barrier_metrics.fingerprint_builds == 0);
+
+    model::diagnostics::reset_exploration_metrics();
+    const model::Program incomplete_barrier{{
+        {barrier_wait("phase", 3)},
+        {barrier_wait("phase", 3)},
+    }};
+    const model::CheckResult incomplete =
+        model::ModelChecker(incomplete_barrier).explore_naive();
+    const auto incomplete_barrier_metrics =
+        model::diagnostics::exploration_metrics();
+    REQUIRE(incomplete.first_deadlock.has_value());
+    REQUIRE(!incomplete.first_nontermination.has_value());
+    REQUIRE(incomplete_barrier_metrics.fingerprint_builds == 0);
+
+    model::diagnostics::reset_exploration_metrics();
+    const model::Program blocked_barrier_loop{{
+        {set_one(), label("loop"), barrier_wait("phase", 3),
+         branch_nonzero("loop")},
+        {set_one(), label("loop"), barrier_wait("phase", 3),
+         branch_nonzero("loop")},
+    }};
+    const model::CheckResult blocked_loop =
+        model::ModelChecker(blocked_barrier_loop, 10).explore_naive();
+    const auto blocked_barrier_metrics =
+        model::diagnostics::exploration_metrics();
+    REQUIRE(blocked_loop.first_deadlock.has_value());
+    REQUIRE(blocked_loop.cycles_detected == 0);
+    REQUIRE(blocked_barrier_metrics.fingerprint_builds > 0);
+
+    model::diagnostics::reset_exploration_metrics();
+    const model::Program cyclic_barrier{{
+        {set_one(), label("loop"), barrier_wait("phase", 2),
+         branch_nonzero("loop")},
+        {set_one(), label("loop"), barrier_wait("phase", 2),
+         branch_nonzero("loop")},
+    }};
+    const model::CheckResult barrier_cycle =
+        model::ModelChecker(cyclic_barrier, 10).explore_naive();
+    const auto cyclic_barrier_metrics =
+        model::diagnostics::exploration_metrics();
+    REQUIRE(barrier_cycle.cycles_detected > 0);
+    REQUIRE(barrier_cycle.first_nontermination.has_value());
+    REQUIRE(cyclic_barrier_metrics.fingerprint_builds > 0);
+    REQUIRE(cyclic_barrier_metrics.history_insertions ==
+            cyclic_barrier_metrics.history_restores);
 
     model::diagnostics::reset_exploration_metrics();
     const model::Program cyclic{{{

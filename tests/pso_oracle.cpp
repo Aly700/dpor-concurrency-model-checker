@@ -60,6 +60,14 @@ model::Action fence() {
     return action;
 }
 
+model::Action barrier_wait(std::string barrier, std::uint32_t parties) {
+    model::Action action;
+    action.kind = model::ActionKind::BarrierWait;
+    action.barrier = std::move(barrier);
+    action.parties = parties;
+    return action;
+}
+
 model::ValueOperand imm(model::Value value) {
     model::ValueOperand operand;
     operand.kind = model::ValueOperandKind::Immediate;
@@ -90,7 +98,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 11> kActions{
+const std::array<model::Action, 12> kActions{
     read("x"),
     read("y"),
     write("x"),
@@ -102,6 +110,7 @@ const std::array<model::Action, 11> kActions{
     lock("m"),
     unlock("m"),
     fence(),
+    barrier_wait("bar", 2),
 };
 
 model::Program two_thread_program(std::uint64_t encoded,

@@ -107,6 +107,14 @@ Action sem_wait(std::string semaphore) {
     return semaphore_action(ActionKind::SemWait, std::move(semaphore));
 }
 
+Action barrier_wait(std::string barrier, std::uint32_t parties) {
+    Action action;
+    action.kind = ActionKind::BarrierWait;
+    action.barrier = std::move(barrier);
+    action.parties = parties;
+    return action;
+}
+
 Action join(ThreadId target) {
     Action action;
     action.kind = ActionKind::Join;
@@ -240,6 +248,7 @@ int main() {
         wunlock("rw"),
         sem_post("sem"),
         sem_wait("sem"),
+        barrier_wait("bar", 3),
     };
     const std::size_t k = alphabet.size();
 

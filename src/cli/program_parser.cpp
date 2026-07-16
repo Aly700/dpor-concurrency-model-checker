@@ -201,6 +201,14 @@ model::Action semaphore_action(model::ActionKind kind, const std::string& semaph
     return action;
 }
 
+model::Action barrier_action(const std::string& barrier, std::uint32_t parties) {
+    model::Action action;
+    action.kind = model::ActionKind::BarrierWait;
+    action.barrier = barrier;
+    action.parties = parties;
+    return action;
+}
+
 model::Action condition_action(model::ActionKind kind, const std::string& condition) {
     model::Action action;
     action.kind = kind;
@@ -404,6 +412,14 @@ model::Action parse_action(const std::vector<std::string>& words, std::size_t li
         require_arity(words, 2, line, keyword);
         return semaphore_action(model::ActionKind::SemWait, words[1]);
     }
+    if (keyword == "barrier_wait") {
+        require_arity(words, 3, line, keyword);
+        const std::uint32_t parties = parse_u32_token(words[2], line, "barrier parties");
+        if (parties == 0) {
+            throw ParseError(line, "barrier parties must be greater than zero");
+        }
+        return barrier_action(words[1], parties);
+    }
     if (keyword == "wait") {
         require_arity(words, 3, line, keyword);
         return wait_action(words[1], words[2]);
@@ -449,6 +465,8 @@ model::Program parse_program_stream(std::istream& input) {
     std::map<std::string, std::size_t> mutex_first_use;
     std::map<std::string, std::size_t> rwlock_first_use;
     std::map<std::string, std::size_t> semaphore_first_use;
+    std::map<std::string, std::size_t> condition_first_use;
+    std::map<std::string, std::pair<std::size_t, std::uint32_t>> barrier_first_use;
     std::size_t current_thread = std::numeric_limits<std::size_t>::max();
 
     std::string line_text;
@@ -489,6 +507,10 @@ model::Program parse_program_stream(std::istream& input) {
                                  action.kind == model::ActionKind::WUnlock;
         const bool uses_semaphore = action.kind == model::ActionKind::SemPost ||
                                     action.kind == model::ActionKind::SemWait;
+        const bool uses_condition = action.kind == model::ActionKind::Wait ||
+                                    action.kind == model::ActionKind::Signal ||
+                                    action.kind == model::ActionKind::Broadcast;
+        const bool uses_barrier = action.kind == model::ActionKind::BarrierWait;
         if (uses_mutex) {
             const auto rwlock_use = rwlock_first_use.find(action.mutex);
             if (rwlock_use != rwlock_first_use.end()) {
@@ -503,6 +525,15 @@ model::Program parse_program_stream(std::istream& input) {
                 std::ostringstream message;
                 message << "name '" << action.mutex
                         << "' is already used as a semaphore on line " << semaphore_use->second
+                        << " and cannot also be used as a mutex";
+                throw ParseError(line, message.str());
+            }
+            const auto barrier_use = barrier_first_use.find(action.mutex);
+            if (barrier_use != barrier_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.mutex
+                        << "' is already used as a barrier on line "
+                        << barrier_use->second.first
                         << " and cannot also be used as a mutex";
                 throw ParseError(line, message.str());
             }
@@ -525,6 +556,15 @@ model::Program parse_program_stream(std::istream& input) {
                         << " and cannot also be used as an rwlock";
                 throw ParseError(line, message.str());
             }
+            const auto barrier_use = barrier_first_use.find(action.rwlock);
+            if (barrier_use != barrier_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.rwlock
+                        << "' is already used as a barrier on line "
+                        << barrier_use->second.first
+                        << " and cannot also be used as an rwlock";
+                throw ParseError(line, message.str());
+            }
             rwlock_first_use.emplace(action.rwlock, line);
         }
         if (uses_semaphore) {
@@ -544,7 +584,58 @@ model::Program parse_program_stream(std::istream& input) {
                         << " and cannot also be used as a semaphore";
                 throw ParseError(line, message.str());
             }
+            const auto barrier_use = barrier_first_use.find(action.semaphore);
+            if (barrier_use != barrier_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.semaphore
+                        << "' is already used as a barrier on line "
+                        << barrier_use->second.first
+                        << " and cannot also be used as a semaphore";
+                throw ParseError(line, message.str());
+            }
             semaphore_first_use.emplace(action.semaphore, line);
+        }
+        if (uses_condition) {
+            const auto barrier_use = barrier_first_use.find(action.condition);
+            if (barrier_use != barrier_first_use.end()) {
+                std::ostringstream message;
+                message << "name '" << action.condition
+                        << "' is already used as a barrier on line "
+                        << barrier_use->second.first
+                        << " and cannot also be used as a condition variable";
+                throw ParseError(line, message.str());
+            }
+            condition_first_use.emplace(action.condition, line);
+        }
+        if (uses_barrier) {
+            const auto reject_collision = [&](const auto& first_use,
+                                              const char* other_namespace) {
+                const auto use = first_use.find(action.barrier);
+                if (use == first_use.end()) {
+                    return;
+                }
+                std::ostringstream message;
+                message << "name '" << action.barrier << "' is already used as a "
+                        << other_namespace << " on line " << use->second
+                        << " and cannot also be used as a barrier";
+                throw ParseError(line, message.str());
+            };
+            reject_collision(mutex_first_use, "mutex");
+            reject_collision(rwlock_first_use, "rwlock");
+            reject_collision(semaphore_first_use, "semaphore");
+            reject_collision(condition_first_use, "condition variable");
+
+            const auto [use, inserted] = barrier_first_use.emplace(
+                action.barrier,
+                std::make_pair(line, action.parties));
+            if (!inserted && use->second.second != action.parties) {
+                std::ostringstream message;
+                message << "barrier '" << action.barrier << "' requires "
+                        << use->second.second << " parties from first use on line "
+                        << use->second.first << ", but this action specifies "
+                        << action.parties;
+                throw ParseError(line, message.str());
+            }
         }
         if (action.kind == model::ActionKind::Join) {
             joins.emplace_back(line, action.target);
@@ -717,6 +808,9 @@ std::string action_text(const model::Action& action) {
         break;
     case model::ActionKind::SemWait:
         output << "sem_wait " << action.semaphore;
+        break;
+    case model::ActionKind::BarrierWait:
+        output << "barrier_wait " << action.barrier << ' ' << action.parties;
         break;
     case model::ActionKind::Spawn:
         output << "spawn " << action.target;

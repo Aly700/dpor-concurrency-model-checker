@@ -25,7 +25,8 @@ enum class BlockedOnKind {
     ConditionVariable,
     RwLockWriter,
     RwLockReaders,
-    Semaphore
+    Semaphore,
+    Barrier
 };
 
 struct BlockedThread {
@@ -38,6 +39,8 @@ struct BlockedThread {
     std::optional<ThreadId> target;
     std::string condition;
     bool self_wait{false};
+    // Kept at the end so existing aggregate initializers retain their fields.
+    std::string barrier;
 
     bool operator==(const BlockedThread&) const = default;
 };

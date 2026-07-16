@@ -91,6 +91,14 @@ model::Action sem_wait(std::string semaphore) {
     return semaphore_action(model::ActionKind::SemWait, std::move(semaphore));
 }
 
+model::Action barrier_wait(std::string barrier, std::uint32_t parties) {
+    model::Action action;
+    action.kind = model::ActionKind::BarrierWait;
+    action.barrier = std::move(barrier);
+    action.parties = parties;
+    return action;
+}
+
 model::Action join(model::ThreadId target) {
     model::Action action;
     action.kind = model::ActionKind::Join;
@@ -161,7 +169,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 23> kActions{
+const std::array<model::Action, 24> kActions{
     read("x"),
     write("x"),
     write("y"),
@@ -185,6 +193,7 @@ const std::array<model::Action, 23> kActions{
     wunlock("rw"),
     sem_post("sem"),
     sem_wait("sem"),
+    barrier_wait("bar", 2),
 };
 
 model::Program two_thread_program(std::uint64_t encoded, std::size_t lhs_length, std::size_t rhs_length) {
@@ -281,6 +290,9 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::SemWait:
         out << "SemWait " << action.semaphore;
+        break;
+    case model::ActionKind::BarrierWait:
+        out << "BarrierWait " << action.barrier << ' ' << action.parties;
         break;
     }
     return out.str();
@@ -581,7 +593,8 @@ int main() {
     // Deterministically enumerates two-thread programs with 0..3 actions per
     // thread over kActions, including atomic acquire/release/RMW operations,
     // Spawn, Join, Mesa condition-variable actions, all four reader-writer
-    // lock actions, and counting-semaphore post/wait actions. Each length pair
+    // lock actions, counting-semaphore post/wait actions, and a two-party
+    // cyclic-barrier arrival. Each length pair
     // is capped
     // at 2048 programs; larger length pairs use evenly spaced encoded indexes,
     // not randomness.

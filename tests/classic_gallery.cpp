@@ -36,6 +36,7 @@ struct GalleryCase {
     std::optional<model::Fairness> expected_fairness;
     std::vector<model::BlockedThread> expected_blocked_threads;
     std::optional<model::Schedule> expected_deadlock_schedule;
+    bool exact_witness_across_explorers{false};
 
     GalleryCase(std::string file_value,
                 ExpectedVerdict expected_value,
@@ -47,7 +48,8 @@ struct GalleryCase {
                 bool dpor_only_value = false,
                 std::optional<model::Fairness> expected_fairness_value = std::nullopt,
                 std::vector<model::BlockedThread> expected_blocked_threads_value = {},
-                std::optional<model::Schedule> expected_deadlock_schedule_value = std::nullopt)
+                std::optional<model::Schedule> expected_deadlock_schedule_value = std::nullopt,
+                bool exact_witness_across_explorers_value = false)
         : file(std::move(file_value)),
           expected(expected_value),
           step_bound(step_bound_value),
@@ -58,7 +60,8 @@ struct GalleryCase {
           dpor_only(dpor_only_value),
           expected_fairness(expected_fairness_value),
           expected_blocked_threads(std::move(expected_blocked_threads_value)),
-          expected_deadlock_schedule(std::move(expected_deadlock_schedule_value)) {}
+          expected_deadlock_schedule(std::move(expected_deadlock_schedule_value)),
+          exact_witness_across_explorers(exact_witness_across_explorers_value) {}
 };
 
 struct CommandResult {
@@ -85,6 +88,14 @@ model::BlockedThread mutex_blocker(model::ThreadId thread,
     blocked.mutex = std::move(mutex);
     blocked.owner = owner;
     blocked.kind = model::BlockedOnKind::Mutex;
+    return blocked;
+}
+
+model::BlockedThread barrier_blocker(model::ThreadId thread, std::string barrier) {
+    model::BlockedThread blocked;
+    blocked.thread = thread;
+    blocked.barrier = std::move(barrier);
+    blocked.kind = model::BlockedOnKind::Barrier;
     return blocked;
 }
 
@@ -241,7 +252,7 @@ void require_expected_verdict(const GalleryCase& test_case,
                 test_case.file + " " + explorer + " omitted the expected deadlock report");
         require(result.first_deadlock->blocked_threads == test_case.expected_blocked_threads,
                 test_case.file + " " + explorer +
-                    " deadlock did not contain the exact mutex-blocker cycle");
+                    " deadlock did not contain the exact expected blockers");
         require(result.bound_exceeded_executions == 0,
                 test_case.file + " " + explorer + " unexpectedly hit the step bound");
         require(result.cycles_detected == 0,
@@ -358,6 +369,23 @@ std::string details_for_round_trip(const std::string& report) {
     return details.str();
 }
 
+std::string witness_text_for_byte_identity(const std::string& report) {
+    std::istringstream input(report);
+    std::ostringstream witness;
+    std::string line;
+    while (std::getline(input, line)) {
+        if (line.rfind("schedules_explored:", 0) == 0 ||
+            line.rfind("cycles_detected:", 0) == 0 ||
+            line.rfind("bound_exceeded_executions:", 0) == 0 ||
+            line.rfind("exploration_capped:", 0) == 0 ||
+            line.rfind("also_found:", 0) == 0) {
+            continue;
+        }
+        witness << line << '\n';
+    }
+    return witness.str();
+}
+
 void require_cli_round_trip(const std::filesystem::path& binary,
                             const std::filesystem::path& source_dir,
                             const std::filesystem::path& work_dir,
@@ -378,6 +406,26 @@ void require_cli_round_trip(const std::filesystem::path& binary,
     require(first_line(check.stdout_text) == "verdict: " + expected_text(test_case.expected),
             test_case.file + " CLI check verdict mismatch");
 
+    if (test_case.exact_witness_across_explorers) {
+        const auto naive_check = run_command(
+            binary,
+            {"check", program.string(), "--explorer", "naive",
+             "--memory-model", memory_model_argument(test_case.memory_model),
+             "--step-bound", std::to_string(test_case.step_bound),
+             "--max-schedules", std::to_string(test_case.max_schedules)},
+            work_dir / (stem + ".naive.check.out"),
+            work_dir / (stem + ".naive.check.err"));
+        require(naive_check.exit_code == 1,
+                test_case.file + " CLI naive check should report a bug");
+        require(naive_check.stderr_text.empty(),
+                test_case.file + " CLI naive check wrote stderr: " +
+                    naive_check.stderr_text);
+        require(witness_text_for_byte_identity(naive_check.stdout_text) ==
+                    witness_text_for_byte_identity(check.stdout_text),
+                test_case.file +
+                    " CLI naive and DPOR witnesses were not byte-identical");
+    }
+
     const std::filesystem::path schedule_path = work_dir / (stem + ".schedule");
     write_file(schedule_path, schedule_block(check.stdout_text));
     const auto replay = run_command(
@@ -389,8 +437,14 @@ void require_cli_round_trip(const std::filesystem::path& binary,
 
     require(replay.exit_code == 1, test_case.file + " CLI replay should report a bug");
     require(replay.stderr_text.empty(), test_case.file + " CLI replay wrote stderr: " + replay.stderr_text);
-    require(details_for_round_trip(replay.stdout_text) == details_for_round_trip(check.stdout_text),
-            test_case.file + " CLI replay details differed from check report");
+    if (test_case.exact_witness_across_explorers) {
+        require(witness_text_for_byte_identity(replay.stdout_text) ==
+                    witness_text_for_byte_identity(check.stdout_text),
+                test_case.file + " CLI replay witness was not byte-identical");
+    } else {
+        require(details_for_round_trip(replay.stdout_text) == details_for_round_trip(check.stdout_text),
+                test_case.file + " CLI replay details differed from check report");
+    }
 }
 
 const std::vector<GalleryCase>& gallery_cases() {
@@ -442,6 +496,19 @@ const std::vector<GalleryCase>& gallery_cases() {
          model::Schedule{{0, 0, std::nullopt},
                          {1, 0, std::nullopt},
                          {2, 0, std::nullopt}}},
+        {"cyclic_barrier_phases.dpor", ExpectedVerdict::Clean, 4, 100000, false},
+        {"cyclic_barrier_phases_broken_missing_worker.dpor",
+         ExpectedVerdict::Deadlock,
+         4,
+         100000,
+         true,
+         model::MemoryModel::SC,
+         std::nullopt,
+         false,
+         std::nullopt,
+         {barrier_blocker(0, "phase"), barrier_blocker(1, "phase")},
+         std::nullopt,
+         true},
         {"peterson_tso.dpor", ExpectedVerdict::Race, 12, 300000, true, model::MemoryModel::TSO, true, true},
         {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::TSO, false, true},
         // The unfenced PSO run reaches both race and assertion witnesses but
@@ -472,6 +539,13 @@ void verify_gallery_with_library(const std::filesystem::path& source_dir) {
             const model::CheckResult naive = checker.explore_naive(test_case.max_schedules);
             require_expected_verdict(test_case, naive, "naive");
             require_naive_dpor_agree(test_case, naive, dpor);
+            if (test_case.exact_witness_across_explorers) {
+                require(naive.first_deadlock.has_value() &&
+                            dpor.first_deadlock.has_value() &&
+                            *naive.first_deadlock == *dpor.first_deadlock,
+                        test_case.file +
+                            " naive and DPOR first witnesses were not byte-identical");
+            }
             require_replays_report(test_case.file + " naive", checker, naive);
         }
         require_replays_report(test_case.file + " DPOR", checker, dpor);

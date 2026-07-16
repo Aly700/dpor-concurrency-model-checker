@@ -46,6 +46,10 @@ bool is_semaphore_action(const Action& action) {
            action.kind == ActionKind::SemWait;
 }
 
+bool is_barrier_action(const Action& action) {
+    return action.kind == ActionKind::BarrierWait;
+}
+
 bool is_condition_action(const Action& action) {
     return action.kind == ActionKind::Wait ||
            action.kind == ActionKind::Signal ||
@@ -195,12 +199,22 @@ bool independent(const Action& lhs, const Action& rhs) {
         return false;
     }
 
+    if (is_barrier_action(lhs) && is_barrier_action(rhs) &&
+        lhs.barrier == rhs.barrier) {
+        // Whether two arrivals commute depends on the current generation's
+        // arrival count. The public action-only predicate cannot see that
+        // state, so it keeps same-name barriers conservative. DPOR applies
+        // the proved low-count refinement with a historical node snapshot.
+        return false;
+    }
+
     // Remaining pairs commute for this IR when both transitions are enabled:
     // non-conflicting memory accesses update disjoint or read-only metadata;
     // atomic accesses on different addresses touch disjoint location clocks;
     // mutex and Wait operations on distinct mutexes touch disjoint ownership
     // and synchronization clocks; rwlock and semaphore operations on distinct
-    // names do likewise; Signal/Broadcast on different condition variables do
+    // names do likewise; different barriers touch disjoint generations;
+    // Signal/Broadcast on different condition variables do
     // not queue permits and mutate disjoint wait sets; Yield has no modeled
     // shared-state or enabledness effect.
     return true;

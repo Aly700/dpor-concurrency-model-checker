@@ -528,6 +528,8 @@ std::string action_key(const model::Action& action) {
         << "|m=" << action.mutex
         << "|rw=" << action.rwlock
         << "|sem=" << action.semaphore
+        << "|bar=" << action.barrier
+        << "|parties=" << action.parties
         << "|c=" << action.condition
         << "|t=" << action.target
         << "|d=" << optional_reg_key(action.destination)
@@ -788,6 +790,9 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::SemWait:
         out << "SemWait " << action.semaphore;
+        break;
+    case model::ActionKind::BarrierWait:
+        out << "BarrierWait " << action.barrier << ' ' << action.parties;
         break;
     }
     return out.str();
