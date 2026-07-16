@@ -286,6 +286,60 @@ beyond bounded verdicts:
   programs plus 3,000 fuzz programs; meter output stayed byte-identical at SC
   1.067, TSO 1.152, and PSO 1.154, and all 25 suites passed.
 
+## The ninth campaign: a deferral that reopened itself
+
+- **ADR 0009's revisit clause did what a deferral clause is supposed to do** —
+  the original undo-log proposal had been declined while the Release gates ran
+  in roughly 3.5 seconds, with explicit instructions to reopen the decision if
+  real workloads grew or profiling found copy cost dominant. Eight campaigns
+  later the suite's honest pristine best was 50.85 seconds: 25 suites now
+  included 65,544 three-thread programs, 22,126 two-thread programs, 3,000 fuzz
+  programs, buffered-model oracles, the gallery, and the optimality meter. The
+  old decision was not treated as precedent to defend; its own instrument
+  fired, so the project measured again.
+- **Diagnosis overturned the suspected mechanism** — the sandbox would not
+  permit a sampling profiler, so a default-off
+  `DPOR_BUILD_EXPLORATION_PROFILE` build counted deterministic logical work
+  instead. Per-branch `ExecutionState` copies were large, but they were not the
+  leading multiplier. Every DFS child also copied the complete exact
+  `StateHistory`; one fuzz run copied 40,084,177 history entries and more than
+  24GB of fingerprint-key bytes. Gallery crossed 28GB. That finding changed
+  the implementation target: optimize the measured representation cost, not
+  the cost ADR 0009 had guessed at deferral time.
+- **The shipped fix is deliberately smaller than an interpreter-wide undo
+  log** — one history map now belongs to the active path, with an RAII guard
+  erasing the exact child insertion on every return. Programs with no
+  label-normalized self/backward branch skip cycle history entirely: source
+  steps monotonically advance normalized PCs; a first-phase `Wait` cannot
+  restore its prior wait/ownership state without a signaling source step; and
+  TSO/PSO-only flush progress strictly drains finite buffers. The same sorted
+  enabled vector is also reused to build the DPOR transition map, and empty
+  sleep sets bypass vacuous inheritance work. Branch state copies remain in
+  place, preserving the interpreter's easy-to-audit isolation instead of
+  concentrating lossy mutation restoration in its most invariant-dense code.
+- **Verification checked bytes and restoration, not just verdict headlines** —
+  pristine and campaign binaries produced byte-identical oracle and meter
+  stdout, including 845,471 naive / 362,789 DPOR three-thread schedules and SC
+  1.067 / TSO 1.152 / PSO 1.154. A Debug build retained full reference copies
+  at every depth-one boundary and a deterministic sample of deeper nodes, then
+  asserted exact parent-state and history equality after undo; all 25 suites
+  passed in 258.31 seconds. That build also exposed a pre-existing test defect
+  that Release's `NDEBUG` had hidden: two plain-`assert` fixtures expected two
+  DPOR leaves although the checker had long produced three from 30 naive
+  leaves. The corrected non-elidable check passed when compiled against
+  pristine `5707a8c`, establishing that the defect predated the campaign and
+  making the case for keeping an assertion-enabled gate.
+- **The performance bar survived a noisy machine instead of being negotiated
+  away** — the first single-run comparison read **27.8%**, below the declared
+  30% bar. Concurrent sibling workers were contaminating wall time in both
+  directions; one pristine run took 94.86 seconds while its best took 50.85.
+  Rather than ship on that outlier or lower the bar, the acceptance record used
+  symmetric interleaved best-of-three runs: 50.85 seconds pristine versus
+  26.92 seconds campaign, a **47.1%** wall-time improvement, corroborated by a
+  49.7% reduction in user CPU. The win became acceptable only after the noise
+  was handled with an explicit honest estimator; the initially failing 27.8%
+  reading remains in the story.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
