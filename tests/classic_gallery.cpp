@@ -287,6 +287,9 @@ void require_naive_dpor_agree(const GalleryCase& test_case,
             test_case.file + " cycle existence disagrees");
     require((naive.fair_cycles > 0) == (dpor.fair_cycles > 0),
             test_case.file + " fair-cycle existence disagrees");
+    require((naive.strongly_unfair_cycles > 0) ==
+                (dpor.strongly_unfair_cycles > 0),
+            test_case.file + " strongly-unfair-cycle existence disagrees");
     require((naive.unfair_cycles > 0) == (dpor.unfair_cycles > 0),
             test_case.file + " unfair-cycle existence disagrees");
     require((naive.bound_exceeded_executions > 0) == (dpor.bound_exceeded_executions > 0),

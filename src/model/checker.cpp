@@ -3062,11 +3062,20 @@ void record_bound_exceeded(CheckResult& result) {
 void record_nontermination(CheckResult& result, const NonTerminationReport& report) {
     ++result.schedules_explored;
     ++result.cycles_detected;
-    if (report.fairness == Fairness::FairDivergence) {
-        ++result.fair_cycles;
-    } else {
+    switch (report.fairness) {
+    case Fairness::UnfairScheduleWitness:
         ++result.unfair_cycles;
+        break;
+    case Fairness::StronglyUnfairScheduleWitness:
+        ++result.strongly_unfair_cycles;
+        break;
+    case Fairness::FairDivergence:
+        ++result.fair_cycles;
+        break;
     }
+    assert(result.fair_cycles + result.strongly_unfair_cycles +
+               result.unfair_cycles ==
+           result.cycles_detected);
     if (!result.first_nontermination.has_value()) {
         result.first_nontermination = report;
     }
@@ -3500,21 +3509,27 @@ NonTerminationReport make_nontermination_report(const Program& program,
 
     const StateFingerprint start_fingerprint = behavioral_state_fingerprint(state);
     std::vector<bool> continuously_enabled(program.threads.size(), true);
+    std::set<ScheduleStep> enabled_at_least_once;
     const auto observe_enabledness = [&]() {
         for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
-            if (participant.at(tid) || !continuously_enabled.at(tid)) {
+            if (participant.at(tid)) {
                 continue;
             }
-            if (enabled_steps_for_thread(program, state, tid).empty()) {
+            const std::vector<ScheduleStep> thread_steps =
+                enabled_steps_for_thread(program, state, tid);
+            if (thread_steps.empty()) {
                 continuously_enabled.at(tid) = false;
             }
+            enabled_at_least_once.insert(thread_steps.begin(), thread_steps.end());
         }
     };
 
-    // Weak fairness protects a non-participant only when at least one of its
-    // source or flush transitions is enabled continuously. Check the cycle
-    // start and every successor state; the closing state intentionally repeats
-    // the start and provides an internal exact-closure validation.
+    // Preserve ADR 0018's weak predicate exactly: a non-participant thread is
+    // continuously enabled when it has some source or flush transition at
+    // every cycle state. The cycle repeats forever, so every exact endpoint
+    // observed even once is enabled infinitely often for strong fairness.
+    // Check the cycle start and every successor state; the closing state
+    // intentionally repeats the start and validates exact closure internally.
     observe_enabledness();
     for (std::size_t index = cycle_start; index < schedule.size(); ++index) {
         validate_replay_step(program, state, schedule.at(index), index);
@@ -3528,7 +3543,9 @@ NonTerminationReport make_nontermination_report(const Program& program,
         throw std::logic_error("nontermination cycle replay did not close exactly");
     }
 
-    Fairness fairness = Fairness::FairDivergence;
+    Fairness fairness = enabled_at_least_once.empty()
+        ? Fairness::FairDivergence
+        : Fairness::StronglyUnfairScheduleWitness;
     for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
         if (!participant.at(tid) && continuously_enabled.at(tid)) {
             fairness = Fairness::UnfairScheduleWitness;

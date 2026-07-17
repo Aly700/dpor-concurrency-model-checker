@@ -68,6 +68,10 @@ static void require_trylock_agreement(const Program& program, const char* messag
                       naive.first_error.has_value() == dpor.first_error.has_value() &&
                       naive.first_assertion.has_value() == dpor.first_assertion.has_value() &&
                       (naive.cycles_detected > 0) == (dpor.cycles_detected > 0) &&
+                      (naive.fair_cycles > 0) == (dpor.fair_cycles > 0) &&
+                      (naive.strongly_unfair_cycles > 0) ==
+                          (dpor.strongly_unfair_cycles > 0) &&
+                      (naive.unfair_cycles > 0) == (dpor.unfair_cycles > 0) &&
                       dpor.schedules_explored <= naive.schedules_explored,
                   message);
     for (const CheckResult* result : {&naive, &dpor}) {

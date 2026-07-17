@@ -145,6 +145,13 @@ void require_naive_dpor_agree(const model::Program& program) {
             "TryLock naive/DPOR assertion existence differs");
     require((naive.cycles_detected > 0) == (dpor.cycles_detected > 0),
             "TryLock naive/DPOR cycle existence differs");
+    require((naive.fair_cycles > 0) == (dpor.fair_cycles > 0),
+            "TryLock naive/DPOR fair-cycle existence differs");
+    require((naive.strongly_unfair_cycles > 0) ==
+                (dpor.strongly_unfair_cycles > 0),
+            "TryLock naive/DPOR strongly-unfair-cycle existence differs");
+    require((naive.unfair_cycles > 0) == (dpor.unfair_cycles > 0),
+            "TryLock naive/DPOR unfair-cycle existence differs");
     require(dpor.schedules_explored <= naive.schedules_explored,
             "TryLock DPOR explored more schedules than naive");
 }
@@ -392,6 +399,10 @@ void unlock_between_failed_and_successful_try_locks_preserves_unique_assertion()
                 naive.first_deadlock.has_value() == dpor.first_deadlock.has_value() &&
                 naive.first_error.has_value() == dpor.first_error.has_value() &&
                 (naive.cycles_detected > 0) == (dpor.cycles_detected > 0) &&
+                (naive.fair_cycles > 0) == (dpor.fair_cycles > 0) &&
+                (naive.strongly_unfair_cycles > 0) ==
+                    (dpor.strongly_unfair_cycles > 0) &&
+                (naive.unfair_cycles > 0) == (dpor.unfair_cycles > 0) &&
                 dpor.schedules_explored <= naive.schedules_explored,
             "spawn-gated middle-Unlock naive/DPOR verdicts disagree");
     for (const model::CheckResult* result : {&naive, &dpor}) {

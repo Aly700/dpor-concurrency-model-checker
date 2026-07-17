@@ -69,7 +69,11 @@ struct AssertionFailureReport {
     bool operator==(const AssertionFailureReport&) const = default;
 };
 
-enum class Fairness { UnfairScheduleWitness, FairDivergence };
+enum class Fairness {
+    UnfairScheduleWitness = 0,
+    FairDivergence = 1,
+    StronglyUnfairScheduleWitness = 2
+};
 
 struct NonTerminationReport {
     Fairness fairness{Fairness::UnfairScheduleWitness};
@@ -97,6 +101,8 @@ struct CheckResult {
     std::optional<ModelErrorReport> first_error;
     std::optional<AssertionFailureReport> first_assertion;
     std::optional<NonTerminationReport> first_nontermination;
+    // Appended to preserve the positional meaning of the legacy aggregate.
+    std::size_t strongly_unfair_cycles{0};
 };
 
 struct EffectiveScheduleStep {

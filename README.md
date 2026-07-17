@@ -225,20 +225,25 @@ The standard `schedule:` block is `stem + one cycle` and replays directly with
 states are identical and rejects any schedule that continues after the cycle
 closes.
 
-The `fairness` field applies weak scheduler fairness to this exact witness. An
-`unfair-schedule witness` continuously postpones some enabled non-participant,
-so weak fairness would break this cycle as witnessed. `fair divergence` means
-every non-participant is disabled somewhere in the cycle (or all unfinished
-threads participate), so the cycle can repeat under weak fairness. TSO/PSO
-flushes count both as thread steps and as enabled transitions.
+The `fairness` field classifies this exact witness under weak and strong
+scheduler fairness. An `unfair-schedule witness` continuously postpones some
+enabled non-participant, so even weak fairness would break the cycle as
+witnessed. A `strongly-unfair-schedule witness` has no continuously enabled
+non-participant, but some exact endpoint is enabled somewhere in every cycle
+iteration and never selected. `fair divergence` means no non-participant
+endpoint is enabled anywhere in the cycle (or all unfinished threads
+participate). Exact endpoints are `(thread, action_index[, PSO flush address])`;
+TSO/PSO flushes count both as thread steps and as enabled transitions.
 
 This remains an existential, witness-quality claim—not a system-level liveness
 verdict. Scheduling the postponed peer may lead to another cycle, and an unfair
 first report does not imply that no fair-divergence witness exists elsewhere.
 The checker deliberately keeps the deterministic first-found witness and tracks
-`fair_cycles`/`unfair_cycles` separately for exploration gates. Strong fairness,
-which protects transitions enabled infinitely often but not continuously, is
-future work. Verdict priority is race/deadlock/error/assertion, then
+`fair_cycles`/`strongly_unfair_cycles`/`unfair_cycles` separately for
+exploration gates. As in the original weak classifier, endpoints owned by a
+thread that takes any cycle step are outside this field; it does not claim
+per-action fairness within a participating thread. Verdict priority is
+race/deadlock/error/assertion, then
 non-termination, then clean up to bound, then clean; `also_found` preserves
 lower-priority findings from the same exploration.
 
@@ -326,16 +331,16 @@ bounded verdict and any `.dpor` modeling limitation.
 
 DPOR is never trusted on faith. Deterministic gates assert that
 `explore_dpor` and the exhaustive oracle agree on race/deadlock/error/assertion,
-cycle existence, fair-cycle existence, unfair-cycle existence, and whether any
-execution hit the step bound; that DPOR never explores more schedules; that
-every DPOR report replays to an identical report; and how far DPOR is from one
-schedule per Mazurkiewicz class:
+cycle existence, fair-cycle/strongly-unfair-cycle/unfair-cycle existence, and
+whether any execution hit the step bound; that DPOR never explores more
+schedules; that every DPOR report replays to an identical report; and how far
+DPOR is from one schedule per Mazurkiewicz class:
 
 1. **Exhaustive 2-thread sweep** — every program over a 25-action alphabet
-   (capped per length pair; 22,418 programs and 61,087 naive versus 34,108
+   (capped per length pair; 22,419 programs and 61,091 naive versus 34,111
    DPOR schedules, including hand-picked fixtures).
-2. **Strided 3-thread sweep** — 65,544 programs evenly sampled from the full
-   23-action, 6-slot space, totaling 896,252 naive versus 347,246 DPOR
+2. **Strided 3-thread sweep** — 65,546 programs evenly sampled from the full
+   23-action, 6-slot space, totaling 896,259 naive versus 347,251 DPOR
    schedules; it also retains an asserted three-reader discriminator with
    1,680 naive schedules and one DPOR representative and a barrier
    discriminator with six naive schedules and three DPOR representatives. The
@@ -350,7 +355,9 @@ schedule per Mazurkiewicz class:
    compared programs) and compared 2,983 programs, with 17 capped programs
    reported and excluded from verdict equality. Deterministic
    fractions run under TSO and PSO, and the summary prints both model counts
-   plus naive/DPOR total, fair, and unfair cycle counters.
+   plus naive/DPOR total, fair, strongly-unfair, and unfair cycle counters. A
+   fixed uncapped mutex-blink discriminator keeps the new comparison
+   non-vacuous even when the seeded corpus has no such witness.
 4. **SC/TSO/PSO optimality meter** — collects naive schedules for small
    non-error, non-assertion, zero-cycle, zero-bound-hit programs, canonicalizes
    phase-aware Mazurkiewicz trace classes using the same transition predicate
@@ -362,9 +369,10 @@ schedule per Mazurkiewicz class:
    corpora retain byte-identical meter lines SC 1.067, TSO 1.152, and PSO
    1.154.
 5. **Buffered-model oracles** — capped TSO and PSO program sweeps compare
-   naive and DPOR verdict/total-cycle/fair-cycle/unfair-cycle existence,
-   schedule dominance, and exact replay. The TryLock-widened runs check 10,775
-   TSO and 5,656 PSO programs over 13-action alphabets, with zero capped skips
+   naive and DPOR verdict/total-cycle/fair-cycle/strongly-unfair-cycle/
+   unfair-cycle existence, schedule dominance, and exact replay. The
+   strong-fairness-widened runs check 10,776 TSO and 5,657 PSO programs over
+   13-action alphabets, with zero capped skips
    in either oracle.
 6. **Cross-model inclusion** — 1,723 deterministic two-thread and hand-picked
    programs perform 17,230 per-kind checks that bug existence is monotone
@@ -378,7 +386,7 @@ All gates are deterministic and run in CI on Linux and macOS.
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
 soundness-relevant decision in `adr/` (0001 architecture crux through ADR
-0025's TryLock and spinlock gallery), including the exact vector-clock edge for
+0026's strong-fairness lasso classification), including the exact vector-clock edge for
 each synchronization kind and why each DPOR pruning step cannot lose a bug
 class.
 

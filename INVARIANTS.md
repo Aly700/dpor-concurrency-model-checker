@@ -53,16 +53,24 @@
   revisited state. The claim is existential. Its fairness field classifies only
   that witness and makes no system-level scheduler-fairness,
   starvation-freedom, or universal-liveness claim.
-- Lasso fairness uses weak fairness. Cycle participants are the owners of all
-  source and flush transitions in the cycle. A witness is an
-  `unfair-schedule witness` exactly when some non-participant has at least one
-  enabled source or flush transition at every replayed cycle state; otherwise
-  it is `fair divergence`. Enabled at only some states is insufficient under
-  weak fairness. TSO and PSO pending flushes count as enabledness, and a flush
-  executed in the cycle makes its owner a participant.
-- `fair_cycles + unfair_cycles == cycles_detected`. The first non-termination
-  report remains first-found; its class does not imply the other class is absent
-  elsewhere in the explored space.
+- Lasso fairness has three strongest-applicable witness classes. Cycle
+  participants are the thread owners of all source and flush steps in the
+  cycle. The legacy `unfair-schedule witness` predicate is unchanged: some
+  non-participant thread has at least one enabled source or flush step at every
+  replayed cycle state. Otherwise, a witness is a
+  `strongly-unfair-schedule witness` when an exact non-participant endpoint is
+  enabled at any cycle state, because repetition enables it infinitely often;
+  it is `fair divergence` only when no non-participant endpoint is enabled
+  anywhere in the cycle. Exact endpoint identity is
+  `(thread, action_index[, PSO flush address])`. TSO and PSO pending flushes
+  count, and a flush executed in the cycle makes its owner a participant.
+- Fairness classification deliberately excludes every endpoint owned by a
+  thread that takes any cycle step. It classifies this witness schedule under
+  inter-thread scheduler fairness, not action fairness within a participating
+  thread, and makes no program-level liveness claim.
+- `fair_cycles + strongly_unfair_cycles + unfair_cycles == cycles_detected`.
+  The first non-termination report remains first-found; its class does not
+  imply the other classes are absent elsewhere in the explored space.
 
 ## Replay
 
@@ -275,7 +283,7 @@
   transition across a sibling whose swapped prefix was not explored beyond the
   cut. Differential gates compare naive/DPOR cycle existence as a boolean;
   cycle counts may differ because DPOR explores class representatives.
-- Complete naive/DPOR gates compare fair-cycle and unfair-cycle existence
-  independently. Raw per-class cycle counts may differ because DPOR explores
-  representatives; a missing class is a soundness failure, not an expectation
-  to weaken silently.
+- Complete naive/DPOR gates compare fair-cycle, strongly-unfair-cycle, and
+  unfair-cycle existence independently. Raw per-class cycle counts may differ
+  because DPOR explores representatives; a missing class is a soundness
+  failure, not an expectation to weaken silently.

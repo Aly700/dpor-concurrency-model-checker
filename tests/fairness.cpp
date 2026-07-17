@@ -9,8 +9,16 @@
 #include <cassert>
 #include <sstream>
 #include <string>
+#include <type_traits>
 
 namespace {
+
+static_assert(static_cast<std::underlying_type_t<model::Fairness>>(
+                  model::Fairness::UnfairScheduleWitness) == 0);
+static_assert(static_cast<std::underlying_type_t<model::Fairness>>(
+                  model::Fairness::FairDivergence) == 1);
+static_assert(static_cast<std::underlying_type_t<model::Fairness>>(
+                  model::Fairness::StronglyUnfairScheduleWitness) == 2);
 
 model::ValueOperand imm(model::Value value) {
     model::ValueOperand operand;
@@ -115,8 +123,16 @@ void require_replay_identity(const model::ModelChecker& checker,
     const model::CheckResult replayed =
         checker.replay(explored.first_nontermination->schedule);
     assert(replayed.first_nontermination == explored.first_nontermination);
+    assert(replayed.fair_cycles + replayed.strongly_unfair_cycles +
+               replayed.unfair_cycles ==
+           replayed.cycles_detected);
     assert(replayed.fair_cycles ==
            (explored.first_nontermination->fairness == model::Fairness::FairDivergence ? 1U : 0U));
+    assert(replayed.strongly_unfair_cycles ==
+           (explored.first_nontermination->fairness ==
+                    model::Fairness::StronglyUnfairScheduleWitness
+                ? 1U
+                : 0U));
     assert(replayed.unfair_cycles ==
            (explored.first_nontermination->fairness ==
                     model::Fairness::UnfairScheduleWitness
@@ -137,6 +153,8 @@ void finished_peer_does_not_make_a_pure_spin_unfair() {
     assert(dpor.first_nontermination->fairness == model::Fairness::FairDivergence);
     assert(naive.fair_cycles > 0 && naive.unfair_cycles == 0);
     assert(dpor.fair_cycles > 0 && dpor.unfair_cycles == 0);
+    assert(naive.strongly_unfair_cycles == 0);
+    assert(dpor.strongly_unfair_cycles == 0);
     require_replay_identity(checker, dpor);
 
     std::ostringstream output;
@@ -159,12 +177,63 @@ void continuously_enabled_flag_setter_makes_the_spin_witness_unfair() {
            model::Fairness::UnfairScheduleWitness);
     assert(naive.unfair_cycles > 0);
     assert(dpor.unfair_cycles > 0);
+    assert(naive.strongly_unfair_cycles == 0);
+    assert(dpor.strongly_unfair_cycles == 0);
     require_replay_identity(checker, dpor);
 
     std::ostringstream output;
     cli::print_report(output, program, dpor, model::MemoryModel::SC, 20);
     assert(output.str().find("  fairness: unfair-schedule witness\n") !=
            std::string::npos);
+}
+
+void intermittently_enabled_mutex_waiter_makes_the_witness_strongly_unfair() {
+    // Thread 1's exact Lock(m) endpoint is enabled after thread 0 unlocks,
+    // then disabled again after thread 0 retakes m. It is enabled in every
+    // cycle iteration but not continuously through the cycle.
+    const model::Program program{{
+        {
+            set(7, 1),
+            lock("m"),
+            label("retry"),
+            unlock("m"),
+            lock("m"),
+            bnz(7, "retry"),
+        },
+        {lock("m")},
+    }};
+    const model::ModelChecker checker(program, 20);
+    const model::Schedule witness{
+        {0, 0, std::nullopt},
+        {0, 1, std::nullopt},
+        {0, 3, std::nullopt},
+        {0, 4, std::nullopt},
+        {0, 5, std::nullopt},
+    };
+
+    const model::CheckResult replayed = checker.replay(witness);
+    assert(replayed.first_nontermination.has_value());
+    assert(replayed.first_nontermination->fairness ==
+           model::Fairness::StronglyUnfairScheduleWitness);
+    assert(replayed.first_nontermination->cycle ==
+           (model::Schedule{{0, 3, std::nullopt},
+                            {0, 4, std::nullopt},
+                            {0, 5, std::nullopt}}));
+    assert(replayed.strongly_unfair_cycles == 1);
+    assert(replayed.unfair_cycles == 0);
+    assert(replayed.fair_cycles == 0);
+    require_replay_identity(checker, replayed);
+
+    std::ostringstream output;
+    cli::print_report(output, program, replayed, model::MemoryModel::SC, 20);
+    assert(output.str().find(
+               "  fairness: strongly-unfair-schedule witness\n") !=
+           std::string::npos);
+
+    const model::CheckResult naive = checker.explore_naive();
+    const model::CheckResult dpor = checker.explore_dpor();
+    assert(naive.strongly_unfair_cycles > 0);
+    assert(dpor.strongly_unfair_cycles > 0);
 }
 
 void mutual_backoff_cycle_with_both_threads_participating_is_fair_divergence() {
@@ -228,6 +297,8 @@ void mutex_blocked_nonparticipant_does_not_make_the_cycle_unfair() {
     assert(dpor.first_nontermination.has_value());
     assert(dpor.first_nontermination->fairness == model::Fairness::FairDivergence);
     assert(dpor.fair_cycles > 0);
+    assert(dpor.strongly_unfair_cycles == 0);
+    assert(dpor.unfair_cycles == 0);
     require_replay_identity(checker, dpor);
 }
 
@@ -314,6 +385,7 @@ void failed_try_lock_spinner_is_unfair_while_the_holder_can_unlock() {
 int main() {
     finished_peer_does_not_make_a_pure_spin_unfair();
     continuously_enabled_flag_setter_makes_the_spin_witness_unfair();
+    intermittently_enabled_mutex_waiter_makes_the_witness_strongly_unfair();
     mutual_backoff_cycle_with_both_threads_participating_is_fair_divergence();
     mutex_blocked_nonparticipant_does_not_make_the_cycle_unfair();
     a_pending_flush_is_enabled_for_weak_fairness_under_tso_and_pso();

@@ -70,6 +70,8 @@ struct FuzzStats {
     std::size_t dpor_cycles{0};
     std::size_t naive_fair_cycles{0};
     std::size_t dpor_fair_cycles{0};
+    std::size_t naive_strongly_unfair_cycles{0};
+    std::size_t dpor_strongly_unfair_cycles{0};
     std::size_t naive_unfair_cycles{0};
     std::size_t dpor_unfair_cycles{0};
     std::array<std::size_t, 4> rwlock_actions{};
@@ -826,6 +828,10 @@ bool fair_cycle_exists(const model::CheckResult& result) {
     return result.fair_cycles > 0;
 }
 
+bool strongly_unfair_cycle_exists(const model::CheckResult& result) {
+    return result.strongly_unfair_cycles > 0;
+}
+
 bool unfair_cycle_exists(const model::CheckResult& result) {
     return result.unfair_cycles > 0;
 }
@@ -852,6 +858,10 @@ void print_failure(std::uint64_t seed,
               << " cycles_detected=" << naive.cycles_detected
               << " fair_cycle=" << fair_cycle_exists(naive)
               << " fair_cycles=" << naive.fair_cycles
+              << " strongly_unfair_cycle="
+              << strongly_unfair_cycle_exists(naive)
+              << " strongly_unfair_cycles="
+              << naive.strongly_unfair_cycles
               << " unfair_cycle=" << unfair_cycle_exists(naive)
               << " unfair_cycles=" << naive.unfair_cycles
               << " bound=" << hit_step_bound(naive) << '\n';
@@ -864,6 +874,10 @@ void print_failure(std::uint64_t seed,
               << " cycles_detected=" << dpor.cycles_detected
               << " fair_cycle=" << fair_cycle_exists(dpor)
               << " fair_cycles=" << dpor.fair_cycles
+              << " strongly_unfair_cycle="
+              << strongly_unfair_cycle_exists(dpor)
+              << " strongly_unfair_cycles="
+              << dpor.strongly_unfair_cycles
               << " unfair_cycle=" << unfair_cycle_exists(dpor)
               << " unfair_cycles=" << dpor.unfair_cycles
               << " bound=" << hit_step_bound(dpor) << '\n';
@@ -1099,6 +1113,8 @@ void check_program(std::uint64_t seed,
     stats.dpor_cycles += dpor.cycles_detected;
     stats.naive_fair_cycles += naive.fair_cycles;
     stats.dpor_fair_cycles += dpor.fair_cycles;
+    stats.naive_strongly_unfair_cycles += naive.strongly_unfair_cycles;
+    stats.dpor_strongly_unfair_cycles += dpor.strongly_unfair_cycles;
     stats.naive_unfair_cycles += naive.unfair_cycles;
     stats.dpor_unfair_cycles += dpor.unfair_cycles;
 
@@ -1117,6 +1133,8 @@ void check_program(std::uint64_t seed,
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
         cycle_exists(dpor) != cycle_exists(naive) ||
         fair_cycle_exists(dpor) != fair_cycle_exists(naive) ||
+        strongly_unfair_cycle_exists(dpor) !=
+            strongly_unfair_cycle_exists(naive) ||
         unfair_cycle_exists(dpor) != unfair_cycle_exists(naive) ||
         hit_step_bound(dpor) != hit_step_bound(naive)) {
         fail_program(seed, program_index, mode, memory_model, program, naive, dpor, "verdict mismatch");
@@ -1159,6 +1177,34 @@ void check_program(std::uint64_t seed,
     }
 }
 
+void require_strong_fairness_discriminator() {
+    const model::Program program{{
+        {set(7, 1), lock("m"), label("retry"), unlock("m"),
+         lock("m"), bnz(7, "retry")},
+        {lock("m")},
+    }};
+    const model::ModelChecker checker(program, 20);
+    const model::CheckResult naive = checker.explore_naive();
+    const model::CheckResult dpor = checker.explore_dpor();
+    if (!strongly_unfair_cycle_exists(naive) ||
+        !strongly_unfair_cycle_exists(dpor) ||
+        fair_cycle_exists(naive) || fair_cycle_exists(dpor) ||
+        unfair_cycle_exists(naive) || unfair_cycle_exists(dpor)) {
+        throw std::runtime_error(
+            "fuzz tri-state discriminator did not isolate strong unfairness");
+    }
+    if (!dpor.first_nontermination.has_value()) {
+        throw std::runtime_error(
+            "fuzz tri-state discriminator omitted its witness");
+    }
+    const model::CheckResult replayed =
+        checker.replay(dpor.first_nontermination->schedule);
+    if (replayed.first_nontermination != dpor.first_nontermination) {
+        throw std::runtime_error(
+            "fuzz tri-state discriminator did not replay identically");
+    }
+}
+
 std::uint64_t parse_seed(const char* text) {
     std::size_t parsed = 0;
     const std::uint64_t seed = std::stoull(text, &parsed, 0);
@@ -1175,6 +1221,7 @@ int main(int argc, char** argv) {
     assert_semaphore_spellings_round_trip();
     assert_barrier_spelling_round_trips();
     assert_try_lock_spelling_round_trips();
+    require_strong_fairness_discriminator();
 
     // CTest uses these fixed seeds for deterministic coverage. Supplying one
     // or more argv seeds replaces the fixed set for manual exploration, e.g.
@@ -1240,6 +1287,10 @@ int main(int argc, char** argv) {
               << " dpor_cycles=" << stats.dpor_cycles
               << " naive_fair_cycles=" << stats.naive_fair_cycles
               << " dpor_fair_cycles=" << stats.dpor_fair_cycles
+              << " naive_strongly_unfair_cycles="
+              << stats.naive_strongly_unfair_cycles
+              << " dpor_strongly_unfair_cycles="
+              << stats.dpor_strongly_unfair_cycles
               << " naive_unfair_cycles=" << stats.naive_unfair_cycles
               << " dpor_unfair_cycles=" << stats.dpor_unfair_cycles
               << " rlock_actions=" << stats.rwlock_actions[0]

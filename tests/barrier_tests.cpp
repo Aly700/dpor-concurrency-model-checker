@@ -163,6 +163,13 @@ void require_naive_dpor_agree(const model::Program& program,
             "barrier naive/DPOR assertion existence differs");
     require((naive.cycles_detected > 0) == (dpor.cycles_detected > 0),
             "barrier naive/DPOR cycle existence differs");
+    require((naive.fair_cycles > 0) == (dpor.fair_cycles > 0),
+            "barrier naive/DPOR fair-cycle existence differs");
+    require((naive.strongly_unfair_cycles > 0) ==
+                (dpor.strongly_unfair_cycles > 0),
+            "barrier naive/DPOR strongly-unfair-cycle existence differs");
+    require((naive.unfair_cycles > 0) == (dpor.unfair_cycles > 0),
+            "barrier naive/DPOR unfair-cycle existence differs");
     require((naive.bound_exceeded_executions > 0) ==
                 (dpor.bound_exceeded_executions > 0),
             "barrier naive/DPOR bound existence differs");

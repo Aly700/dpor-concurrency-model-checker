@@ -100,6 +100,8 @@ const char* fairness_text(model::Fairness fairness) {
     switch (fairness) {
     case model::Fairness::UnfairScheduleWitness:
         return "unfair-schedule witness";
+    case model::Fairness::StronglyUnfairScheduleWitness:
+        return "strongly-unfair-schedule witness";
     case model::Fairness::FairDivergence:
         return "fair divergence";
     }

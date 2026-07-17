@@ -160,6 +160,42 @@ Action broadcast(std::string condition) {
     return action;
 }
 
+ValueOperand imm(Value value) {
+    ValueOperand operand;
+    operand.kind = ValueOperandKind::Immediate;
+    operand.immediate = value;
+    return operand;
+}
+
+Action set(RegisterId reg, Value value) {
+    Action action;
+    action.kind = ActionKind::Set;
+    action.destination = reg;
+    action.value = imm(value);
+    return action;
+}
+
+Action label(std::string name) {
+    Action action;
+    action.kind = ActionKind::Label;
+    action.label = std::move(name);
+    return action;
+}
+
+Action bnz(RegisterId reg, std::string target) {
+    Action action;
+    action.kind = ActionKind::BranchNonzero;
+    action.source_register = reg;
+    action.label = std::move(target);
+    return action;
+}
+
+Action yield() {
+    Action action;
+    action.kind = ActionKind::Yield;
+    return action;
+}
+
 void require(bool condition, const char* message) {
     if (!condition) {
         throw std::runtime_error(message);
@@ -203,6 +239,18 @@ bool cycle_exists(const CheckResult& result) {
     return result.cycles_detected > 0;
 }
 
+bool fair_cycle_exists(const CheckResult& result) {
+    return result.fair_cycles > 0;
+}
+
+bool strongly_unfair_cycle_exists(const CheckResult& result) {
+    return result.strongly_unfair_cycles > 0;
+}
+
+bool unfair_cycle_exists(const CheckResult& result) {
+    return result.unfair_cycles > 0;
+}
+
 void cross_validate_program(const Program& p,
                             std::size_t& checked,
                             std::size_t& naive_total,
@@ -217,6 +265,10 @@ void cross_validate_program(const Program& p,
         dpor.first_error.has_value() != naive.first_error.has_value() ||
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
         cycle_exists(dpor) != cycle_exists(naive) ||
+        fair_cycle_exists(dpor) != fair_cycle_exists(naive) ||
+        strongly_unfair_cycle_exists(dpor) !=
+            strongly_unfair_cycle_exists(naive) ||
+        unfair_cycle_exists(dpor) != unfair_cycle_exists(naive) ||
         bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "MISMATCH in 3-thread sweep at checked index " << checked << "\n";
@@ -290,6 +342,17 @@ int main() {
         cross_validate_program(p, checked, naive_total, dpor_total, strict);
     }
 
+    const Program weak_and_fair_cycles{{
+        {set(7, 1), label("spin"), bnz(7, "spin")},
+        {yield()},
+        {},
+    }};
+    const Program strongly_unfair_cycle{{
+        {set(7, 1), lock("m"), label("retry"), unlock("m"),
+         lock("m"), bnz(7, "retry")},
+        {lock("m")},
+        {},
+    }};
     const std::vector<Program> handpicked = {
         Program{{
             {lock("m"), wait("cv", "m")},
@@ -335,9 +398,28 @@ int main() {
             {sem_post("sem")},
             {sem_wait("sem"), read("x")},
         }},
+        // Before thread 1 yields, thread 0's spin cycle is weakly unfair;
+        // after it finishes, the same loop supplies a genuinely fair cycle.
+        weak_and_fair_cycles,
+        // Thread 1's Lock(m) is enabled only between release and reacquire,
+        // making the strong-class existence comparison non-vacuous.
+        strongly_unfair_cycle,
     };
     for (const auto& program : handpicked) {
         cross_validate_program(program, checked, naive_total, dpor_total, strict);
+    }
+
+    for (const CheckResult& result :
+         {ModelChecker(weak_and_fair_cycles).explore_naive(),
+          ModelChecker(weak_and_fair_cycles).explore_dpor()}) {
+        require(fair_cycle_exists(result) && unfair_cycle_exists(result),
+                "three-thread weak/fair cycle gate is vacuous");
+    }
+    for (const CheckResult& result :
+         {ModelChecker(strongly_unfair_cycle).explore_naive(),
+          ModelChecker(strongly_unfair_cycle).explore_dpor()}) {
+        require(strongly_unfair_cycle_exists(result),
+                "three-thread strongly-unfair cycle gate is vacuous");
     }
 
     // Three fixed per-thread chains have 9!/(3!^3) = 1680 interleavings.

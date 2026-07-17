@@ -244,6 +244,10 @@ void spin_loop_reports_schedule_existence_of_nontermination() {
     assert(dpor.first_nontermination.has_value());
     assert(naive.cycles_detected > 0);
     assert(dpor.cycles_detected > 0);
+    assert((naive.fair_cycles > 0) == (dpor.fair_cycles > 0));
+    assert((naive.strongly_unfair_cycles > 0) ==
+           (dpor.strongly_unfair_cycles > 0));
+    assert((naive.unfair_cycles > 0) == (dpor.unfair_cycles > 0));
     assert(naive.bound_exceeded_executions > 0);
     assert(dpor.bound_exceeded_executions > 0);
 }

@@ -112,6 +112,7 @@ void pure_spin_has_a_one_step_cycle_and_replays_identically() {
            (model::Schedule{{0, 0}, {0, 2}}));
     assert(dpor.first_nontermination->fairness == model::Fairness::FairDivergence);
     assert(dpor.fair_cycles == 1);
+    assert(dpor.strongly_unfair_cycles == 0);
     assert(dpor.unfair_cycles == 0);
 
     const model::CheckResult replayed = checker.replay(dpor.first_nontermination->schedule);

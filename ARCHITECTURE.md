@@ -279,6 +279,30 @@ inside the core. Some counters are intentionally lower-bound proxies (for
 example, gallery CLI child processes are separate), so wall-time claims come
 only from uninstrumented Release harness runs.
 
+## Lasso Fairness Classification
+
+An exact cycle report replays `stem + cycle` once more and classifies that
+witness without changing exploration. Cycle participants remain the thread
+owners of every scheduled source or flush step, preserving ADR 0018. For each
+non-participant, replay observes interpreter-enabled exact schedule endpoints
+at the cycle start and after every cycle step. Source and TSO endpoints are
+`(thread, action_index)`; PSO flush identity also carries the canonical address
+ID.
+
+The classifier retains the old weak predicate verbatim. If some
+non-participant thread has an enabled endpoint at every state, the report is
+`unfair-schedule witness`. Otherwise, a nonempty union of exact endpoints over
+the cycle is `strongly-unfair-schedule witness`: the repeated cycle enables at
+least one postponed endpoint infinitely often. An empty union is
+`fair divergence`. The first applicable label wins, and every cycle increments
+exactly one of `unfair_cycles`, `strongly_unfair_cycles`, or `fair_cycles`.
+
+This is deliberately witness- and thread-scheduler-scoped. Endpoints owned by
+a thread that takes any cycle step are excluded, so the field does not claim
+action fairness within a participating thread or program-level liveness.
+Classification runs only after exact cycle closure; acyclic and residual-bound
+executions pay no added search or post-processing cost.
+
 ## DPOR Reduction
 
 DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, done, and
@@ -429,11 +453,13 @@ because it was previously slept.
 The DPOR implementation is checked against deterministic gates. The 2-thread
 oracle sweep enumerates small programs by length pair over a 25-action alphabet
 and compares naive vs. DPOR race/deadlock/error/assertion existence, the
-bound-hit boolean, schedule dominance, and report replay identity. The
+bound-hit boolean, total-cycle existence, all three fairness-class existence
+booleans, schedule dominance, and report replay identity. The
 3-thread oracle sweep uses an evenly strided deterministic sample of the larger
 23-action, 6-slot space, plus hand-picked disabled-transition cases, to
 exercise spawn, join, condition-variable, rwlock, semaphore, and barrier
-enabledness. A
+enabledness. Fixed spin and mutex-blink lassos keep its weak, strong, and fair
+class comparisons non-vacuous. A
 separate three-reader fixture pins 1680 naive leaves and one DPOR
 representative. The seeded differential fuzz gate generates 3000 fixed-seed
 programs across 2-5 threads, 1-6 actions per thread, plain and atomic memory,
@@ -441,12 +467,16 @@ mutexes, rwlocks, semaphores, barriers, TryLock, condition variables, joins,
 yields, spawn-shaped programs, and modeled-error cases, plus a value-mode lane
 with registers, branches, CAS, fetch-add, assertions, and deliberate bound
 hits; capped explorations are counted but excluded from verdict equality
-because truncation can legitimately hide a later endpoint.
+because truncation can legitimately hide a later endpoint. Fuzz compares all
+three lasso classes and runs a fixed uncapped mutex-blink discriminator even
+when the seeded corpus contains no strong-class witness.
 
-The TryLock-widened acceptance run checked 22,418 two-thread programs (61,087
-naive versus 34,108 DPOR schedules), 65,544 three-thread programs (896,252
-naive versus 347,246 DPOR schedules), 10,775 TSO programs (136,097 versus
-28,027), and 5,656 PSO programs (85,816 versus 15,104). Both buffered oracles
+The strong-fairness-widened acceptance run checked 22,419 two-thread programs
+(61,091 naive versus 34,111 DPOR schedules), 65,546 three-thread programs
+(896,259 naive versus 347,251 DPOR schedules), 10,776 TSO programs (136,101
+versus 28,030), and 5,657 PSO programs (85,820 versus 15,107). Every oracle
+observed fair, strongly-unfair, and weakly-unfair cycle existence under both
+naive and DPOR exploration. Both buffered oracles
 enforce zero capped skips. Their action alphabets were respectively 25, 23, 13,
 and 13. The fixed fuzz run generated 952 `BarrierWait` and 1,578 `TryLock`
 actions, with 1,556 TryLocks in

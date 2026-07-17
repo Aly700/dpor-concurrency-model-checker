@@ -158,6 +158,10 @@ bool fair_cycle_exists(const model::CheckResult& result) {
     return result.fair_cycles > 0;
 }
 
+bool strongly_unfair_cycle_exists(const model::CheckResult& result) {
+    return result.strongly_unfair_cycles > 0;
+}
+
 bool unfair_cycle_exists(const model::CheckResult& result) {
     return result.unfair_cycles > 0;
 }
@@ -165,6 +169,8 @@ bool unfair_cycle_exists(const model::CheckResult& result) {
 struct CycleCounts {
     std::size_t naive_fair{0};
     std::size_t dpor_fair{0};
+    std::size_t naive_strongly_unfair{0};
+    std::size_t dpor_strongly_unfair{0};
     std::size_t naive_unfair{0};
     std::size_t dpor_unfair{0};
 };
@@ -242,6 +248,8 @@ void cross_validate_program(const model::Program& program,
         dpor.first_assertion.has_value() != naive.first_assertion.has_value() ||
         cycle_exists(dpor) != cycle_exists(naive) ||
         fair_cycle_exists(dpor) != fair_cycle_exists(naive) ||
+        strongly_unfair_cycle_exists(dpor) !=
+            strongly_unfair_cycle_exists(naive) ||
         unfair_cycle_exists(dpor) != unfair_cycle_exists(naive) ||
         bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
@@ -254,6 +262,8 @@ void cross_validate_program(const model::Program& program,
                   << " assertion=" << naive.first_assertion.has_value()
                   << " cycle=" << cycle_exists(naive)
                   << " fair_cycle=" << fair_cycle_exists(naive)
+                  << " strongly_unfair_cycle="
+                  << strongly_unfair_cycle_exists(naive)
                   << " unfair_cycle=" << unfair_cycle_exists(naive)
                   << " bound=" << bound_hit(naive) << '\n';
         std::cerr << "  dpor schedules=" << dpor.schedules_explored
@@ -263,6 +273,8 @@ void cross_validate_program(const model::Program& program,
                   << " assertion=" << dpor.first_assertion.has_value()
                   << " cycle=" << cycle_exists(dpor)
                   << " fair_cycle=" << fair_cycle_exists(dpor)
+                  << " strongly_unfair_cycle="
+                  << strongly_unfair_cycle_exists(dpor)
                   << " unfair_cycle=" << unfair_cycle_exists(dpor)
                   << " bound=" << bound_hit(dpor) << '\n';
         std::abort();
@@ -274,6 +286,8 @@ void cross_validate_program(const model::Program& program,
     dpor_total += dpor.schedules_explored;
     cycle_counts.naive_fair += naive.fair_cycles;
     cycle_counts.dpor_fair += dpor.fair_cycles;
+    cycle_counts.naive_strongly_unfair += naive.strongly_unfair_cycles;
+    cycle_counts.dpor_strongly_unfair += dpor.strongly_unfair_cycles;
     cycle_counts.naive_unfair += naive.unfair_cycles;
     cycle_counts.dpor_unfair += dpor.unfair_cycles;
 }
@@ -329,6 +343,23 @@ int main() {
                            naive_total,
                            dpor_total,
                            cycle_counts);
+    cross_validate_program(model::Program{{
+                               {set(7, 1), lock("m"), label("retry"),
+                                unlock("m"), lock("m"), bnz(7, "retry")},
+                               {lock("m")},
+                           }},
+                           programs_checked,
+                           skipped_capped,
+                           naive_total,
+                           dpor_total,
+                           cycle_counts);
+
+    if (cycle_counts.naive_fair == 0 || cycle_counts.dpor_fair == 0 ||
+        cycle_counts.naive_strongly_unfair == 0 ||
+        cycle_counts.dpor_strongly_unfair == 0 ||
+        cycle_counts.naive_unfair == 0 || cycle_counts.dpor_unfair == 0) {
+        throw std::runtime_error("TSO tri-state cycle gate is vacuous");
+    }
 
     std::cout << "tso_oracle: programs checked=" << programs_checked
               << " skipped_capped=" << skipped_capped
@@ -338,6 +369,10 @@ int main() {
               << " dpor schedules total=" << dpor_total
               << " naive_fair_cycles=" << cycle_counts.naive_fair
               << " dpor_fair_cycles=" << cycle_counts.dpor_fair
+              << " naive_strongly_unfair_cycles="
+              << cycle_counts.naive_strongly_unfair
+              << " dpor_strongly_unfair_cycles="
+              << cycle_counts.dpor_strongly_unfair
               << " naive_unfair_cycles=" << cycle_counts.naive_unfair
               << " dpor_unfair_cycles=" << cycle_counts.dpor_unfair << '\n';
     if (skipped_capped != 0) {
