@@ -9,6 +9,12 @@
 // fallback, which 2-thread sweeps exercise only weakly.
 #include "model/checker.hpp"
 
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+#include "symmetry_diagnosis.hpp"
+
+#include <chrono>
+#endif
+
 #include <algorithm>
 #include <cstdint>
 #include <iostream>
@@ -257,8 +263,34 @@ void cross_validate_program(const Program& p,
                             std::size_t& dpor_total,
                             std::size_t& strict) {
     const ModelChecker checker(p);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto naive_started = std::chrono::steady_clock::now();
+#endif
     const auto naive = checker.explore_naive();
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto naive_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - naive_started)
+            .count());
+    const auto dpor_started = std::chrono::steady_clock::now();
+#endif
     const auto dpor = checker.explore_dpor();
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto dpor_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - dpor_started)
+            .count());
+    symmetry_diagnosis::record_program(
+        "dpor_oracle_3threads",
+        {"memory=sc", "paired", "threads=3"},
+        p,
+        checker,
+        MemoryModel::SC,
+        naive,
+        dpor,
+        20000,
+        {naive_ns, dpor_ns});
+#endif
 
     if (dpor.first_race.has_value() != naive.first_race.has_value() ||
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
@@ -446,5 +478,8 @@ int main() {
               << " naive_schedules=" << naive_total
               << " dpor_schedules=" << dpor_total
               << " strict_reductions=" << strict << "\n";
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    symmetry_diagnosis::print_summaries(std::cout);
+#endif
     return 0;
 }

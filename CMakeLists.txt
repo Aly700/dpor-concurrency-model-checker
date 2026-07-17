@@ -17,6 +17,9 @@ option(DPOR_BUILD_EXPLORATION_PROFILE
 option(DPOR_ENABLE_RESTORE_ASSERTS
        "Enable deterministic sampled full-state/history restore assertions"
        OFF)
+option(DPOR_BUILD_SYMMETRY_DIAGNOSIS
+       "Build default-off thread-symmetry opportunity diagnostics"
+       OFF)
 
 add_library(model_checker
     src/model/action.cpp
@@ -177,6 +180,47 @@ if(DPOR_BUILD_EXPLORATION_PROFILE)
     target_compile_options(dpor_fuzz_differential_profile PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+if(DPOR_BUILD_SYMMETRY_DIAGNOSIS)
+    add_library(symmetry_diagnosis_support
+        tests/symmetry_diagnosis.cpp
+    )
+    target_include_directories(symmetry_diagnosis_support PUBLIC tests)
+    target_link_libraries(symmetry_diagnosis_support PUBLIC model_checker)
+    target_compile_options(symmetry_diagnosis_support PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(symmetry_diagnosis_tests
+        tests/symmetry_diagnosis_tests.cpp
+    )
+    target_link_libraries(symmetry_diagnosis_tests PRIVATE symmetry_diagnosis_support)
+    target_compile_options(symmetry_diagnosis_tests PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(dpor_oracle_symmetry tests/dpor_oracle.cpp)
+    target_compile_definitions(dpor_oracle_symmetry PRIVATE DPOR_SYMMETRY_DIAGNOSIS=1)
+    target_link_libraries(dpor_oracle_symmetry PRIVATE symmetry_diagnosis_support)
+
+    add_executable(dpor_oracle_3threads_symmetry tests/dpor_oracle_3threads.cpp)
+    target_compile_definitions(dpor_oracle_3threads_symmetry PRIVATE DPOR_SYMMETRY_DIAGNOSIS=1)
+    target_link_libraries(dpor_oracle_3threads_symmetry PRIVATE symmetry_diagnosis_support)
+
+    add_executable(tso_oracle_symmetry tests/tso_oracle.cpp)
+    target_compile_definitions(tso_oracle_symmetry PRIVATE DPOR_SYMMETRY_DIAGNOSIS=1)
+    target_link_libraries(tso_oracle_symmetry PRIVATE symmetry_diagnosis_support)
+
+    add_executable(pso_oracle_symmetry tests/pso_oracle.cpp)
+    target_compile_definitions(pso_oracle_symmetry PRIVATE DPOR_SYMMETRY_DIAGNOSIS=1)
+    target_link_libraries(pso_oracle_symmetry PRIVATE symmetry_diagnosis_support)
+
+    add_executable(dpor_fuzz_differential_symmetry tests/fuzz_differential.cpp)
+    target_compile_definitions(dpor_fuzz_differential_symmetry PRIVATE DPOR_SYMMETRY_DIAGNOSIS=1)
+    target_link_libraries(dpor_fuzz_differential_symmetry PRIVATE dpor_cli_lib symmetry_diagnosis_support)
+    target_compile_options(dpor_fuzz_differential_symmetry PRIVATE -Wall -Wextra -Wpedantic)
+
+    add_executable(classic_gallery_tests_symmetry tests/classic_gallery.cpp)
+    target_compile_definitions(classic_gallery_tests_symmetry PRIVATE DPOR_SYMMETRY_DIAGNOSIS=1)
+    target_link_libraries(classic_gallery_tests_symmetry PRIVATE dpor_cli_lib symmetry_diagnosis_support)
+    target_compile_options(classic_gallery_tests_symmetry PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 include(CTest)
 add_test(NAME dpor_smoke COMMAND dpor_smoke)
 add_test(NAME dpor_phase1 COMMAND dpor_phase1)
@@ -208,4 +252,8 @@ add_test(NAME dpor_fuzz_differential COMMAND dpor_fuzz_differential)
 
 if(DPOR_BUILD_EXPLORATION_PROFILE)
     add_test(NAME exploration_metrics_tests COMMAND exploration_metrics_tests)
+endif()
+
+if(DPOR_BUILD_SYMMETRY_DIAGNOSIS)
+    add_test(NAME symmetry_diagnosis_tests COMMAND symmetry_diagnosis_tests)
 endif()

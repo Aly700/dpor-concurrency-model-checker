@@ -1,5 +1,11 @@
 #include "model/checker.hpp"
 
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+#include "symmetry_diagnosis.hpp"
+
+#include <chrono>
+#endif
+
 #include <array>
 #include <algorithm>
 #include <cassert>
@@ -406,8 +412,34 @@ void cross_validate_program(const model::Program& program,
                             std::size_t& dpor_total,
                             CycleCounts& cycle_counts) {
     const model::ModelChecker checker(program);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto naive_started = std::chrono::steady_clock::now();
+#endif
     const auto naive = checker.explore_naive();
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto naive_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - naive_started)
+            .count());
+    const auto dpor_started = std::chrono::steady_clock::now();
+#endif
     const auto dpor = checker.explore_dpor();
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto dpor_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - dpor_started)
+            .count());
+    symmetry_diagnosis::record_program(
+        "dpor_oracle",
+        {"memory=sc", "paired"},
+        program,
+        checker,
+        model::MemoryModel::SC,
+        naive,
+        dpor,
+        20000,
+        {naive_ns, dpor_ns});
+#endif
 
     if (dpor.first_race.has_value() != naive.first_race.has_value() ||
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
@@ -737,5 +769,8 @@ int main() {
               << cycle_counts.dpor_strongly_unfair
               << " naive_unfair_cycles=" << cycle_counts.naive_unfair
               << " dpor_unfair_cycles=" << cycle_counts.dpor_unfair << '\n';
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    symmetry_diagnosis::print_summaries(std::cout);
+#endif
     return 0;
 }

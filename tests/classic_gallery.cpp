@@ -2,6 +2,14 @@
 #include "program_parser.hpp"
 #include "report.hpp"
 
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+#include "symmetry_diagnosis.hpp"
+
+#include <chrono>
+#include <cstdint>
+#include <iostream>
+#endif
+
 #include <sys/wait.h>
 
 #include <cstdlib>
@@ -588,11 +596,51 @@ void verify_gallery_with_library(const std::filesystem::path& source_dir) {
     for (const GalleryCase& test_case : gallery_cases()) {
         const model::Program program = cli::parse_program_file(gallery_file(source_dir, test_case.file).string());
         const model::ModelChecker checker(program, test_case.step_bound, test_case.memory_model);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+        const auto dpor_started = std::chrono::steady_clock::now();
+#endif
         const model::CheckResult dpor = checker.explore_dpor(test_case.max_schedules);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+        const auto dpor_ns = static_cast<std::uint64_t>(
+            std::chrono::duration_cast<std::chrono::nanoseconds>(
+                std::chrono::steady_clock::now() - dpor_started)
+                .count());
+        if (test_case.dpor_only) {
+            symmetry_diagnosis::record_dpor_only_program(
+                "classic_gallery_tests",
+                {std::string("memory=") +
+                     memory_model_argument(test_case.memory_model),
+                 "dpor-only"},
+                program,
+                dpor,
+                {0, dpor_ns});
+        }
+#endif
 
         require_expected_verdict(test_case, dpor, "DPOR");
         if (!test_case.dpor_only) {
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+            const auto naive_started = std::chrono::steady_clock::now();
+#endif
             const model::CheckResult naive = checker.explore_naive(test_case.max_schedules);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+            const auto naive_ns = static_cast<std::uint64_t>(
+                std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now() - naive_started)
+                    .count());
+            symmetry_diagnosis::record_program(
+                "classic_gallery_tests",
+                {std::string("memory=") +
+                     memory_model_argument(test_case.memory_model),
+                 "paired"},
+                program,
+                checker,
+                test_case.memory_model,
+                naive,
+                dpor,
+                20000,
+                {naive_ns, dpor_ns});
+#endif
             require_expected_verdict(test_case, naive, "naive");
             require_naive_dpor_agree(test_case, naive, dpor);
             if (test_case.exact_witness_across_explorers) {
@@ -627,5 +675,8 @@ int main(int argc, char** argv) {
 
     verify_gallery_with_library(source_dir);
     verify_broken_variants_with_cli(binary, source_dir, work_dir);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    symmetry_diagnosis::print_summaries(std::cout);
+#endif
     return 0;
 }

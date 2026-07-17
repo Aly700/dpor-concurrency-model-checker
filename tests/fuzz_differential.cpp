@@ -1,6 +1,12 @@
 #include "model/checker.hpp"
 #include "program_parser.hpp"
 
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+#include "symmetry_diagnosis.hpp"
+
+#include <chrono>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cassert>
@@ -1052,8 +1058,36 @@ void check_program(std::uint64_t seed,
     constexpr std::size_t kMaxSchedules = 20000;
     constexpr std::size_t kStepBound = 40;
     const model::ModelChecker checker(program, kStepBound, memory_model);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto naive_started = std::chrono::steady_clock::now();
+#endif
     const model::CheckResult naive = checker.explore_naive(kMaxSchedules);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto naive_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - naive_started)
+            .count());
+    const auto dpor_started = std::chrono::steady_clock::now();
+#endif
     const model::CheckResult dpor = checker.explore_dpor(kMaxSchedules);
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    const auto dpor_ns = static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - dpor_started)
+            .count());
+    symmetry_diagnosis::record_program(
+        "dpor_fuzz_differential",
+        {std::string("mode=") + mode_name(mode),
+         std::string("memory=") + memory_model_name(memory_model),
+         "threads=" + std::to_string(program.threads.size())},
+        program,
+        checker,
+        memory_model,
+        naive,
+        dpor,
+        kMaxSchedules,
+        {naive_ns, dpor_ns});
+#endif
 
     ++stats.total;
     std::size_t try_lock_actions_in_program = 0;
@@ -1348,5 +1382,8 @@ int main(int argc, char** argv) {
             }
         }
     }
+#ifdef DPOR_SYMMETRY_DIAGNOSIS
+    symmetry_diagnosis::print_summaries(std::cout);
+#endif
     return 0;
 }
