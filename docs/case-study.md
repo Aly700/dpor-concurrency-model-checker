@@ -448,6 +448,63 @@ beyond bounded verdicts:
   best-of-three Release runs moved from 23.14 seconds pristine to 22.78 seconds
   with the campaign — a 1.6% favorable difference and no wall-time regression.
 
+## The twelfth campaign: strong fairness and the witness that blinked
+
+- **The old two-way answer called a real scheduling violation fair** — ADR
+  0018's weak classifier called a lasso unfair only when some nonparticipant
+  stayed enabled at every cycle state; everything else was filed as
+  `fair divergence`.
+  The discriminator put that boundary under a microscope: T0 repeatedly
+  unlocks and retakes a mutex while T1's pending `Lock` is enabled only in the
+  released state. T1 is never continuously enabled, so the witnessed schedule
+  satisfies weak fairness. But the exact cycle repeats forever, enabling that
+  same endpoint once per iteration and never taking it, so the schedule violates
+  strong fairness. That blinking endpoint split the old fair bucket into a real
+  fair divergence and a `strongly-unfair-schedule witness`.
+- **The classifier has strict precedence but no private transition
+  language** — a continuously enabled nonparticipant keeps the legacy
+  `unfair-schedule witness` label; otherwise an exact nonparticipant endpoint
+  enabled anywhere in the cycle selects the new strong label; only a cycle with
+  no such endpoint anywhere is `fair divergence`. Every weak violation is also
+  a strong one logically, but the first label is the strongest diagnosis. Exact
+  identity deliberately means the public replay identity —
+  `(thread, action_index)` for source endpoints and TSO flushes, plus the
+  canonical address for a PSO flush — rather than a fairness-only phase or
+  generation key. The report therefore classifies the same deterministic
+  object the CLI can replay, without creating a second transition model that
+  could drift from execution.
+- **Backward compatibility was treated as an invariant, not a hope** — the old
+  `continuously_enabled[tid]` predicate remains the verbatim authority for the
+  weak label, including its spelling. The public enum pins
+  `UnfairScheduleWitness == 0` and `FairDivergence == 1`, while the new counter
+  is appended to `CheckResult` so positional aggregate initialization keeps its
+  meaning. The audit changed exactly zero stored golden files: the CLI spin
+  cycle and five classic lasso reports retained their byte-identical weak label,
+  and never-enabled witnesses stayed fair. The mutex blink was the only
+  old-rule-to-new-rule reclassification, and it was introduced as a new fixture
+  rather than laundering a changed golden.
+- **The field remains diagnostic evidence about one schedule** — replaying a
+  strongly unfair lasso proves that this exact stem and cycle postpone an
+  infinitely often enabled endpoint. Scheduling the blinking peer instead may
+  terminate, expose a bug, or reach a different fair or unfair cycle; a first
+  witness of one class does not prove the others absent from the program. The
+  compatibility scope also remains inter-thread: once a thread owns any cycle
+  step, its other endpoints are excluded, so the report does not overclaim
+  action fairness within a participating thread or program-level liveness.
+- **The gates compare class reachability, and admit where randomness did not
+  help** — every cycle-aware naive/DPOR gate now compares fair,
+  strongly-unfair, and weakly-unfair witness existence independently, because
+  the explorers may retain different numbers of representatives. The widened
+  runs covered 22,419 two-thread programs (61,091 naive / 34,111 DPOR), 65,546
+  three-thread programs (896,259 / 347,251), 10,776 under TSO (136,101 /
+  28,030), and 5,657 under PSO (85,820 / 15,107), with zero buffered-oracle
+  skips. The seeded 3,000-program fuzz corpus honestly found **zero** strong
+  witnesses in either explorer, so a fixed uncapped blinking discriminator —
+  outside those random totals — makes that comparison non-vacuous on every
+  run. Both 27-suite flavors passed, meter output stayed byte-identical at SC
+  1.067 / TSO 1.152 / PSO 1.154, and interleaved best-of-three Release timing
+  showed no regression.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
