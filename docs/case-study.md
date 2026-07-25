@@ -239,6 +239,11 @@ beyond bounded verdicts:
   removes the middle-writer witness; writer-bearing programs keep the other
   same-lock pairs dependent. The three-reader discriminator has
   `9! / (3!^3) = 1,680` naive leaves and exactly one DPOR leaf.
+  Campaign fourteen later found the missing precondition in that historical
+  proof: the diamond remains valid only when no `Upgrade(m)` can become a
+  newly enabled middle transition after the first acquisition. The original
+  four-action language satisfied that condition; the extended language makes
+  it an explicit per-name static guard.
 - **The gates widened rather than weakened** — the two-thread oracle now
   checks 21,856 programs over 21 actions; the three-thread sweep checks 65,543
   programs over 19. Fixed-seed fuzz generated each of the four rwlock actions
@@ -504,6 +509,73 @@ beyond bounded verdicts:
   run. Both 27-suite flavors passed, meter output stayed byte-identical at SC
   1.067 / TSO 1.152 / PSO 1.154, and interleaved best-of-three Release timing
   showed no regression.
+
+## The thirteenth campaign: symmetry measured before it was built
+
+- **The attractive example was already solved by DPOR** — three identical
+  rwlock readers look like an obvious thread-symmetry win, but their 1,680
+  naive schedules already collapse to one Mazurkiewicz class and one current
+  DPOR representative. Quotienting thread names cannot improve a corpus where
+  the existing reduction has already removed every duplicate order.
+- **Replay made the quotient expensive before search did** — a race, deadlock,
+  error, assertion, or lasso names original thread coordinates. A sound
+  symmetry reducer therefore needs an invertible permutation carried through
+  schedules, reports, exact cycle closure, and fairness classification. The
+  default-off diagnosis checked report isomorphism rather than treating a
+  canonical state hash as sufficient.
+- **The diagnosis justified deferral** — only 265 of 107,430 measured programs
+  retained a nonidentity automorphism after whole-program and `Signal`
+  safeguards, and the symmetry-only timing proxy was 0.00212813% of selected
+  gate wall time. The eligible slice had a real 49.74% class reduction, but it
+  was too rare and too cheap to justify the witness-translation machinery.
+  ADR 0027 records the honest deferral; no shipped exploration path changed.
+
+## The fourteenth campaign: upgrading without an unlocked instant
+
+- **The conversion is ownership, not release plus reacquire** — `Upgrade`
+  retains the caller's read hold until it is the sole reader, then atomically
+  replaces that hold with write ownership. It consumes and clears the same
+  accumulated reader-release frontier as `WLock`; the caller's retained hold
+  was never released into that accumulator, so no self-edge is invented.
+  `Downgrade` publishes the post-tick writer frontier while atomically
+  retaining read ownership, leaves the reader accumulator intact, and lets the
+  later `RUnlock` contribute normally. Mirrored verdict probes pin both new
+  positive edges, while a plain-reader negative probe keeps reader-reader
+  races visible.
+- **Two upgrades expose a real wait cycle** — two readers that both retain
+  their holds cannot make either thread the sole reader. A barrier-synchronized
+  discriminator reports two
+  `rwlock NAME upgrade_waiting_for_readers_to_drain` blockers rather than
+  reentrancy errors or legacy `WLock` self-waits. Naive exploration has six
+  terminal arrival orders; Upgrade-aware DPOR retains four classes, and the
+  first witness is identical through both explorers, CLI check, numeric replay,
+  and the stored gallery golden.
+- **A local commutation proof failed on future enabledness** — two root
+  `RLock(m)` steps still commute state-wise, but after only the first one its
+  thread may be the sole reader and run `Upgrade(m)`. That middle action was
+  not enabled at the root, so persistent closure cannot recover the opposite
+  upgrader-first class if the acquisitions are blindly commuted. The public
+  relation is now conservative for every same-name rwlock pair. Checker-local
+  DPOR restores exact `RLock`/`RLock` independence only when that name is
+  statically Upgrade-free, and restores the broader reader-mode rule only when
+  it is free of every writer-mode action. An asymmetric assertion fixture pins
+  the otherwise-lost upgrader-first outcome.
+- **The existing state was already the right occurrence identity** — a blocked
+  Upgrade does not fire; a fired Upgrade or Downgrade always advances pc.
+  Successful mode is visible in the existing canonical reader set and writer
+  owner, so no fingerprint, schedule, or generation field was added. Under TSO
+  and PSO both conversions are explicit-drain ordered points. The strict CLI,
+  all four oracle families, fixed-seed differential fuzz, cross-model
+  inclusion, and the classic gallery all exercise the new actions without
+  changing the SC 1.067 / TSO 1.152 / PSO 1.154 optimality instrument.
+- **The final gates discriminated the design rather than blessing it** — both
+  directions of each new HB probe flipped to a race when its single clock
+  update was removed, while the reader-reader negative probe stayed racy after
+  restoration. Release and restore-assert Debug both passed 28/28. The four
+  widened oracle families and cross-model inclusion had zero skips; fixed fuzz
+  generated 317 Upgrades and 363 Downgrades. In the accepted interleaved
+  best-of-three timing against pristine `b432cdc`, the full Release suite
+  improved from 35.74s to 33.36s despite adding the conversion suite.
 
 ## Takeaway
 
