@@ -577,6 +577,50 @@ beyond bounded verdicts:
   best-of-three timing against pristine `b432cdc`, the full Release suite
   improved from 35.74s to 33.36s despite adding the conversion suite.
 
+## The fifteenth campaign: one wake edge, fanned out
+
+- **Broadcast snapshots receivers; it does not mint permission** — one
+  `Broadcast(cv)` atomically moves every thread currently parked on `cv` into
+  its existing mutex-reacquisition phase. It never grants ownership and never
+  queues a permit. An empty Broadcast followed by a Wait still produces the
+  ordinary replayable lost-wakeup deadlock.
+- **The HB edge fans out but never crosses between receivers** — every woken
+  waiter independently joins the same broadcaster post-tick clock. Removing
+  that join flips broadcaster-before-waiter probes to races in both thread-ID
+  directions. Separate negative probes keep two receivers unordered after
+  their critical sections and prove that an empty Broadcast stores no clock
+  for a later waiter.
+- **Occurrence identity names the exact fan-out** — an effective Broadcast
+  carries the exact sorted parked-thread set through node matching,
+  backtracking, repair, and sleep inheritance; engaged `{}` differs from an
+  absent non-Broadcast component. Same-condition Wait, Signal, and Broadcast
+  remain conservatively dependent. That relation already prevents
+  sleep-inherited parked-set changes, but it does not make cyclic historical
+  backtrack matches occurrence-exact. In a genuine stamp-removal mutation,
+  two mirrored fixtures fell from 16 to 9 and from 25 to 19 DPOR
+  representatives while their 3,954-schedule naive explorations and
+  existential race/deadlock kinds remained intact. This is honest evidence of
+  unproved class-accounting loss, not a claimed verdict flip; the exact stamp
+  ships because no mechanism proves the discarded representatives equivalent.
+- **Two discriminators pin the hard scheduling classes** — a multi-wake
+  critical-section fixture retains both verdict-relevant reacquisition orders
+  at 22 naive / 14 DPOR schedules. The forced-parking differential is clean at
+  86/30 with one Broadcast, while two Signals lose the early wake and expose a
+  deadlock at 43/15. The classic gallery preserves the same contrast in
+  `mesa_broadcast_consumers.dpor` and
+  `mesa_broadcast_consumers_broken_single_signal.dpor`, whose DPOR goldens
+  report 30 and 15 schedules.
+- **The corrected timing unit measures the checker core like-for-like** — the
+  first stop compared 28 baseline suites with 29 campaign suites and therefore
+  charged newly required coverage to the core. The accepted ruling compares
+  the exact 27-suite name intersection while retaining expanded Broadcast
+  corpora inside common suites. Interleaved best-of-three improved from 20.11s
+  at `83e8cf9` to 19.87s, and every named exploration-core best was equal or
+  lower. The four widened oracles have zero skips; fuzz generates 762 and
+  compares 746 Broadcasts; cross-model inclusion's dedicated Broadcast corpus
+  is 4/4/0; Release and deterministic restore-assert Debug both pass 29/29;
+  and the SC 1.067 / TSO 1.152 / PSO 1.154 meter contract is unchanged.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
