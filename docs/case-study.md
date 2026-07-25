@@ -621,6 +621,100 @@ beyond bounded verdicts:
   is 4/4/0; Release and deterministic restore-assert Debug both pass 29/29;
   and the SC 1.067 / TSO 1.152 / PSO 1.154 meter contract is unchanged.
 
+## The sixteenth campaign: a timeout without a clock
+
+A timed condition wait sounds like a request for time. In a deterministic
+model checker, that is the wrong abstraction. Wall time would make replay
+depend on the host; a scheduler-step deadline would turn unrelated work into a
+fake clock; and a hidden random branch would make one numeric schedule mean two
+executions. The model instead made expiration an explicit nondeterministic
+transition. Once a TimedWait has released its mutex and parked, timeout remains
+enabled until it or a same-condition wake wins.
+
+That makes the result simple and useful. Timeout writes `0`; Signal or
+Broadcast wake writes `1`; both paths still reacquire the mutex before source
+progress. The classic pair deliberately sends a notification before spawning
+the consumer. The TimedWait version retries once and takes an explicit fallback
+in one clean schedule. Replacing it with plain Wait turns the same lost wake
+into one replayable condition deadlock.
+
+The happens-before split was the first place an apparently symmetric result
+became asymmetric:
+
+- a wake keeps the existing signaler-to-waiter clock join;
+- a timeout has no condition-variable edge at all; and
+- the later mutex reacquisition is the timeout path's only synchronization.
+
+Positive probes made the wake join the only ordering path and mirrored thread
+IDs. Negative probes guarded both forbidden directions: timeout could not
+inherit a signaler's clock, and a later signaler could not inherit the
+timed-out waiter's clock. The register is the only program-visible
+discriminator.
+
+DPOR had a new problem: a parked thread now owned a transition that was
+permanently co-enabled with Signal, Broadcast, and other timeouts. Timeout
+versus a same-condition wake is plainly dependent because either order changes
+the wake target and the `0`/`1` result. Two different parked waiters' timeouts
+do commute as a local adjacent state update, but the campaign declined to call
+them independent. There was no complete proof across a middle wake,
+persistent-set closure, historical matching, repair, and sleep inheritance.
+The stop-clause choice was honest conservatism rather than an attractive local
+diamond promoted beyond its evidence.
+
+The occurrence audit also sharpened the prior Broadcast design. Thread ID alone
+cannot identify a waiter that parks repeatedly, or at two different wait
+endpoints. Each TimedWait park and timeout now carries an exact episode
+ordinal. Signal and Broadcast internally carry exact
+`(thread, action index, episode)` wake targets. A direct effective-trace fixture
+pins different park/timeout episodes at the same numeric endpoint. More
+importantly, an internal-only mutation that removed the TimedWait occurrence
+component left runtime and public replay metadata intact but changed a mirrored
+three-thread repeated-endpoint fixture:
+
+| Layout | Naive | Exact occurrence DPOR | Stamp-suppressed DPOR |
+|---|---:|---:|---:|
+| `LOW` | 269 | 22 | 18 |
+| `HIGH` | 269 | 38 | 34 |
+
+Both versions still found the fixture's race, assertion, and modeled-error
+shapes. As in the Broadcast campaign, the mutation witnesses unproved
+class-accounting loss rather than claiming an observed existential-verdict
+false negative. That is enough to make the safeguard falsifiable: the checker
+may overexplore, but it cannot silently discard representatives it has not
+proved equivalent.
+
+The timeout also changed verdict interpretation. A parked timed waiter is
+enabled, so lost wakeups no longer make it a condition blocker. A later blocked
+reacquisition is still a mutex deadlock. A single thread that repeatedly parks,
+times out, reacquires, and re-parks closes an exact four-step cycle and is
+`fair divergence`; add a continuously enabled but unscheduled signaler and the
+same witness becomes `unfair-schedule witness`.
+
+No new behavioral-fingerprint field was needed. Within one fixed program,
+normalized pc identifies the static action; the existing Wait phase, waiter
+set, mutex owner, and destination register already distinguish every
+program-visible state. The absolute episode ordinal must stay out of that
+fingerprint or a genuine timeout spin would never repeat. The acyclic-elision
+proof instead follows the real phase progress: park changes ownership and
+waiter state, timeout changes waiter state and phase, and reacquisition advances
+the pc.
+
+The widened gates made this more than a focused feature test. The four oracle
+families checked 22,903 SC two-thread, 65,547 SC three-thread, 11,877 TSO, and
+6,707 PSO programs with zero buffered skips. Fixed-seed fuzz generated 407
+TimedWait actions and compared 406, with fixed probes observing both timeout
+and wake. Cross-model inclusion's dedicated corpus was 4/4/0. The unchanged
+optimality corpora remained byte-identical at SC 1.067, TSO 1.152, and PSO
+1.154.
+
+The final gate kept the comparison honest. Interleaved best-of-three runs over
+28 like-for-like suites improved from 21.89 to 20.87 seconds.
+Individual exploration gates stayed within a tenth of a second of baseline
+despite the larger oracle and fuzz corpora. Both 30-suite build flavors passed,
+including Debug restore assertions, and four fresh CLI probes independently
+confirmed wake ordering, timeout's missing condition edge, lost-wakeup rescue,
+and the fair timeout lasso.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
