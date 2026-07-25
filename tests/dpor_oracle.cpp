@@ -90,6 +90,14 @@ model::Action wunlock(std::string rwlock) {
     return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
 }
 
+model::Action upgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Upgrade, std::move(rwlock));
+}
+
+model::Action downgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Downgrade, std::move(rwlock));
+}
+
 model::Action semaphore_action(model::ActionKind kind, std::string semaphore) {
     model::Action action;
     action.kind = kind;
@@ -183,7 +191,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 25> kActions{
+const std::array<model::Action, 27> kActions{
     read("x"),
     write("x"),
     write("y"),
@@ -206,6 +214,8 @@ const std::array<model::Action, 25> kActions{
     runlock("rw"),
     wlock("rw"),
     wunlock("rw"),
+    upgrade("rw"),
+    downgrade("rw"),
     sem_post("sem"),
     sem_wait("sem"),
     barrier_wait("bar", 2),
@@ -303,6 +313,12 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::WUnlock:
         out << "WUnlock " << action.rwlock;
+        break;
+    case model::ActionKind::Upgrade:
+        out << "Upgrade " << action.rwlock;
+        break;
+    case model::ActionKind::Downgrade:
+        out << "Downgrade " << action.rwlock;
         break;
     case model::ActionKind::SemPost:
         out << "SemPost " << action.semaphore;
@@ -606,6 +622,15 @@ std::vector<model::Program> hand_picked_programs() {
             {wlock("rw"), write("x"), wunlock("rw")},
             {rlock("rw"), read("x"), runlock("rw")},
         }},
+        // Thread 1 may upgrade immediately or wait for the transient reader.
+        // Either way it atomically converts read -> write -> read, and its
+        // downgraded publication orders the protected write before any later
+        // reader.
+        model::Program{{
+            {rlock("rw"), read("x"), runlock("rw")},
+            {rlock("rw"), upgrade("rw"), write("x"),
+             downgrade("rw"), runlock("rw")},
+        }},
         // Semaphores start with zero permits, so an unseeded wait is a
         // replayable semaphore-tagged deadlock rather than clean completion.
         model::Program{{
@@ -658,14 +683,27 @@ void assert_disabled_transition_fallback_finds_deadlock() {
 } // namespace
 
 int main() {
-    require(kActions.size() == 25,
-            "two-thread oracle alphabet must include TryLock");
+    require(kActions.size() == 27,
+            "two-thread oracle alphabet must include TryLock and conversions");
     const model::Action& try_lock_entry = kActions.at(8);
     require(try_lock_entry.kind == model::ActionKind::TryLock &&
                 try_lock_entry.mutex == "m" &&
                 try_lock_entry.destination.has_value() &&
                 *try_lock_entry.destination == 0,
             "two-thread oracle TryLock entry must be try_lock m -> r0");
+    const std::array<model::ActionKind, 6> rwlock_kinds{
+        model::ActionKind::RLock,
+        model::ActionKind::RUnlock,
+        model::ActionKind::WLock,
+        model::ActionKind::WUnlock,
+        model::ActionKind::Upgrade,
+        model::ActionKind::Downgrade,
+    };
+    for (std::size_t i = 0; i < rwlock_kinds.size(); ++i) {
+        const model::Action& action = kActions.at(18 + i);
+        require(action.kind == rwlock_kinds.at(i) && action.rwlock == "rw",
+                "two-thread oracle must contain all six rwlock operations");
+    }
     std::size_t programs_checked = 0;
     std::size_t naive_total = 0;
     std::size_t dpor_total = 0;
@@ -674,7 +712,7 @@ int main() {
     // Deterministically enumerates two-thread programs with 0..3 actions per
     // thread over kActions, including atomic acquire/release/RMW operations,
     // nonblocking mutex acquisition,
-    // Spawn, Join, Mesa condition-variable actions, all four reader-writer
+    // Spawn, Join, Mesa condition-variable actions, all six reader-writer
     // lock actions, counting-semaphore post/wait actions, and a two-party
     // cyclic-barrier arrival. Each length pair
     // is capped

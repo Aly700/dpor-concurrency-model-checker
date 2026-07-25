@@ -18,8 +18,9 @@
 - `ModelChecker::explore_dpor` is the reduced oracle added beside the naive
   DFS. It uses deterministic backtrack/done sets, the public action-level
   `independent()` predicate, and checker-local transition refinements for
-  enabled valid `Join` operations, failed same-mutex `TryLock` pairs under a
-  third-party owner, and generation-stamped barrier arrivals.
+  per-name reader-writer-lock static guards, enabled valid `Join` operations,
+  failed same-mutex `TryLock` pairs under a third-party owner, and
+  generation-stamped barrier arrivals.
 - `ModelChecker::replay` re-executes a deterministic schedule under the same
   step bound and rejects disabled, out-of-range, or post-terminal steps with a
   clear error.
@@ -82,15 +83,19 @@ At each DFS state, the naive oracle enumerates exactly the enabled transitions
 in deterministic schedule-step order. Not-started threads are disabled. `Read`, `Write`,
 `AtomicLoad`, `AtomicStore`, `AtomicRmw`, `CompareExchange`, `Set`,
 `BranchNonzero`, `Assert`, `Fence`, `Yield`, `TryLock`, `Unlock`, `RUnlock`,
-`WUnlock`, `SemPost`, `Spawn`, `Signal`, and
+`WUnlock`, `Downgrade`, `SemPost`, `Spawn`, `Signal`, and
 `Broadcast` are enabled for started unfinished threads; invalid `Unlock`,
-invalid rwlock unlock/reentrancy, invalid `Wait`, invalid `Spawn`, and invalid
-`Join` steps are reported as modeled errors. `Lock` is enabled only when its
+invalid rwlock unlock/conversion/reentrancy, invalid `Wait`, invalid `Spawn`,
+and invalid `Join` steps are reported as modeled errors. `Lock` is enabled only when its
 mutex is not currently owned; `TryLock` remains enabled regardless of the
 owner and reports failure through its register result. `RLock` is enabled in
 the absence of another thread's writer; `WLock` is enabled only with no writer
 and no readers, except that a current writer's recursive acquisition remains
 executable as an error.
+A valid `Upgrade` caller retains its read hold and becomes enabled only when it
+is the sole reader. Invalid ownership remains executable as a modeled error.
+`Downgrade` never blocks; invalid write ownership likewise reaches a modeled
+error.
 A read holder's attempted `WLock` stays disabled on its own hold and therefore
 forms a tagged self-wait deadlock.
 `SemWait(name)` is enabled exactly when the named semaphore has a positive
@@ -110,21 +115,21 @@ count.
 index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
 started unfinished threads and no enabled action is a deadlock; the report
 tags each started blocked thread as waiting on a mutex, join target, condition
-variable, rwlock writer, rwlock reader set, semaphore, or incomplete barrier
-generation. A state where all started
-threads are finished is normal
+variable, rwlock writer, rwlock reader set, rwlock upgrade, semaphore, or
+incomplete barrier generation. Upgrade waits use the distinct
+`rwlock NAME upgrade_waiting_for_readers_to_drain` blocker. A state where all
+started threads are finished is normal
 termination, even if some static thread bodies were never spawned. If an
 enabled choice names a thread that has already executed its per-thread step
 bound, that execution terminates with a bound outcome and increments
 `bound_exceeded_executions`.
 
 Under TSO and PSO, atomics, CAS, mutex/condition-variable operations (including
-`TryLock`), all four
-rwlock operations, both semaphore operations, barrier waits, spawn, join, and
-`Fence` are ordered points: they are
-disabled until all of the
-executing thread's buffers are empty. A nonempty buffer always enables a flush for that thread,
-including after the source pc is done, so buffered completion is not deadlock.
+`TryLock`), all six rwlock operations, both semaphore operations, barrier
+waits, spawn, join, and `Fence` are ordered points: they are disabled until all
+of the executing thread's buffers are empty. A nonempty buffer always enables
+a flush for that thread, including after the source pc is done, so buffered
+completion is not deadlock.
 
 ## Cyclic Barriers
 
@@ -159,6 +164,27 @@ through the existing non-termination machinery; weak fairness classifies a
 holder-starvation witness as unfair when the holder's `Unlock` remains enabled
 throughout the cycle.
 
+## Reader-Writer Lock Conversion
+
+`Upgrade(name)` has strict text spelling `upgrade NAME`. The caller must hold
+read mode on that rwlock. It retains that hold while disabled and can execute
+only when no other reader remains, then atomically removes the read hold and
+installs the caller as writer. `Downgrade(name)`, spelled `downgrade NAME`,
+requires write mode, never blocks, and atomically replaces writer ownership
+with a read hold. There is no intermediate unowned state and no reentrancy.
+
+No-holder and wrong-mode conversions follow the established mismatched-unlock
+convention: the action ticks and advances its pc, changes no ownership, and
+reports `thread T attempted to upgrade|downgrade rwlock 'NAME' but it does not
+hold that mode`. A blocked valid Upgrade does not execute and therefore cannot
+mutate clocks or ownership.
+
+Two threads that retain read mode and both reach Upgrade cannot make either
+caller the sole reader. The ordinary terminal blocked-thread machinery reports
+both with `BlockedOnKind::RwLockUpgrade`, the rwlock name, no owner, and no
+`self_wait`. CLI check and numeric replay preserve that exact blocker set and
+schedule.
+
 ## Happens-Before Analysis
 
 Each executed step ticks its thread's vector clock. `Unlock` stores the
@@ -173,8 +199,14 @@ the stored release clock nor the current owner's live clock is acquired.
 joins its post-tick clock into the rwlock's reader-release accumulator.
 `WLock` joins both the last writer release and every accumulated reader
 release, then clears the reader accumulator for the next epoch. `WUnlock`
-replaces the writer-release clock with its post-tick clock. In particular,
-readers never acquire one another's release clocks.
+replaces the writer-release clock with its post-tick clock. A successful
+`Upgrade` performs the same two joins and accumulator clear as `WLock` before
+atomically entering write mode. Its retained own read hold has not been
+published to the accumulator, so there is no self-edge. `Downgrade` publishes
+its post-tick clock as the writer release while atomically retaining read
+ownership, and leaves the reader accumulator unchanged; its later `RUnlock`
+contributes in the ordinary way. In particular, readers never acquire one
+another's release clocks.
 `SemPost` joins its post-tick clock into the named semaphore's lifetime release
 accumulator without acquiring it. A successful `SemWait` joins that entire
 accumulator into the waiter and never clears it. This deterministic strong
@@ -250,10 +282,20 @@ same map value that a reference copy would have contained. A Debug-only,
 deterministically sampled boundary assertion compares both the complete parent
 `ExecutionState` and the restored history against reference copies.
 
+Upgrade and Downgrade add no behavioral-fingerprint field. Their observable
+mode is already represented by normalized pc plus the canonical rwlock reader
+set and optional writer owner. A blocked Upgrade does not execute; every fired
+conversion advances pc and changes ownership on success, while misuse advances
+pc without changing ownership. The existing state therefore distinguishes all
+program-observable conversion outcomes. Rwlock release clocks remain excluded
+analysis state under the established lasso policy.
+
 Programs without a normalized self/backward `BranchNonzero` do not allocate or
 construct cycle history. Every ordinary source step advances a normalized pc;
 `TryLock` does so on both outcomes, with its result already represented by the
-existing register array and successful ownership by `mutex_owner`;
+existing register array and successful ownership by `mutex_owner`; a blocked
+`Upgrade` does not fire, while every fired `Upgrade` and `Downgrade` advances
+pc exactly once;
 the exceptional first `Wait` phase changes the fingerprinted wait/ownership
 state and needs a later pc-advancing signal before it can resume; a non-last
 `BarrierWait` strictly grows the fingerprinted arrival set and disables that
@@ -336,13 +378,15 @@ transitions. Invalid joins, target-thread transitions, spawns, and joins that
 wait for the joiner remain dependent.
 
 If the later effective transition was not enabled at a dependent candidate
-prefix, DPOR first tries an enabler-chain repair. It adds only enabled threads
-that can advance the disabled transition's concrete chain: a remaining
+prefix, DPOR first tries an enabler-chain repair. Where a concrete chain can be
+proved, it adds only enabled threads that can advance it: a remaining
 `Spawn(t)` for a not-started thread, the target's remaining execution for
-`Join(t)`, a same-thread prerequisite, a mutex owner inside such a chain, or a
-`Signal`/`Broadcast` chain for a sleeping waiter. If the chain is not proven,
-or if the top-level disabled transition is a blocked `Lock` or woken wait
-reacquire, DPOR falls back to ADR 0010's all-enabled repair.
+`Join(t)`, a same-thread prerequisite, a mutex or rwlock writer, the other
+rwlock readers that must drain for `WLock` or `Upgrade`, or a
+`Signal`/`Broadcast` chain for a sleeping waiter. Anonymous/cyclic/unknown
+chains, including semaphore posts, barrier arrivals, and mutually blocked
+upgraders, use ADR 0010's all-enabled repair. A top-level blocked `Lock` or
+woken wait reacquire also retains that fallback.
 
 Godefroid sleep sets prune alternatives whose trace class has already been
 represented. A child inherits slept threads only while their current effective
@@ -369,15 +413,28 @@ success. Register-only actions are independent of every other thread's
 transition because they touch no shared state and do not affect cross-thread
 enabledness; same-thread transitions are still never commuted.
 
-Two cross-thread, co-enabled successful `RLock` operations on one name are
-independent. Either order leaves the same reader set, thread clocks,
-synchronization clocks, shared/race state, and enabled set; a waiting writer is
-disabled after either first acquisition and after both. All other same-rwlock
-pairs stay dependent in the public relation. A checker-local refinement
-commutes every cross-thread reader-mode pair only when the complete program has
-no writer-mode action on that name. The static absence of a writer removes the
-middle witness in which the last `RUnlock` enables a third thread's `WLock`
-between two otherwise commuting reader transitions.
+Every same-rwlock pair is dependent in the public action-only relation. The
+old unconditional `RLock`/`RLock` clause is unsound when the same name has an
+Upgrade: after the first read acquisition that thread can be the sole reader
+and execute Upgrade, but after both acquisitions neither conversion is
+enabled. The middle Upgrade was not enabled at the root, so a persistent set
+cannot recover the opposite upgrader-first class merely from the local
+two-RLock state equality.
+
+Checker-local DPOR restores cross-thread `RLock`/`RLock` independence only when
+the complete program contains no Upgrade on that rwlock name. It restores the
+broader reader-mode refinement only when the name has none of `WLock`,
+`WUnlock`, `Upgrade`, or `Downgrade`. Both checks are per-name, so a conversion
+on one rwlock cannot suppress safe commutation on another. Every same-name pair
+involving a conversion remains dependent.
+
+Upgrade-specific disabled repair follows the enabler heads of all *other*
+current readers and skips the caller's retained hold. Unknown or cyclic
+chains—including two readers blocked on each other's Upgrade—select the
+existing all-enabled fallback. Legacy `WLock` while holding read mode retains
+its permanent `self_wait` treatment. Persistent closure and sleep inheritance
+therefore see every conversion as dependent, and a fired conversion's pc
+advance provides occurrence identity without a new generation stamp.
 
 Two cross-thread `SemPost` operations on one name commute because count
 addition and vector-clock join are commutative and neither poster acquires the
@@ -451,12 +508,12 @@ because it was previously slept.
 ## Verification Gates
 
 The DPOR implementation is checked against deterministic gates. The 2-thread
-oracle sweep enumerates small programs by length pair over a 25-action alphabet
+oracle sweep enumerates small programs by length pair over a 27-action alphabet
 and compares naive vs. DPOR race/deadlock/error/assertion existence, the
 bound-hit boolean, total-cycle existence, all three fairness-class existence
 booleans, schedule dominance, and report replay identity. The
 3-thread oracle sweep uses an evenly strided deterministic sample of the larger
-23-action, 6-slot space, plus hand-picked disabled-transition cases, to
+25-action, 6-slot space, plus hand-picked disabled-transition cases, to
 exercise spawn, join, condition-variable, rwlock, semaphore, and barrier
 enabledness. Fixed spin and mutex-blink lassos keep its weak, strong, and fair
 class comparisons non-vacuous. A
@@ -471,19 +528,18 @@ because truncation can legitimately hide a later endpoint. Fuzz compares all
 three lasso classes and runs a fixed uncapped mutex-blink discriminator even
 when the seeded corpus contains no strong-class witness.
 
-The strong-fairness-widened acceptance run checked 22,419 two-thread programs
-(61,091 naive versus 34,111 DPOR schedules), 65,546 three-thread programs
-(896,259 naive versus 347,251 DPOR schedules), 10,776 TSO programs (136,101
-versus 28,030), and 5,657 PSO programs (85,820 versus 15,107). Every oracle
+The Upgrade/Downgrade-widened acceptance run checked 22,736 two-thread programs
+(59,119 naive versus 34,419 DPOR schedules), 65,547 three-thread programs
+(789,230 naive versus 331,415 DPOR schedules), 11,365 TSO programs (65,287
+versus 20,781), and 6,246 PSO programs (41,875 versus 11,128). Every oracle
 observed fair, strongly-unfair, and weakly-unfair cycle existence under both
 naive and DPOR exploration. Both buffered oracles
-enforce zero capped skips. Their action alphabets were respectively 25, 23, 13,
-and 13. The fixed fuzz run generated 952 `BarrierWait` and 1,578 `TryLock`
-actions, with 1,556 TryLocks in
-fully compared programs; 2,983 of its 3,000 programs were compared and 17
-capped programs were reported. Cross-model inclusion compared all 1,723
-programs with zero global skips, including both dedicated four-program
-BarrierWait and TryLock corpora at 4/4/0. The unchanged
+enforce zero capped skips. Their action alphabets were respectively 27, 25, 19,
+and 19. The fixed fuzz run generated 892 `BarrierWait`, 1,612 `TryLock`, 317
+`Upgrade`, and 363 `Downgrade` actions; 2,978 of its 3,000 programs were
+compared and 22 capped programs were reported. Cross-model inclusion compared
+all 1,731 programs with zero global skips, including the dedicated four-program
+BarrierWait, TryLock, and rwlock-conversion corpora at 4/4/0. The unchanged
 optimality corpora retain byte-identical meter ratios SC 1.067, TSO 1.152, and
 PSO 1.154.
 

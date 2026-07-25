@@ -26,7 +26,8 @@ enum class BlockedOnKind {
     RwLockWriter,
     RwLockReaders,
     Semaphore,
-    Barrier
+    Barrier,
+    RwLockUpgrade
 };
 
 struct BlockedThread {

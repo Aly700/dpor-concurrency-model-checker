@@ -420,6 +420,14 @@ model::Action parse_action(const std::vector<std::string>& words, std::size_t li
         require_arity(words, 2, line, keyword);
         return rwlock_action(model::ActionKind::WUnlock, words[1]);
     }
+    if (keyword == "upgrade") {
+        require_arity(words, 2, line, keyword);
+        return rwlock_action(model::ActionKind::Upgrade, words[1]);
+    }
+    if (keyword == "downgrade") {
+        require_arity(words, 2, line, keyword);
+        return rwlock_action(model::ActionKind::Downgrade, words[1]);
+    }
     if (keyword == "sem_post") {
         require_arity(words, 2, line, keyword);
         return semaphore_action(model::ActionKind::SemPost, words[1]);
@@ -521,7 +529,9 @@ model::Program parse_program_stream(std::istream& input) {
         const bool uses_rwlock = action.kind == model::ActionKind::RLock ||
                                  action.kind == model::ActionKind::RUnlock ||
                                  action.kind == model::ActionKind::WLock ||
-                                 action.kind == model::ActionKind::WUnlock;
+                                 action.kind == model::ActionKind::WUnlock ||
+                                 action.kind == model::ActionKind::Upgrade ||
+                                 action.kind == model::ActionKind::Downgrade;
         const bool uses_semaphore = action.kind == model::ActionKind::SemPost ||
                                     action.kind == model::ActionKind::SemWait;
         const bool uses_condition = action.kind == model::ActionKind::Wait ||
@@ -823,6 +833,12 @@ std::string action_text(const model::Action& action) {
         break;
     case model::ActionKind::WUnlock:
         output << "wunlock " << action.rwlock;
+        break;
+    case model::ActionKind::Upgrade:
+        output << "upgrade " << action.rwlock;
+        break;
+    case model::ActionKind::Downgrade:
+        output << "downgrade " << action.rwlock;
         break;
     case model::ActionKind::SemPost:
         output << "sem_post " << action.semaphore;

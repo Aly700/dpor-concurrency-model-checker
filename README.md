@@ -19,7 +19,7 @@ state that proves the cycle.
 | Memory models | `--memory-model sc\|tso\|pso`, `fence` | SC by default; TSO adds one FIFO store buffer per thread, PSO uses one FIFO per thread/address, and both expose replayable flush steps plus full drain fences |
 | Atomics | `atomic_load`, `atomic_store`, `atomic_rmw`, `cas` | Acquire/release/acq-rel, SC-per-location; atomic-atomic never races, mixed plain/atomic does |
 | Mutexes | `lock`, `try_lock`, `unlock` | Blocking lock plus nonblocking `try_lock MUTEX -> rN`; successful acquisition has the mutex acquire edge, failure writes 0 and synchronizes with nothing; non-owner unlock is a modeled error |
-| Reader-writer locks | `rlock`, `runlock`, `wlock`, `wunlock` | Parallel readers, exclusive writers, writer-to-reader and reader/writer-to-writer HB; reentrancy errors and read-to-write upgrades self-deadlock |
+| Reader-writer locks | `rlock`, `runlock`, `wlock`, `wunlock`, `upgrade`, `downgrade` | Parallel readers, exclusive writers, atomic read→write and write→read conversion, exact writer/reader-epoch HB, reentrancy and wrong-mode errors |
 | Counting semaphores | `sem_post`, `sem_wait` | Zero-initialized anonymous permits; posts accumulate release clocks and successful waits acquire the lifetime accumulator (the documented strong model) |
 | Cyclic barriers | `barrier_wait NAME PARTIES` | Each generation blocks until `PARTIES` arrivals, then releases every participant with an exact all-arrivals HB join and resets |
 | Condition variables | `wait`, `signal`, `broadcast` | Mesa semantics, two-phase wait (release+sleep, then reacquire); no permit queuing, so lost wakeups deadlock |
@@ -34,7 +34,7 @@ Two explorers share one execution semantics:
 
 Detection: happens-before data races (vector clocks), deadlocks across mutex,
 join, condition-variable, waiting-for-writer, readers-to-drain, and semaphore
-and barrier blockers, modeled API errors, assertion
+and barrier blockers, including a distinct rwlock-upgrade wait, modeled API errors, assertion
 failures, and executions that exceed the configured per-thread step bound.
 The checker also proves schedule-existence of non-termination when one
 execution revisits an exact behavioral state. Safety reports carry
@@ -130,6 +130,8 @@ rlock rw
 runlock rw
 wlock rw
 wunlock rw
+upgrade rw              # requires read mode; waits until the sole reader
+downgrade rw            # requires write mode; never blocks
 sem_post sem
 sem_wait sem
 barrier_wait phase 3
@@ -145,9 +147,10 @@ Mutex, reader-writer-lock, and semaphore names occupy distinct namespaces. A
 barrier name is additionally distinct from all three of those namespaces and
 from condition-variable names. Every semaphore starts with zero permits; there
 is no declaration or initialization action, so initial permits are explicit
-`sem_post` steps. Under TSO/PSO, every lock, unlock, semaphore operation,
-barrier wait, `try_lock`, and condition-variable operation is a full ordered point and
-waits for that thread's pending stores to drain.
+`sem_post` steps. Under TSO/PSO, every mutex operation, all six rwlock
+operations, every semaphore operation, barrier wait, and condition-variable
+operation is a full ordered point and waits for that thread's pending stores
+to drain.
 
 `try_lock` uses the same mutex owner and namespace as `lock`/`unlock` and always
 advances. If the mutex is free it writes `1`, acquires ownership, and joins the
@@ -156,6 +159,16 @@ caller, it writes `0`, changes no ownership, and creates no happens-before
 edge. A branch-based retry is therefore a lasso/non-termination question, not a
 deadlock blocker. Existing condition-variable names may still reuse a mutex
 spelling; the cross-namespace rules are otherwise unchanged.
+
+`upgrade rw` requires the caller to hold read mode. It keeps that hold while
+waiting for every other reader to drain, then atomically becomes the writer
+with no unowned window. It consumes the same prior-writer and reader-release
+frontiers as `wlock`. `downgrade rw` requires write mode, never blocks,
+publishes the writer section, and atomically retains read mode; its later
+`runlock` releases that reader epoch normally. Wrong-mode conversions use the
+same modeled-error convention as mismatched rwlock unlocks. Two retained
+readers that both upgrade form a deadlock reported as
+`rwlock NAME upgrade_waiting_for_readers_to_drain`.
 
 Semaphore happens-before is intentionally strong and deterministic. Each post
 release-joins its clock into a lifetime accumulator, and every successful wait
@@ -203,6 +216,11 @@ repeated race-analysis state.
 register array, successful ownership already lives in the mutex-owner map, and
 both outcomes advance the pc. A retry's backward branch activates this exact
 cycle history before the attempt can recur.
+
+Rwlock conversions add no fingerprint field either. A blocked `upgrade` does
+not execute; every fired `upgrade` or `downgrade` advances pc, and successful
+mode is already represented by the canonical reader-holder set and optional
+writer owner.
 
 On a revisit, the report splits the executed schedule at the first occurrence:
 
@@ -320,9 +338,11 @@ gallery uses atomic coordination variables instead.
 lock-free patterns: Peterson, Dekker, a bounded two-thread Bakery
 simplification, a test-and-set spinlock built from `try_lock`, a Treiber push
 skeleton, a failed-CAS handoff, reader-writer
-lock publication, a three-thread dining-philosophers pair, and a two-generation
-three-worker cyclic-barrier computation. The barrier's broken variant omits one
-worker from the final generation and deterministically deadlocks the other two.
+lock publication, a read→upgrade→write conversion paired with a deterministic
+double-upgrade deadlock, a three-thread dining-philosophers pair, and a
+two-generation three-worker cyclic-barrier computation. The barrier's broken
+variant omits one worker from the final generation and deterministically
+deadlocks the other two.
 Each model is paired with a deliberately broken variant and documented in
 [`examples/classic/README.md`](examples/classic/README.md), including the exact
 bounded verdict and any `.dpor` modeling limitation.
@@ -336,11 +356,11 @@ whether any execution hit the step bound; that DPOR never explores more
 schedules; that every DPOR report replays to an identical report; and how far
 DPOR is from one schedule per Mazurkiewicz class:
 
-1. **Exhaustive 2-thread sweep** — every program over a 25-action alphabet
-   (capped per length pair; 22,419 programs and 61,091 naive versus 34,111
+1. **Exhaustive 2-thread sweep** — every program over a 27-action alphabet
+   (capped per length pair; 22,736 programs and 59,119 naive versus 34,419
    DPOR schedules, including hand-picked fixtures).
-2. **Strided 3-thread sweep** — 65,546 programs evenly sampled from the full
-   23-action, 6-slot space, totaling 896,259 naive versus 347,251 DPOR
+2. **Strided 3-thread sweep** — 65,547 programs evenly sampled from the full
+   25-action, 6-slot space, totaling 789,230 naive versus 331,415 DPOR
    schedules; it also retains an asserted three-reader discriminator with
    1,680 naive schedules and one DPOR representative and a barrier
    discriminator with six naive schedules and three DPOR representatives. The
@@ -351,8 +371,8 @@ DPOR is from one schedule per Mazurkiewicz class:
    value/branch/CAS/assertion programs, exact spin cycles, growing-state bound
    backstops, and deliberately malformed ones; failures print the seed and the
    program in `.dpor` syntax for by-hand reproduction. The fixed acceptance run
-   generated 952 barrier waits and 1,578 TryLock actions (1,556 in fully
-   compared programs) and compared 2,983 programs, with 17 capped programs
+   generated 892 barrier waits, 1,612 TryLock actions, 317 Upgrades, and 363
+   Downgrades; it compared 2,978 programs, with 22 capped programs
    reported and excluded from verdict equality. Deterministic
    fractions run under TSO and PSO, and the summary prints both model counts
    plus naive/DPOR total, fair, strongly-unfair, and unfair cycle counters. A
@@ -371,14 +391,15 @@ DPOR is from one schedule per Mazurkiewicz class:
 5. **Buffered-model oracles** — capped TSO and PSO program sweeps compare
    naive and DPOR verdict/total-cycle/fair-cycle/strongly-unfair-cycle/
    unfair-cycle existence, schedule dominance, and exact replay. The
-   strong-fairness-widened runs check 10,776 TSO and 5,657 PSO programs over
-   13-action alphabets, with zero capped skips
+   Campaign 14 runs check 11,365 TSO and 6,246 PSO programs over 19-action
+   alphabets, with zero capped skips
    in either oracle.
-6. **Cross-model inclusion** — 1,723 deterministic two-thread and hand-picked
-   programs perform 17,230 per-kind checks that bug existence is monotone
-   `SC => TSO => PSO`, including all four rwlock actions, both semaphore
-   actions, TryLock, and dedicated four-program barrier and TryLock corpora.
-   Every program compares with zero skips; both dedicated corpora are 4/4/0.
+6. **Cross-model inclusion** — 1,731 deterministic two-thread and hand-picked
+   programs perform 17,310 per-kind checks that bug existence is monotone
+   `SC => TSO => PSO`, including all six rwlock actions, both semaphore
+   actions, TryLock, and dedicated four-program barrier, TryLock, and rwlock
+   conversion corpora. Every program compares with zero skips; all dedicated
+   corpora are 4/4/0.
 
 All gates are deterministic and run in CI on Linux and macOS.
 
@@ -386,7 +407,7 @@ All gates are deterministic and run in CI on Linux and macOS.
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
 soundness-relevant decision in `adr/` (0001 architecture crux through ADR
-0026's strong-fairness lasso classification), including the exact vector-clock edge for
+0028's rwlock-conversion design), including the exact vector-clock edge for
 each synchronization kind and why each DPOR pruning step cannot lose a bug
 class.
 

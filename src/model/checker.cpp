@@ -281,10 +281,10 @@ StateFingerprint behavioral_state_fingerprint(const ExecutionState& state) {
 
     // As with mutex clocks, rwlock release clocks are HB analysis
     // instrumentation rather than behavioral state. The reader-release
-    // accumulator is consumed and reset by WLock, but that bookkeeping still
-    // cannot affect control or enabledness. Only occupied rwlocks can, so
-    // empty clock-bearing entries canonicalize to absence. Reader holders are
-    // already in ascending order.
+    // accumulator is consumed and reset by WLock or a successful Upgrade, but
+    // that bookkeeping still cannot affect control or enabledness. Only
+    // occupied rwlocks can, so empty clock-bearing entries canonicalize to
+    // absence. Reader holders are already in ascending order.
     std::size_t occupied_rwlocks = 0;
     for (const auto& [_, rwlock] : state.rwlocks) {
         if (rwlock.writer_holder.has_value() || !rwlock.reader_holders.empty()) {
@@ -876,6 +876,8 @@ bool is_buffered_ordered_point(const Action& action) {
     case ActionKind::RUnlock:
     case ActionKind::WLock:
     case ActionKind::WUnlock:
+    case ActionKind::Upgrade:
+    case ActionKind::Downgrade:
     case ActionKind::SemPost:
     case ActionKind::SemWait:
     case ActionKind::BarrierWait:
@@ -1002,6 +1004,18 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
         // keeps WLock disabled until every read holder releases.
         return rwlock->reader_holders.empty();
     }
+    case ActionKind::Upgrade: {
+        const RwLockState* rwlock = find_rwlock(state, action.rwlock);
+        if (rwlock == nullptr || !holds_rwlock_read(*rwlock, tid)) {
+            // Invalid ownership remains executable so the forward interpreter
+            // reports the same modeled misuse shape as a mismatched unlock.
+            return true;
+        }
+        assert(!rwlock->writer_holder.has_value());
+        // The caller retains its read hold while it waits. Conversion fires
+        // only when every other reader has drained.
+        return rwlock->reader_holders.size() == 1;
+    }
     case ActionKind::SemWait: {
         const auto semaphore = state.semaphores.find(action.semaphore);
         return semaphore != state.semaphores.end() && semaphore->second.permits > 0;
@@ -1048,6 +1062,7 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
     case ActionKind::Unlock:
     case ActionKind::RUnlock:
     case ActionKind::WUnlock:
+    case ActionKind::Downgrade:
     case ActionKind::SemPost:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
@@ -1387,6 +1402,7 @@ std::optional<std::vector<ScheduleStep>> enabler_heads_for_rwlock_readers(
     const DporNode& node,
     const std::string& name,
     ThreadId blocked_thread,
+    bool skip_blocked_reader,
     std::vector<bool>& visiting) {
     const auto found = node.rwlocks.find(name);
     if (found == node.rwlocks.end() || found->second.reader_holders.empty()) {
@@ -1395,10 +1411,14 @@ std::optional<std::vector<ScheduleStep>> enabler_heads_for_rwlock_readers(
 
     std::vector<ScheduleStep> heads;
     for (const ThreadId reader : found->second.reader_holders) {
-        // A read-to-write upgrade is a deliberate self wait. A recursive
-        // enabler chain cannot discharge it, so use the caller's conservative
-        // all-enabled fallback instead.
         if (reader == blocked_thread) {
+            if (skip_blocked_reader) {
+                // Upgrade retains this hold by design; only other readers can
+                // discharge the wait.
+                continue;
+            }
+            // Legacy WLock while holding read mode is a permanent self wait.
+            // No recursive enabler chain can discharge it.
             return std::nullopt;
         }
         const auto reader_heads =
@@ -1464,10 +1484,14 @@ std::optional<std::vector<ScheduleStep>> enabler_heads_for_thread(const Program&
                 program, node, effective_action.rwlock, tid, visiting);
         } else {
             heads = enabler_heads_for_rwlock_readers(
-                program, node, effective_action.rwlock, tid, visiting);
+                program, node, effective_action.rwlock, tid, false, visiting);
         }
         break;
     }
+    case ActionKind::Upgrade:
+        heads = enabler_heads_for_rwlock_readers(
+            program, node, effective_action.rwlock, tid, true, visiting);
+        break;
     case ActionKind::Join:
         if (!join_target_is_invalid(program, tid, effective_action)) {
             heads = enabler_heads_for_thread(program, node, effective_action.target, visiting);
@@ -1538,7 +1562,13 @@ std::optional<std::vector<ScheduleStep>> disabled_repair_steps(const Program& pr
                     program, node, static_action.rwlock, current.thread, visiting);
             }
             return enabler_heads_for_rwlock_readers(
-                program, node, static_action.rwlock, current.thread, visiting);
+                program, node, static_action.rwlock, current.thread, false, visiting);
+        }
+        break;
+    case ActionKind::Upgrade:
+        if (static_action == current.effective_action) {
+            return enabler_heads_for_rwlock_readers(
+                program, node, static_action.rwlock, current.thread, true, visiting);
         }
         break;
     case ActionKind::Join:
@@ -1609,13 +1639,27 @@ bool is_reader_rwlock_action(const Action& action) {
     return action.kind == ActionKind::RLock || action.kind == ActionKind::RUnlock;
 }
 
-bool program_has_writer_action_for_rwlock(const Program& program,
-                                          const std::string& name) {
+bool program_has_writer_mode_action_for_rwlock(const Program& program,
+                                               const std::string& name) {
     for (const auto& thread : program.threads) {
         for (const Action& action : thread) {
             if ((action.kind == ActionKind::WLock ||
-                 action.kind == ActionKind::WUnlock) &&
+                 action.kind == ActionKind::WUnlock ||
+                 action.kind == ActionKind::Upgrade ||
+                 action.kind == ActionKind::Downgrade) &&
                 action.rwlock == name) {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool program_has_upgrade_action_for_rwlock(const Program& program,
+                                           const std::string& name) {
+    for (const auto& thread : program.threads) {
+        for (const Action& action : thread) {
+            if (action.kind == ActionKind::Upgrade && action.rwlock == name) {
                 return true;
             }
         }
@@ -1661,19 +1705,28 @@ bool transitions_independent(const Program& program,
         return true;
     }
 
+    if (lhs.kind == ActionKind::RLock && rhs.kind == ActionKind::RLock &&
+        lhs.rwlock == rhs.rwlock &&
+        !program_has_upgrade_action_for_rwlock(program, lhs.rwlock)) {
+        // The action-only relation is conservative because a pending Upgrade
+        // can be enabled after the first acquisition and disabled after the
+        // second. Whole-program absence of Upgrade removes that middle
+        // enabledness witness and restores Campaign 7's RLock/RLock diamond.
+        return true;
+    }
+
     if (is_reader_rwlock_action(lhs) && is_reader_rwlock_action(rhs) &&
         lhs.rwlock == rhs.rwlock &&
-        !program_has_writer_action_for_rwlock(program, lhs.rwlock)) {
+        !program_has_writer_mode_action_for_rwlock(program, lhs.rwlock)) {
         // In a statically writer-free rwlock, cross-thread reader acquisitions
         // and releases form a commuting diamond: the final sorted holder set
         // is identical; accumulated release clocks join commutatively; RLock
         // never consumes that accumulator; and no shared value or race record
-        // changes. Crucially, the whole-program exclusion of both WLock and
-        // WUnlock removes the middle-writer witness that could otherwise be
-        // enabled after one release order but not the other. This refinement
-        // is checker-local because the public action predicate lacks program
-        // context. RLock/RLock remains independently justified even when a
-        // writer exists and falls through to the public predicate below.
+        // changes. Crucially, the whole-program exclusion of WLock, WUnlock,
+        // Upgrade, and Downgrade removes every writer-mode middle witness that
+        // could otherwise be enabled after one release order but not another.
+        // This refinement is checker-local because the public action predicate
+        // lacks program context.
         return true;
     }
 
@@ -2000,16 +2053,34 @@ ModelErrorReport make_unlock_error(const Action& action,
     return ModelErrorReport{endpoint, message.str(), schedule};
 }
 
-ModelErrorReport make_rwlock_unlock_error(const Action& action,
-                                          ScheduleStep endpoint,
-                                          const Schedule& schedule) {
+ModelErrorReport make_rwlock_mode_error(const Action& action,
+                                        ScheduleStep endpoint,
+                                        const Schedule& schedule) {
 #if defined(DPOR_EXPLORATION_METRICS)
     record_report_schedule_copy(schedule);
 #endif
+    const char* operation = nullptr;
+    switch (action.kind) {
+    case ActionKind::RUnlock:
+        operation = "read-unlock";
+        break;
+    case ActionKind::WUnlock:
+        operation = "write-unlock";
+        break;
+    case ActionKind::Upgrade:
+        operation = "upgrade";
+        break;
+    case ActionKind::Downgrade:
+        operation = "downgrade";
+        break;
+    default:
+        assert(false && "rwlock mode error requires a conversion or unlock");
+        operation = "change mode on";
+        break;
+    }
     std::ostringstream message;
     message << "thread " << endpoint.thread << " attempted to "
-            << (action.kind == ActionKind::RUnlock ? "read-unlock" : "write-unlock")
-            << " rwlock '" << action.rwlock
+            << operation << " rwlock '" << action.rwlock
             << "' but it does not hold that mode";
     return ModelErrorReport{endpoint, message.str(), schedule};
 }
@@ -2314,6 +2385,31 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         rwlock.writer_holder = tid;
         break;
     }
+    case ActionKind::Upgrade: {
+        advance_pc(program, state, tid);
+        const auto found = state.rwlocks.find(action.rwlock);
+        if (found == state.rwlocks.end() ||
+            !holds_rwlock_read(found->second, tid)) {
+            report.error =
+                make_rwlock_mode_error(action, endpoint, state.schedule);
+            break;
+        }
+
+        RwLockState& rwlock = found->second;
+        assert(!rwlock.writer_holder.has_value());
+        assert(rwlock.reader_holders.size() == 1);
+        // Conversion consumes the same publication frontiers as WLock. The
+        // caller's retained read hold was never released into the accumulator,
+        // so this does not manufacture a self-edge.
+        state.thread_clock.at(tid).join(rwlock.writer_release);
+        state.thread_clock.at(tid).join(rwlock.reader_releases);
+        rwlock.reader_releases = VectorClock{};
+        const std::size_t erased = rwlock.reader_holders.erase(tid);
+        assert(erased == 1);
+        (void)erased;
+        rwlock.writer_holder = tid;
+        break;
+    }
     case ActionKind::Join:
         advance_pc(program, state, tid);
         if (join_target_is_invalid(program, tid, action)) {
@@ -2350,13 +2446,14 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         if (found == state.rwlocks.end() ||
             !holds_rwlock_read(found->second, tid)) {
             report.error =
-                make_rwlock_unlock_error(action, endpoint, state.schedule);
+                make_rwlock_mode_error(action, endpoint, state.schedule);
             break;
         }
 
         // Each read release contributes its post-tick clock to the current
-        // reader epoch. This does not affect a later RLock; only WLock consumes
-        // the accumulated join after all readers have drained.
+        // reader epoch. This does not affect a later RLock; WLock or a
+        // successful Upgrade consumes the accumulated join after all other
+        // readers have drained.
         found->second.reader_releases.join(state.thread_clock.at(tid));
         found->second.reader_holders.erase(tid);
         break;
@@ -2367,7 +2464,7 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         if (found == state.rwlocks.end() ||
             !holds_rwlock_write(found->second, tid)) {
             report.error =
-                make_rwlock_unlock_error(action, endpoint, state.schedule);
+                make_rwlock_mode_error(action, endpoint, state.schedule);
             break;
         }
 
@@ -2376,6 +2473,27 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         // from the preceding writer and reader epoch.
         found->second.writer_release = state.thread_clock.at(tid);
         found->second.writer_holder.reset();
+        break;
+    }
+    case ActionKind::Downgrade: {
+        advance_pc(program, state, tid);
+        const auto found = state.rwlocks.find(action.rwlock);
+        if (found == state.rwlocks.end() ||
+            !holds_rwlock_write(found->second, tid)) {
+            report.error =
+                make_rwlock_mode_error(action, endpoint, state.schedule);
+            break;
+        }
+
+        RwLockState& rwlock = found->second;
+        // Publish the writer section at the conversion point before retaining
+        // ownership as a reader. The prior reader accumulator belongs to an
+        // unconsumed epoch and must not be cleared by downgrade.
+        rwlock.writer_release = state.thread_clock.at(tid);
+        rwlock.writer_holder.reset();
+        const bool inserted = rwlock.reader_holders.insert(tid).second;
+        assert(inserted);
+        (void)inserted;
         break;
     }
     case ActionKind::SemPost: {
@@ -2651,13 +2769,19 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
                                 : std::optional<ThreadId>{owner->second};
             report.blocked_threads.push_back(std::move(blocked));
         } else if (action.kind == ActionKind::RLock ||
-                   action.kind == ActionKind::WLock) {
+                   action.kind == ActionKind::WLock ||
+                   action.kind == ActionKind::Upgrade) {
             const RwLockState* rwlock = find_rwlock(state, action.rwlock);
             assert(rwlock != nullptr);
             BlockedThread blocked;
             blocked.thread = tid;
             blocked.rwlock = action.rwlock;
-            if (rwlock->writer_holder.has_value()) {
+            if (action.kind == ActionKind::Upgrade) {
+                assert(!rwlock->writer_holder.has_value());
+                assert(holds_rwlock_read(*rwlock, tid));
+                assert(rwlock->reader_holders.size() > 1);
+                blocked.kind = BlockedOnKind::RwLockUpgrade;
+            } else if (rwlock->writer_holder.has_value()) {
                 blocked.kind = BlockedOnKind::RwLockWriter;
                 blocked.owner = rwlock->writer_holder;
             } else {
@@ -4013,6 +4137,8 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
             case ActionKind::RUnlock:
             case ActionKind::WLock:
             case ActionKind::WUnlock:
+            case ActionKind::Upgrade:
+            case ActionKind::Downgrade:
                 rwlock_names.insert(action.rwlock);
                 break;
             case ActionKind::SemPost:

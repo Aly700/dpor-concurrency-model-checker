@@ -92,6 +92,10 @@ void print_deadlock_blocker(std::ostream& output, const model::BlockedThread& bl
     case model::BlockedOnKind::Barrier:
         output << "barrier " << blocked.barrier << " waiting_on_barrier";
         break;
+    case model::BlockedOnKind::RwLockUpgrade:
+        output << "rwlock " << blocked.rwlock
+               << " upgrade_waiting_for_readers_to_drain";
+        break;
     }
     output << '\n';
 }

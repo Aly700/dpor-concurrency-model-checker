@@ -806,6 +806,12 @@ std::string action_string(const model::Action& action) {
     case model::ActionKind::BarrierWait:
         out << "BarrierWait " << action.barrier << ' ' << action.parties;
         break;
+    case model::ActionKind::Upgrade:
+        out << "Upgrade " << action.rwlock;
+        break;
+    case model::ActionKind::Downgrade:
+        out << "Downgrade " << action.rwlock;
+        break;
     }
     return out.str();
 }

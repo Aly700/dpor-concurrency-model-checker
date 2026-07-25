@@ -68,6 +68,37 @@ model::Action unlock(std::string mutex) {
     return action;
 }
 
+model::Action rwlock_action(model::ActionKind kind, std::string rwlock) {
+    model::Action action;
+    action.kind = kind;
+    action.rwlock = std::move(rwlock);
+    return action;
+}
+
+model::Action rlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RLock, std::move(rwlock));
+}
+
+model::Action runlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::RUnlock, std::move(rwlock));
+}
+
+model::Action wlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WLock, std::move(rwlock));
+}
+
+model::Action wunlock(std::string rwlock) {
+    return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
+}
+
+model::Action upgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Upgrade, std::move(rwlock));
+}
+
+model::Action downgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Downgrade, std::move(rwlock));
+}
+
 model::Action fence() {
     model::Action action;
     action.kind = model::ActionKind::Fence;
@@ -112,7 +143,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 13> kActions{
+const std::array<model::Action, 19> kActions{
     read("x"),
     read("y"),
     write("x"),
@@ -124,6 +155,12 @@ const std::array<model::Action, 13> kActions{
     lock("m"),
     try_lock("m"),
     unlock("m"),
+    rlock("rw"),
+    runlock("rw"),
+    wlock("rw"),
+    wunlock("rw"),
+    upgrade("rw"),
+    downgrade("rw"),
     fence(),
     barrier_wait("bar", 2),
 };
@@ -183,6 +220,22 @@ bool bound_hit(const model::CheckResult& result) {
 
 std::string action_string(const model::Action& action) {
     std::ostringstream out;
+    switch (action.kind) {
+    case model::ActionKind::RLock:
+        return "RLock " + action.rwlock;
+    case model::ActionKind::RUnlock:
+        return "RUnlock " + action.rwlock;
+    case model::ActionKind::WLock:
+        return "WLock " + action.rwlock;
+    case model::ActionKind::WUnlock:
+        return "WUnlock " + action.rwlock;
+    case model::ActionKind::Upgrade:
+        return "Upgrade " + action.rwlock;
+    case model::ActionKind::Downgrade:
+        return "Downgrade " + action.rwlock;
+    default:
+        break;
+    }
     out << static_cast<int>(action.kind);
     if (!action.address.empty()) {
         out << ' ' << action.address;
@@ -335,8 +388,9 @@ void cross_validate_program(const model::Program& program,
 } // namespace
 
 int main() {
-    if (kActions.size() != 13) {
-        throw std::runtime_error("PSO oracle alphabet must include TryLock");
+    if (kActions.size() != 19) {
+        throw std::runtime_error(
+            "PSO oracle alphabet must include TryLock and all rwlock actions");
     }
     const model::Action& try_lock_entry = kActions.at(9);
     if (try_lock_entry.kind != model::ActionKind::TryLock ||
@@ -345,6 +399,21 @@ int main() {
         *try_lock_entry.destination != 0) {
         throw std::runtime_error(
             "PSO oracle TryLock entry must be try_lock m -> r0");
+    }
+    const std::array<model::ActionKind, 6> rwlock_kinds{
+        model::ActionKind::RLock,
+        model::ActionKind::RUnlock,
+        model::ActionKind::WLock,
+        model::ActionKind::WUnlock,
+        model::ActionKind::Upgrade,
+        model::ActionKind::Downgrade,
+    };
+    for (std::size_t i = 0; i < rwlock_kinds.size(); ++i) {
+        const model::Action& action = kActions.at(11 + i);
+        if (action.kind != rwlock_kinds.at(i) || action.rwlock != "rw") {
+            throw std::runtime_error(
+                "PSO oracle must contain all six same-name rwlock operations");
+        }
     }
     std::size_t programs_checked = 0;
     std::size_t skipped_capped = 0;
@@ -394,6 +463,20 @@ int main() {
             {set(7, 1), lock("m"), label("retry"), unlock("m"),
              lock("m"), bnz(7, "retry")},
             {lock("m")},
+        }},
+        programs_checked,
+        skipped_capped,
+        naive_total,
+        dpor_total,
+        cycle_counts);
+    // The write is buffered after Upgrade, so Downgrade cannot fire until the
+    // explicit PSO flush transition drains it. A transient peer reader also
+    // exercises Upgrade's blocked/enabled repair path.
+    cross_validate_program(
+        model::Program{{
+            {rlock("rw"), upgrade("rw"), write("x"),
+             downgrade("rw"), runlock("rw")},
+            {rlock("rw"), read("x"), runlock("rw")},
         }},
         programs_checked,
         skipped_capped,

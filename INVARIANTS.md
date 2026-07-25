@@ -31,11 +31,13 @@
   to empty only when a last arrival advances every participant past the
   barrier; without a backward branch none can return to that source pc.
   `TryLock` is an ordinary pc-advancing source transition on both success and
-  failure, so adding it does not weaken this well-foundedness argument.
+  failure, so adding it does not weaken this well-foundedness argument. A
+  blocked `Upgrade` does not fire; every fired `Upgrade` or `Downgrade`,
+  including modeled misuse, advances its normalized pc exactly once.
   Therefore a complete behavioral state cannot recur. Any future action that
   can decrease a pc or repeatedly mutate behavioral state without advancing a
   pc must extend or invalidate this proof before fingerprint elision is allowed
-  (adr/0023, adr/0024, adr/0025).
+  (adr/0023, adr/0024, adr/0025, adr/0028).
 - The behavioral state includes normalized per-thread PCs, startedness, wait
   phases, registers, memory values, mutex owners, reader-writer lock holders,
   nonzero semaphore permit counts, every nonempty barrier's configured party
@@ -48,7 +50,10 @@
   lasso proves schedule-existence of non-termination only, not repetition of
   analysis instrumentation. `TryLock` needs no new fingerprint field: its
   result is already present in the destination register, successful ownership
-  is already present in `mutex_owner`, and its pc always advances.
+  is already present in `mutex_owner`, and its pc always advances. Rwlock
+  conversions likewise need no new field: their observable mode is already
+  present in the canonical reader set and writer owner, and a successful or
+  erroneous conversion advances pc.
 - A cycle witness is `stem + one cycle`, split at the first occurrence of the
   revisited state. The claim is existential. Its fairness field classifies only
   that witness and makes no system-level scheduler-fairness,
@@ -135,10 +140,18 @@
 - A reader-writer lock has a last-writer release clock and an accumulated join
   of reader-release clocks. `RLock` joins only the writer clock; `RUnlock`
   accumulates its post-tick clock; `WLock` joins both clocks and then clears the
-  reader accumulator; `WUnlock` replaces the writer clock. The accumulator is
-  not cleared merely when the live reader count reaches zero. This protects
-  writer publication and every reader-to-later-writer edge without creating a
-  reader-to-reader edge that could hide a race.
+  reader accumulator; `WUnlock` replaces the writer clock. A successful
+  `Upgrade` requires the caller's retained read hold and no other reader,
+  atomically changes that hold to write mode, joins the same two frontiers as
+  `WLock`, and clears the consumed reader accumulator. The caller's retained
+  hold is never released into that accumulator and therefore creates no
+  self-edge. `Downgrade` atomically changes the caller's write hold to read
+  mode, publishes its post-tick clock as the writer release, and does not clear
+  the reader accumulator; the retained reader's eventual `RUnlock` contributes
+  normally. The accumulator is not cleared merely when the live reader count
+  reaches zero. This protects writer publication and every
+  reader-to-later-writer edge without creating a reader-to-reader edge that
+  could hide a race.
 - Every semaphore starts with zero permits. `SemPost` increments without a
   modeled ceiling and release-joins its post-tick clock into a lifetime
   accumulator; `SemWait` is enabled only at a positive count, decrements once,
@@ -179,6 +192,9 @@
 - Under TSO and PSO, `TryLock` is a full ordered point like `Lock`: the source
   transition remains disabled until every buffer owned by the caller is empty,
   and neither success nor failure performs a hidden flush.
+- Under TSO and PSO, `Upgrade` and `Downgrade` are full ordered points like the
+  other rwlock operations. A conversion remains disabled until every buffer
+  owned by the caller is empty and performs no hidden flush.
 - Atomic/atomic accesses are never races. Mixed plain/atomic same-address
   accesses are races when unordered by happens-before and at least one side is
   write-like: plain write, atomic store, successful CAS, or atomic RMW. CAS is
@@ -195,16 +211,18 @@
   later `Flush` is the globally visible write and must retain all same-address
   dependencies and race bookkeeping. Under SC, and for all same-thread pairs,
   `Write` dependence is unchanged (adr/0020).
-- Cross-thread, co-enabled `RLock(m)` actions are classified independent. For
-  successful acquisitions, both orders leave the same reader set, clocks,
-  shared/race state, and enabled set, and a same-lock writer is disabled after
-  either first reader and after both. Reentrant error endpoints are protected
-  by the terminal all-siblings backtrack safeguard. Every other same-rwlock
-  action pair is conservatively dependent at the public relation. The checker
-  may commute all cross-thread reader-mode operations only when the complete
-  program contains no writer-mode operation on that name; this static
-  condition removes the last-reader/third-writer middle witness that would
-  otherwise make the refinement unsound (adr/0021).
+- The public action-only relation keeps every same-rwlock pair dependent,
+  including `RLock(m)`/`RLock(m)`. With `Upgrade(m)` in the program, whichever
+  root read acquisition runs first can expose its own sole-reader Upgrade
+  before the other acquisition; after both reads neither Upgrade is enabled.
+  The checker restores exact cross-thread `RLock(m)` commutation only when the
+  complete program has no `Upgrade` on that rwlock name. It may commute the
+  broader reader-mode pairs only when the program also has no `WLock`,
+  `WUnlock`, or `Downgrade` on that name. These per-name static exclusions
+  remove the conversion and last-reader/third-writer middle witnesses.
+  Reentrant error endpoints remain protected by the terminal all-siblings
+  backtrack safeguard; all conversion pairs and every other same-name pair
+  remain dependent (adr/0021, adr/0028).
 - Cross-thread, co-enabled `SemPost(s)` actions are independent: count addition
   and accumulated release-clock joins commute, neither poster acquires the
   other, and either first post enables the same waiter set. Every same-name
@@ -248,16 +266,23 @@
 - Deadlock detection must distinguish a true cycle from a voluntarily finished
   thread, and must identify whether each unfinished disabled thread is waiting
   on a mutex, a join target, a condition variable, an rwlock writer, an rwlock
-  reader set, a zero-permit semaphore, or an incomplete barrier generation. A
-  barrier blocker is rendered `barrier NAME waiting_on_barrier`. A write-lock
-  attempt by one of the current readers is a readers-to-drain deadlock with
-  `self_wait`, not a modeled reentrancy error.
+  reader set, an rwlock upgrade, a zero-permit semaphore, or an incomplete
+  barrier generation. A barrier blocker is rendered
+  `barrier NAME waiting_on_barrier`. A write-lock attempt by one of the current
+  readers is a readers-to-drain deadlock with `self_wait`, not a modeled
+  reentrancy error. A valid Upgrade blocked by other readers is rendered
+  `rwlock NAME upgrade_waiting_for_readers_to_drain`; its retained own hold is
+  not labeled as its blocker. Two readers that both Upgrade therefore form a
+  deterministic two-thread deadlock.
 - `TryLock` never appears in a deadlock blocker set. A backward branch that
   retries a failed attempt is a lasso/non-termination question. Under weak
   fairness, its witness is unfair when a nonparticipant holder's `Unlock`
   remains enabled at every cycle state; it is not reclassified as deadlock.
 - Reader-writer-lock ownership is a reader-holder set plus an optional writer;
-  non-holder or wrong-mode unlock and read/write reentrancy are modeled errors.
+  non-holder or wrong-mode unlock, Upgrade, or Downgrade and read/write
+  reentrancy are modeled errors. A valid Upgrade waits only for other readers;
+  a valid Downgrade never blocks. Both conversions change the existing hold
+  atomically, with no state in which the resource is unheld.
   `TryLock`, `Lock`, `Unlock`, and the mutex operand of `Wait` share the same
   mutex namespace and ownership state; `Unlock` validation is unchanged.
   A barrier resource name may not also be interpreted as a mutex (including a

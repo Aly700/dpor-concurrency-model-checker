@@ -107,6 +107,15 @@ model::BlockedThread barrier_blocker(model::ThreadId thread, std::string barrier
     return blocked;
 }
 
+model::BlockedThread rwlock_upgrade_blocker(model::ThreadId thread,
+                                            std::string rwlock) {
+    model::BlockedThread blocked;
+    blocked.thread = thread;
+    blocked.rwlock = std::move(rwlock);
+    blocked.kind = model::BlockedOnKind::RwLockUpgrade;
+    return blocked;
+}
+
 std::string read_file(const std::filesystem::path& path) {
     std::ifstream input(path);
     if (!input) {
@@ -544,6 +553,27 @@ const std::vector<GalleryCase>& gallery_cases() {
         {"failed_cas_handoff_broken_no_retry.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, std::nullopt, false},
         {"readers_writers.dpor", ExpectedVerdict::Clean, 10, 100000, false, model::MemoryModel::SC, false, false},
         {"readers_writers_broken.dpor", ExpectedVerdict::Race, 10, 100000, true, model::MemoryModel::SC, true, false},
+        {"rwlock_upgrade_correct.dpor",
+         ExpectedVerdict::Clean,
+         12,
+         100000,
+         false},
+        {"rwlock_upgrade_double_deadlock.dpor",
+         ExpectedVerdict::Deadlock,
+         8,
+         100000,
+         true,
+         model::MemoryModel::SC,
+         std::nullopt,
+         false,
+         std::nullopt,
+         {rwlock_upgrade_blocker(0, "rw"),
+          rwlock_upgrade_blocker(1, "rw")},
+         model::Schedule{{0, 0, std::nullopt},
+                         {0, 1, std::nullopt},
+                         {1, 0, std::nullopt},
+                         {1, 1, std::nullopt}},
+         true},
         {"dining_philosophers.dpor", ExpectedVerdict::Clean, 4, 1000, false},
         {"dining_philosophers_broken.dpor",
          ExpectedVerdict::Deadlock,
@@ -662,6 +692,52 @@ void verify_broken_variants_with_cli(const std::filesystem::path& binary,
     }
 }
 
+void verify_rwlock_upgrade_goldens(const std::filesystem::path& binary,
+                                   const std::filesystem::path& source_dir,
+                                   const std::filesystem::path& work_dir) {
+    struct GoldenCase {
+        const char* program;
+        const char* golden;
+        int exit_code;
+    };
+    constexpr GoldenCase cases[] = {
+        {"rwlock_upgrade_correct.dpor",
+         "rwlock_upgrade_correct_dpor.txt",
+         0},
+        {"rwlock_upgrade_double_deadlock.dpor",
+         "rwlock_upgrade_double_deadlock_dpor.txt",
+         1},
+    };
+
+    for (const GoldenCase& test_case : cases) {
+        const auto result = run_command(
+            binary,
+            {"check",
+             gallery_file(source_dir, test_case.program).string(),
+             "--explorer",
+             "dpor",
+             "--memory-model",
+             "sc",
+             "--step-bound",
+             "12",
+             "--max-schedules",
+             "100000"},
+            work_dir / (std::string(test_case.program) + ".golden.out"),
+            work_dir / (std::string(test_case.program) + ".golden.err"));
+        require(result.exit_code == test_case.exit_code,
+                std::string(test_case.program) +
+                    " golden command exit status changed");
+        require(result.stderr_text.empty(),
+                std::string(test_case.program) +
+                    " golden command wrote stderr: " + result.stderr_text);
+        const std::string expected = read_file(
+            source_dir / "tests" / "golden" / test_case.golden);
+        require(result.stdout_text == expected,
+                std::string(test_case.program) +
+                    " CLI output changed from its golden");
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -675,6 +751,7 @@ int main(int argc, char** argv) {
 
     verify_gallery_with_library(source_dir);
     verify_broken_variants_with_cli(binary, source_dir, work_dir);
+    verify_rwlock_upgrade_goldens(binary, source_dir, work_dir);
 #ifdef DPOR_SYMMETRY_DIAGNOSIS
     symmetry_diagnosis::print_summaries(std::cout);
 #endif

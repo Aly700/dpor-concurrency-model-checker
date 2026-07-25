@@ -501,7 +501,7 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
     const std::filesystem::path& binary,
     const std::filesystem::path& work_dir) {
     // This assertion witness exercises both parsing and report rendering for
-    // all four strict spellings. A one-thread trace also makes the entire
+    // all six strict spellings. A one-thread trace also makes the entire
     // check and replay reports byte-identical, including exploration counts.
     assert_check_replay_byte_identity(
         binary,
@@ -509,12 +509,19 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
         "cli_rwlock_spellings",
         "thread:\n"
         "  rlock rw\n"
+        "  upgrade rw\n"
+        "  downgrade rw\n"
         "  runlock rw\n"
         "  wlock rw\n"
         "  wunlock rw\n"
         "  assert r0\n",
         "assertion",
-        {"rlock rw", "runlock rw", "wlock rw", "wunlock rw"});
+        {"rlock rw",
+         "upgrade rw",
+         "downgrade rw",
+         "runlock rw",
+         "wlock rw",
+         "wunlock rw"});
 
     assert_check_replay_byte_identity(
         binary,
@@ -566,24 +573,100 @@ void assert_rwlock_syntax_and_witnesses_round_trip_byte_identically(
         "  wlock rw\n",
         "deadlock",
         {"rwlock rw waiting_for_readers_to_drain self_wait"});
+
+    const auto double_upgrade_path = work_dir / "cli_rwlock_double_upgrade.dpor";
+    write_file(
+        double_upgrade_path,
+        "thread:\n"
+        "  rlock rw\n"
+        "  barrier_wait ready 2\n"
+        "  upgrade rw\n"
+        "thread:\n"
+        "  rlock rw\n"
+        "  barrier_wait ready 2\n"
+        "  upgrade rw\n");
+    const auto double_upgrade_check = run_command(
+        binary,
+        {"check", double_upgrade_path.string(), "--explorer", "dpor"},
+        work_dir / "cli_rwlock_double_upgrade.check.out",
+        work_dir / "cli_rwlock_double_upgrade.check.err");
+    require_cli(double_upgrade_check.exit_code == 1,
+                "double-upgrade check should report a witness");
+    require_cli(double_upgrade_check.stderr_text.empty(),
+                "double-upgrade check wrote stderr: " +
+                    double_upgrade_check.stderr_text);
+    require_cli(first_line(double_upgrade_check.stdout_text) == "verdict: deadlock",
+                "double-upgrade check verdict mismatch");
+    const std::vector<std::string> exact_blockers = {
+        "    thread 0: rwlock rw upgrade_waiting_for_readers_to_drain\n",
+        "    thread 1: rwlock rw upgrade_waiting_for_readers_to_drain\n",
+    };
+    for (const std::string& blocker : exact_blockers) {
+        require_cli(double_upgrade_check.stdout_text.find(blocker) !=
+                        std::string::npos,
+                    "double-upgrade report omitted exact blocker '" + blocker + "'");
+    }
+
+    const auto double_upgrade_schedule =
+        work_dir / "cli_rwlock_double_upgrade.schedule";
+    write_file(double_upgrade_schedule,
+               schedule_block(double_upgrade_check.stdout_text));
+    const auto double_upgrade_replay = run_command(
+        binary,
+        {"replay",
+         double_upgrade_path.string(),
+         "--schedule",
+         double_upgrade_schedule.string()},
+        work_dir / "cli_rwlock_double_upgrade.replay.out",
+        work_dir / "cli_rwlock_double_upgrade.replay.err");
+    require_cli(double_upgrade_replay.exit_code == 1,
+                "double-upgrade replay should reproduce the witness");
+    require_cli(double_upgrade_replay.stderr_text.empty(),
+                "double-upgrade replay wrote stderr: " +
+                    double_upgrade_replay.stderr_text);
+    require_cli(details_for_round_trip(double_upgrade_replay.stdout_text) ==
+                    details_for_round_trip(double_upgrade_check.stdout_text),
+                "double-upgrade check and replay witness details differ");
+    require_cli(schedule_block(double_upgrade_replay.stdout_text) ==
+                    schedule_block(double_upgrade_check.stdout_text),
+                "double-upgrade check and replay schedules differ");
 }
 
 void assert_rwlock_parser_is_strict_and_namespaces_are_distinct(
     const std::filesystem::path& binary,
     const std::filesystem::path& work_dir) {
-    const auto uppercase_path = work_dir / "cli_rwlock_uppercase.dpor";
-    write_file(uppercase_path, "thread:\n  RLock rw\n");
-    const auto uppercase = run_command(
-        binary,
-        {"check", uppercase_path.string()},
-        work_dir / "cli_rwlock_uppercase.out",
-        work_dir / "cli_rwlock_uppercase.err");
-    require_cli(uppercase.exit_code == 2, "uppercase RLock should be rejected");
-    require_cli(uppercase.stdout_text.empty(), "uppercase RLock wrote stdout");
-    require_cli(uppercase.stderr_text.find("line 2") != std::string::npos,
-                "uppercase RLock error omitted its line");
-    require_cli(uppercase.stderr_text.find("unknown keyword 'RLock'") != std::string::npos,
-                "uppercase RLock was not reported as unknown");
+    struct ParseCase {
+        std::string stem;
+        std::string action;
+        std::string expected;
+    };
+    const std::vector<ParseCase> parse_cases = {
+        {"rlock_uppercase", "RLock rw", "unknown keyword 'RLock'"},
+        {"upgrade_uppercase", "Upgrade rw", "unknown keyword 'Upgrade'"},
+        {"downgrade_uppercase", "Downgrade rw", "unknown keyword 'Downgrade'"},
+        {"upgrade_missing", "upgrade", "keyword 'upgrade' expects 1 operand"},
+        {"upgrade_extra", "upgrade rw extra", "keyword 'upgrade' expects 1 operand"},
+        {"downgrade_missing", "downgrade", "keyword 'downgrade' expects 1 operand"},
+        {"downgrade_extra", "downgrade rw extra", "keyword 'downgrade' expects 1 operand"},
+    };
+    for (const ParseCase& parse_case : parse_cases) {
+        const auto program_path = work_dir / ("cli_rwlock_" + parse_case.stem + ".dpor");
+        write_file(program_path, "thread:\n  " + parse_case.action + "\n");
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_rwlock_" + parse_case.stem + ".out"),
+            work_dir / ("cli_rwlock_" + parse_case.stem + ".err"));
+        require_cli(result.exit_code == 2,
+                    parse_case.stem + " rwlock syntax should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    parse_case.stem + " rwlock syntax wrote stdout");
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    parse_case.stem + " rwlock syntax omitted its line");
+        require_cli(result.stderr_text.find(parse_case.expected) != std::string::npos,
+                    parse_case.stem + " rwlock diagnostic mismatch: " +
+                        result.stderr_text);
+    }
 
     const std::vector<std::pair<std::string, std::string>> collisions = {
         {
@@ -597,6 +680,30 @@ void assert_rwlock_parser_is_strict_and_namespaces_are_distinct(
             "thread:\n"
             "  wlock shared\n"
             "  wait cv shared\n",
+        },
+        {
+            "upgrade_then_mutex",
+            "thread:\n"
+            "  upgrade shared\n"
+            "  lock shared\n",
+        },
+        {
+            "mutex_then_upgrade",
+            "thread:\n"
+            "  lock shared\n"
+            "  upgrade shared\n",
+        },
+        {
+            "downgrade_then_mutex",
+            "thread:\n"
+            "  downgrade shared\n"
+            "  lock shared\n",
+        },
+        {
+            "mutex_then_downgrade",
+            "thread:\n"
+            "  lock shared\n"
+            "  downgrade shared\n",
         },
     };
     for (const auto& [stem, program_text] : collisions) {
@@ -731,6 +838,20 @@ void assert_semaphore_parser_is_strict_and_namespace_is_distinct(
             "  sem_post shared\n",
             "rwlock",
         },
+        {
+            "semaphore_then_upgrade",
+            "thread:\n"
+            "  sem_wait shared\n"
+            "  upgrade shared\n",
+            "rwlock",
+        },
+        {
+            "downgrade_then_semaphore",
+            "thread:\n"
+            "  downgrade shared\n"
+            "  sem_post shared\n",
+            "rwlock",
+        },
     };
     for (const CollisionCase& collision : collisions) {
         const auto program_path = work_dir / ("cli_" + collision.stem + ".dpor");
@@ -849,6 +970,8 @@ void assert_barrier_parser_is_strict_and_namespace_is_distinct(
         {"mutex_then_barrier", "thread:\n  lock shared\n  barrier_wait shared 1\n", "mutex"},
         {"barrier_then_rwlock", "thread:\n  barrier_wait shared 1\n  rlock shared\n", "rwlock"},
         {"rwlock_then_barrier", "thread:\n  wlock shared\n  barrier_wait shared 1\n", "rwlock"},
+        {"barrier_then_upgrade", "thread:\n  barrier_wait shared 1\n  upgrade shared\n", "rwlock"},
+        {"downgrade_then_barrier", "thread:\n  downgrade shared\n  barrier_wait shared 1\n", "rwlock"},
         {"barrier_then_semaphore", "thread:\n  barrier_wait shared 1\n  sem_post shared\n", "semaphore"},
         {"semaphore_then_barrier", "thread:\n  sem_wait shared\n  barrier_wait shared 1\n", "semaphore"},
         {"barrier_then_condition", "thread:\n  barrier_wait shared 1\n  signal shared\n", "condition variable"},

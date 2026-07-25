@@ -1,0 +1,14 @@
+# A reader may inspect shared state, atomically upgrade once every other
+# reader drains, write exclusively, and retain read ownership by downgrading.
+thread:
+  rlock rw
+  read payload -> r0
+  upgrade rw
+  write payload 1
+  downgrade rw
+  runlock rw
+
+thread:
+  rlock rw
+  read payload -> r0
+  runlock rw

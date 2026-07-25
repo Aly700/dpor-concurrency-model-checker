@@ -41,6 +41,8 @@ enum class Choice {
     RUnlock,
     WLock,
     WUnlock,
+    Upgrade,
+    Downgrade,
     SemPost,
     SemWait,
     BarrierWait,
@@ -80,7 +82,7 @@ struct FuzzStats {
     std::size_t dpor_strongly_unfair_cycles{0};
     std::size_t naive_unfair_cycles{0};
     std::size_t dpor_unfair_cycles{0};
-    std::array<std::size_t, 4> rwlock_actions{};
+    std::array<std::size_t, 6> rwlock_actions{};
     // Rows are MostlyWellFormed/Adversarial; columns are SemPost/SemWait.
     std::array<std::array<std::size_t, 2>, 2> semaphore_actions{};
     // MostlyWellFormed/Adversarial BarrierWait counts.
@@ -89,6 +91,10 @@ struct FuzzStats {
     // programs discarded because either explorer reached the schedule cap.
     std::array<std::size_t, 2> try_lock_actions_generated{};
     std::array<std::size_t, 2> try_lock_actions_compared{};
+    // Rows are MostlyWellFormed/Adversarial; columns are Upgrade/Downgrade.
+    // Compared excludes programs discarded at the schedule cap.
+    std::array<std::array<std::size_t, 2>, 2> conversion_actions_generated{};
+    std::array<std::array<std::size_t, 2>, 2> conversion_actions_compared{};
 };
 
 model::Action read(std::string address) {
@@ -169,6 +175,14 @@ model::Action wlock(std::string rwlock) {
 
 model::Action wunlock(std::string rwlock) {
     return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
+}
+
+model::Action upgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Upgrade, std::move(rwlock));
+}
+
+model::Action downgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Downgrade, std::move(rwlock));
 }
 
 model::Action semaphore_action(model::ActionKind kind, std::string semaphore) {
@@ -488,6 +502,16 @@ model::Action release_rwlock(std::mt19937_64& rng,
     return writer ? wunlock(std::move(rwlock)) : runlock(std::move(rwlock));
 }
 
+model::Action convert_rwlock(std::mt19937_64& rng,
+                             std::vector<HeldRwLock>& held_rwlocks,
+                             bool to_writer) {
+    const std::size_t index =
+        random_rwlock_with_mode(rng, held_rwlocks, !to_writer);
+    held_rwlocks.at(index).writer = to_writer;
+    return to_writer ? upgrade(held_rwlocks.at(index).name)
+                     : downgrade(held_rwlocks.at(index).name);
+}
+
 model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
                                                   model::ThreadId tid,
                                                   std::size_t thread_count,
@@ -540,10 +564,12 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
     if (std::any_of(held_rwlocks.begin(), held_rwlocks.end(),
                     [](const HeldRwLock& held) { return !held.writer; })) {
         choices.push_back({Choice::RUnlock, 8});
+        choices.push_back({Choice::Upgrade, 12});
     }
     if (std::any_of(held_rwlocks.begin(), held_rwlocks.end(),
                     [](const HeldRwLock& held) { return held.writer; })) {
         choices.push_back({Choice::WUnlock, 8});
+        choices.push_back({Choice::Downgrade, 12});
     }
 
     switch (choose(rng, choices)) {
@@ -578,6 +604,10 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
         return release_rwlock(rng, held_rwlocks, false);
     case Choice::WUnlock:
         return release_rwlock(rng, held_rwlocks, true);
+    case Choice::Upgrade:
+        return convert_rwlock(rng, held_rwlocks, true);
+    case Choice::Downgrade:
+        return convert_rwlock(rng, held_rwlocks, false);
     case Choice::SemPost:
         return sem_post(random_semaphore(rng));
     case Choice::SemWait:
@@ -615,12 +645,14 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         {Choice::PlainMemory, 16},
         {Choice::AtomicMemory, 16},
         {Choice::Lock, 12},
-        {Choice::TryLock, 40},
+        {Choice::TryLock, 100},
         {Choice::Unlock, 18},
         {Choice::RLock, 8},
         {Choice::RUnlock, 10},
         {Choice::WLock, 8},
         {Choice::WUnlock, 10},
+        {Choice::Upgrade, 90},
+        {Choice::Downgrade, 90},
         {Choice::Wait, 18},
         {Choice::Signal, 8},
         {Choice::Broadcast, 6},
@@ -654,6 +686,10 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         return wlock(random_rwlock(rng));
     case Choice::WUnlock:
         return wunlock(random_rwlock(rng));
+    case Choice::Upgrade:
+        return upgrade(random_rwlock(rng));
+    case Choice::Downgrade:
+        return downgrade(random_rwlock(rng));
     case Choice::SemPost:
         return sem_post(random_semaphore(rng));
     case Choice::SemWait:
@@ -997,12 +1033,16 @@ void assert_rwlock_spellings_round_trip() {
         runlock("rw0"),
         wlock("rw1"),
         wunlock("rw1"),
+        upgrade("rw0"),
+        downgrade("rw1"),
     }}};
     const std::string rendered = cli::render_program(program);
     assert(rendered.find("  rlock rw0\n") != std::string::npos);
     assert(rendered.find("  runlock rw0\n") != std::string::npos);
     assert(rendered.find("  wlock rw1\n") != std::string::npos);
     assert(rendered.find("  wunlock rw1\n") != std::string::npos);
+    assert(rendered.find("  upgrade rw0\n") != std::string::npos);
+    assert(rendered.find("  downgrade rw1\n") != std::string::npos);
     assert(cli::parse_program_text(rendered).threads == program.threads);
 }
 
@@ -1091,6 +1131,7 @@ void check_program(std::uint64_t seed,
 
     ++stats.total;
     std::size_t try_lock_actions_in_program = 0;
+    std::array<std::size_t, 2> conversion_actions_in_program{};
     for (const auto& thread : program.threads) {
         for (const model::Action& action : thread) {
             switch (action.kind) {
@@ -1112,6 +1153,22 @@ void check_program(std::uint64_t seed,
                 break;
             case model::ActionKind::WUnlock:
                 ++stats.rwlock_actions[3];
+                break;
+            case model::ActionKind::Upgrade:
+                ++stats.rwlock_actions[4];
+                ++conversion_actions_in_program[0];
+                if (mode != GenerationMode::Value) {
+                    ++stats.conversion_actions_generated[
+                        mode == GenerationMode::MostlyWellFormed ? 0 : 1][0];
+                }
+                break;
+            case model::ActionKind::Downgrade:
+                ++stats.rwlock_actions[5];
+                ++conversion_actions_in_program[1];
+                if (mode != GenerationMode::Value) {
+                    ++stats.conversion_actions_generated[
+                        mode == GenerationMode::MostlyWellFormed ? 0 : 1][1];
+                }
                 break;
             case model::ActionKind::SemPost:
                 if (mode != GenerationMode::Value) {
@@ -1189,6 +1246,21 @@ void check_program(std::uint64_t seed,
         stats.try_lock_actions_compared[
             mode == GenerationMode::MostlyWellFormed ? 0 : 1] +=
             try_lock_actions_in_program;
+    }
+    if (conversion_actions_in_program[0] != 0 ||
+        conversion_actions_in_program[1] != 0) {
+        if (mode == GenerationMode::Value) {
+            throw std::runtime_error(
+                "value fuzz lane unexpectedly generated rwlock conversion");
+        }
+        const std::size_t lane =
+            mode == GenerationMode::MostlyWellFormed ? 0 : 1;
+        for (std::size_t operation = 0;
+             operation < conversion_actions_in_program.size();
+             ++operation) {
+            stats.conversion_actions_compared[lane][operation] +=
+                conversion_actions_in_program[operation];
+        }
     }
     ++stats.checked;
     if (naive.first_race.has_value()) {
@@ -1331,6 +1403,8 @@ int main(int argc, char** argv) {
               << " runlock_actions=" << stats.rwlock_actions[1]
               << " wlock_actions=" << stats.rwlock_actions[2]
               << " wunlock_actions=" << stats.rwlock_actions[3]
+              << " upgrade_actions=" << stats.rwlock_actions[4]
+              << " downgrade_actions=" << stats.rwlock_actions[5]
               << " sem_post_actions="
               << stats.semaphore_actions[0][0] + stats.semaphore_actions[1][0]
               << " sem_wait_actions="
@@ -1347,6 +1421,34 @@ int main(int argc, char** argv) {
               << stats.try_lock_actions_generated[1]
               << " try_lock_adversarial_compared="
               << stats.try_lock_actions_compared[1]
+              << " upgrade_actions_generated="
+              << stats.conversion_actions_generated[0][0] +
+                     stats.conversion_actions_generated[1][0]
+              << " upgrade_actions_compared="
+              << stats.conversion_actions_compared[0][0] +
+                     stats.conversion_actions_compared[1][0]
+              << " downgrade_actions_generated="
+              << stats.conversion_actions_generated[0][1] +
+                     stats.conversion_actions_generated[1][1]
+              << " downgrade_actions_compared="
+              << stats.conversion_actions_compared[0][1] +
+                     stats.conversion_actions_compared[1][1]
+              << " conversion_mostly_upgrade_generated="
+              << stats.conversion_actions_generated[0][0]
+              << " conversion_mostly_upgrade_compared="
+              << stats.conversion_actions_compared[0][0]
+              << " conversion_mostly_downgrade_generated="
+              << stats.conversion_actions_generated[0][1]
+              << " conversion_mostly_downgrade_compared="
+              << stats.conversion_actions_compared[0][1]
+              << " conversion_adversarial_upgrade_generated="
+              << stats.conversion_actions_generated[1][0]
+              << " conversion_adversarial_upgrade_compared="
+              << stats.conversion_actions_compared[1][0]
+              << " conversion_adversarial_downgrade_generated="
+              << stats.conversion_actions_generated[1][1]
+              << " conversion_adversarial_downgrade_compared="
+              << stats.conversion_actions_compared[1][1]
               << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
@@ -1379,6 +1481,36 @@ int main(int argc, char** argv) {
             if (compared < 100 || compared * 4 < generated * 3) {
                 throw std::runtime_error(
                     "each fuzz lane must compare substantial TryLock coverage");
+            }
+        }
+        const std::size_t upgrades_generated =
+            stats.conversion_actions_generated[0][0] +
+            stats.conversion_actions_generated[1][0];
+        const std::size_t downgrades_generated =
+            stats.conversion_actions_generated[0][1] +
+            stats.conversion_actions_generated[1][1];
+        if (upgrades_generated < 300 || downgrades_generated < 300) {
+            throw std::runtime_error(
+                "fixed fuzz corpus must generate hundreds of both conversions");
+        }
+        for (std::size_t lane = 0;
+             lane < stats.conversion_actions_generated.size();
+             ++lane) {
+            for (std::size_t operation = 0;
+                 operation < stats.conversion_actions_generated[lane].size();
+                 ++operation) {
+                const std::size_t generated =
+                    stats.conversion_actions_generated[lane][operation];
+                const std::size_t compared =
+                    stats.conversion_actions_compared[lane][operation];
+                if (generated == 0) {
+                    throw std::runtime_error(
+                        "each fuzz lane must generate both conversion actions");
+                }
+                if (compared == 0 || compared * 4 < generated * 3) {
+                    throw std::runtime_error(
+                        "each fuzz lane must compare substantial conversion coverage");
+                }
             }
         }
     }

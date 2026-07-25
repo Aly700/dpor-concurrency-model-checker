@@ -66,6 +66,14 @@ model::Action wunlock(std::string rwlock) {
     return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
 }
 
+model::Action upgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Upgrade, std::move(rwlock));
+}
+
+model::Action downgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Downgrade, std::move(rwlock));
+}
+
 model::Action semaphore_action(model::ActionKind kind, std::string semaphore) {
     model::Action action;
     action.kind = kind;
@@ -263,19 +271,19 @@ int main() {
     assert(!model::independent(sem_wait("sem"), join(0)));
     assert(model::independent(sem_post("sem"), write("x")));
 
-    const std::array<model::Action, 4> same_rwlock_actions{
-        rlock("rw"), runlock("rw"), wlock("rw"), wunlock("rw")};
+    const std::array<model::Action, 6> same_rwlock_actions{
+        rlock("rw"), runlock("rw"), wlock("rw"), wunlock("rw"),
+        upgrade("rw"), downgrade("rw")};
     for (std::size_t lhs = 0; lhs < same_rwlock_actions.size(); ++lhs) {
         for (std::size_t rhs = 0; rhs < same_rwlock_actions.size(); ++rhs) {
-            const bool reader_reader_acquires = lhs == 0 && rhs == 0;
-            require(model::independent(
-                        same_rwlock_actions.at(lhs), same_rwlock_actions.at(rhs)) ==
-                        reader_reader_acquires,
+            require(!model::independent(
+                        same_rwlock_actions.at(lhs), same_rwlock_actions.at(rhs)),
                     "same-rwlock action-level independence matrix changed");
         }
     }
-    const std::array<model::Action, 4> other_rwlock_actions{
-        rlock("other"), runlock("other"), wlock("other"), wunlock("other")};
+    const std::array<model::Action, 6> other_rwlock_actions{
+        rlock("other"), runlock("other"), wlock("other"), wunlock("other"),
+        upgrade("other"), downgrade("other")};
     for (const model::Action& lhs : same_rwlock_actions) {
         for (const model::Action& rhs : other_rwlock_actions) {
             require(model::independent(lhs, rhs),
@@ -343,7 +351,7 @@ int main() {
     assert_pair_commutes_when_independent(read("x"), write("y"));
     assert_pair_commutes_when_independent(write("x"), lock("m"));
     assert_pair_commutes_when_independent(lock("m"), lock("n"));
-    assert_pair_commutes_when_independent(rlock("rw"), rlock("rw"));
+    assert_pair_commutes_when_independent(rlock("rw"), rlock("other"));
     assert_pair_commutes_when_independent(sem_post("sem"), sem_post("sem"));
     assert_semaphore_pair_commutes_when_independent(
         sem_post("left-sem"), sem_post("right-sem"));

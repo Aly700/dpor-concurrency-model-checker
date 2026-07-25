@@ -1,0 +1,16 @@
+verdict: deadlock
+schedules_explored: 4
+deadlock:
+  blocked:
+    thread 0: rwlock rw upgrade_waiting_for_readers_to_drain
+    thread 1: rwlock rw upgrade_waiting_for_readers_to_drain
+trace:
+  0: thread 0 action 0 rlock rw
+  1: thread 0 action 1 barrier_wait ready 2
+  2: thread 1 action 0 rlock rw
+  3: thread 1 action 1 barrier_wait ready 2
+schedule:
+  0 0
+  0 1
+  1 0
+  1 1

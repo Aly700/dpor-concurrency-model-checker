@@ -16,6 +16,7 @@
 #endif
 
 #include <algorithm>
+#include <array>
 #include <cstdint>
 #include <iostream>
 #include <stdexcept>
@@ -105,6 +106,14 @@ Action wlock(std::string rwlock) {
 
 Action wunlock(std::string rwlock) {
     return rwlock_action(ActionKind::WUnlock, std::move(rwlock));
+}
+
+Action upgrade(std::string rwlock) {
+    return rwlock_action(ActionKind::Upgrade, std::move(rwlock));
+}
+
+Action downgrade(std::string rwlock) {
+    return rwlock_action(ActionKind::Downgrade, std::move(rwlock));
 }
 
 Action semaphore_action(ActionKind kind, std::string semaphore) {
@@ -257,6 +266,35 @@ bool unfair_cycle_exists(const CheckResult& result) {
     return result.unfair_cycles > 0;
 }
 
+std::string action_string(const Action& action) {
+    switch (action.kind) {
+    case ActionKind::RLock:
+        return "RLock " + action.rwlock;
+    case ActionKind::RUnlock:
+        return "RUnlock " + action.rwlock;
+    case ActionKind::WLock:
+        return "WLock " + action.rwlock;
+    case ActionKind::WUnlock:
+        return "WUnlock " + action.rwlock;
+    case ActionKind::Upgrade:
+        return "Upgrade " + action.rwlock;
+    case ActionKind::Downgrade:
+        return "Downgrade " + action.rwlock;
+    default:
+        return std::to_string(static_cast<int>(action.kind));
+    }
+}
+
+void print_program(const Program& program) {
+    for (std::size_t tid = 0; tid < program.threads.size(); ++tid) {
+        std::cerr << "  t" << tid << ':';
+        for (const Action& action : program.threads.at(tid)) {
+            std::cerr << " [" << action_string(action) << ']';
+        }
+        std::cerr << '\n';
+    }
+}
+
 void cross_validate_program(const Program& p,
                             std::size_t& checked,
                             std::size_t& naive_total,
@@ -304,6 +342,7 @@ void cross_validate_program(const Program& p,
         bound_hit(dpor) != bound_hit(naive) ||
         dpor.schedules_explored > naive.schedules_explored) {
         std::cerr << "MISMATCH in 3-thread sweep at checked index " << checked << "\n";
+        print_program(p);
         throw std::runtime_error("3-thread oracle mismatch");
     }
     assert_replays_dpor_report(checker, dpor);
@@ -340,18 +379,34 @@ int main() {
         runlock("rw"),
         wlock("rw"),
         wunlock("rw"),
+        upgrade("rw"),
+        downgrade("rw"),
         sem_post("sem"),
         sem_wait("sem"),
         barrier_wait("bar", 3),
     };
     const std::size_t k = alphabet.size();
-    require(k == 23, "three-thread oracle alphabet must include TryLock");
+    require(k == 25,
+            "three-thread oracle alphabet must include TryLock and conversions");
     const Action& try_lock_entry = alphabet.at(6);
     require(try_lock_entry.kind == ActionKind::TryLock &&
                 try_lock_entry.mutex == "m" &&
                 try_lock_entry.destination.has_value() &&
                 *try_lock_entry.destination == 0,
             "three-thread oracle TryLock entry must be try_lock m -> r0");
+    const std::array<ActionKind, 6> rwlock_kinds{
+        ActionKind::RLock,
+        ActionKind::RUnlock,
+        ActionKind::WLock,
+        ActionKind::WUnlock,
+        ActionKind::Upgrade,
+        ActionKind::Downgrade,
+    };
+    for (std::size_t i = 0; i < rwlock_kinds.size(); ++i) {
+        const Action& action = alphabet.at(16 + i);
+        require(action.kind == rwlock_kinds.at(i) && action.rwlock == "rw",
+                "three-thread oracle must contain all six rwlock operations");
+    }
 
     std::size_t checked = 0, naive_total = 0, dpor_total = 0, strict = 0;
     std::size_t combos = 1;
@@ -419,6 +474,14 @@ int main() {
         Program{{
             {rlock("rw"), read("x"), runlock("rw")},
             {rlock("rw"), read("x"), runlock("rw")},
+            {rlock("rw"), read("x"), runlock("rw")},
+        }},
+        // Exercise both conversions on a valid ownership path while two
+        // independent readers can transiently delay Upgrade.
+        Program{{
+            {rlock("rw"), read("x"), runlock("rw")},
+            {rlock("rw"), upgrade("rw"), write("x"),
+             downgrade("rw"), runlock("rw")},
             {rlock("rw"), read("x"), runlock("rw")},
         }},
         // SemPost/SemPost may commute, but a zero-permit waiter becomes

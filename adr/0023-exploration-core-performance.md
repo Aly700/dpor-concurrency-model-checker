@@ -128,6 +128,23 @@ an acyclic `TryLock`/`Unlock` program builds no fingerprints, while a failed
 `TryLock` retry under a retained owner detects a cycle and balances every
 history insertion with its restore.
 
+### Classifier extension for rwlock Upgrade and Downgrade
+
+ADR 0028 adds no same-pc transition. A valid `Upgrade` that still has another
+reader is disabled and does not fire, so it cannot create a sequence of
+same-pc state mutations. Every fired `Upgrade`, including wrong-mode misuse,
+ticks and advances the normalized pc exactly once. `Downgrade` is likewise an
+ordinary pc-advancing source transition on both success and misuse. Successful
+conversions change the already fingerprinted canonical rwlock reader set and
+writer owner; erroneous conversions leave ownership unchanged but still
+advance pc.
+
+The existing acyclic well-foundedness proof therefore extends without a new
+measure or fingerprint field. Under TSO/PSO a pending buffer can delay either
+conversion, but the only intervening internal steps strictly drain the finite
+buffer as already proved. Any path that returns to a conversion necessarily
+contains the self/backward branch that activates exact cycle history.
+
 After these changes, the profiled three-thread sweep retained all 2,701,592
 branch state copies but reduced history copies and fingerprint bytes to zero.
 Enabled collections fell from 3,587,425 to 2,810,854 (776,571 fewer, 21.6%),

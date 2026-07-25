@@ -54,7 +54,9 @@ enum class ActionKind {
     WUnlock,
     SemPost,
     SemWait,
-    BarrierWait
+    BarrierWait,
+    Upgrade,
+    Downgrade
 };
 
 struct Action {

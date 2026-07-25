@@ -14,6 +14,12 @@ static Action U(std::string m) { Action x; x.kind = ActionKind::Unlock; x.mutex 
 static Action WAIT(std::string cv, std::string m) { Action x; x.kind = ActionKind::Wait; x.condition = std::move(cv); x.mutex = std::move(m); return x; }
 static Action SIG(std::string cv) { Action x; x.kind = ActionKind::Signal; x.condition = std::move(cv); return x; }
 static Action BW(std::string b, std::uint32_t parties) { Action x; x.kind = ActionKind::BarrierWait; x.barrier = std::move(b); x.parties = parties; return x; }
+static Action RL(std::string rw) { Action x; x.kind = ActionKind::RLock; x.rwlock = std::move(rw); return x; }
+static Action RU(std::string rw) { Action x; x.kind = ActionKind::RUnlock; x.rwlock = std::move(rw); return x; }
+static Action WL(std::string rw) { Action x; x.kind = ActionKind::WLock; x.rwlock = std::move(rw); return x; }
+static Action WU(std::string rw) { Action x; x.kind = ActionKind::WUnlock; x.rwlock = std::move(rw); return x; }
+static Action UP(std::string rw) { Action x; x.kind = ActionKind::Upgrade; x.rwlock = std::move(rw); return x; }
+static Action DOWN(std::string rw) { Action x; x.kind = ActionKind::Downgrade; x.rwlock = std::move(rw); return x; }
 
 static ScheduleStep S(ThreadId thread, std::uint32_t action) {
     return ScheduleStep{thread, action, std::nullopt};
@@ -45,7 +51,7 @@ static void require_racy_replay(const Program& program,
     const auto reproduced = checker.replay(replay.first_race->schedule);
     require_probe(reproduced.first_race.has_value() &&
                       *reproduced.first_race == *replay.first_race,
-                  "barrier negative HB probe did not replay identically");
+                  "negative HB probe did not replay identically");
 }
 
 static void require_barrier_agreement(const Program& program, const char* message) {
@@ -281,6 +287,71 @@ int main() {
                             {S(0, 0), S(0, 1), S(1, 0), S(1, 1)},
                             "failed TryLock leaked the live holder clock");
         require_trylock_agreement(p, "live-holder TryLock HB oracle mismatch");
+    }
+    {
+        // Downgrade publishes the writer section at the conversion point.
+        // The retained read hold overlaps the subsequent reader, so that
+        // publication is the only HB path from the write to the peer's read.
+        // Mirror the producer across thread ids to prevent deterministic
+        // schedule order from masking a directional clock bug.
+        const Program low_to_high{{
+            {WL("rw"), W("x"), DOWN("rw"), RU("rw")},
+            {RL("rw"), R("x"), RU("rw")},
+        }};
+        require_clean_replay(
+            low_to_high,
+            {S(0, 0), S(0, 1), S(0, 2),
+             S(1, 0), S(1, 1), S(1, 2), S(0, 3)},
+            "Downgrade lost the low-to-high writer publication edge");
+
+        const Program high_to_low{{
+            {RL("rw"), R("x"), RU("rw")},
+            {WL("rw"), W("x"), DOWN("rw"), RU("rw")},
+        }};
+        require_clean_replay(
+            high_to_low,
+            {S(1, 0), S(1, 1), S(1, 2),
+             S(0, 0), S(0, 1), S(0, 2), S(1, 3)},
+            "Downgrade lost the high-to-low writer publication edge");
+    }
+    {
+        // Upgrade consumes every other reader's release accumulator before
+        // entering writer mode. The upgrader's retained read hold contributes
+        // no release of its own, leaving this reader-release join as the only
+        // HB path from the peer access to the upgrader's conflicting write.
+        const Program low_to_high{{
+            {RL("rw"), R("x"), RU("rw")},
+            {RL("rw"), UP("rw"), W("x"), WU("rw")},
+        }};
+        require_clean_replay(
+            low_to_high,
+            {S(1, 0), S(0, 0), S(0, 1), S(0, 2),
+             S(1, 1), S(1, 2), S(1, 3)},
+            "Upgrade lost the low-to-high reader-accumulator edge");
+
+        const Program high_to_low{{
+            {RL("rw"), UP("rw"), W("x"), WU("rw")},
+            {RL("rw"), R("x"), RU("rw")},
+        }};
+        require_clean_replay(
+            high_to_low,
+            {S(0, 0), S(1, 0), S(1, 1), S(1, 2),
+             S(0, 1), S(0, 2), S(0, 3)},
+            "Upgrade lost the high-to-low reader-accumulator edge");
+    }
+    {
+        // A plain reader release must still not synchronize a later reader.
+        // Schedule order alone creates no HB edge, so this directly guards
+        // against leaking the reader-release accumulator into RLock.
+        const Program p{{
+            {RL("rw"), W("x"), RU("rw")},
+            {RL("rw"), R("x"), RU("rw")},
+        }};
+        require_racy_replay(
+            p,
+            {S(0, 0), S(0, 1), S(0, 2),
+             S(1, 0), S(1, 1), S(1, 2)},
+            "rwlock conversion clocks introduced a phantom reader-reader edge");
     }
     std::cout << "ALL CV PROBES PASSED\n";
     return 0;

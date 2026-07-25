@@ -39,7 +39,9 @@ bool is_rwlock_action(const Action& action) {
     return action.kind == ActionKind::RLock ||
            action.kind == ActionKind::RUnlock ||
            action.kind == ActionKind::WLock ||
-           action.kind == ActionKind::WUnlock;
+           action.kind == ActionKind::WUnlock ||
+           action.kind == ActionKind::Upgrade ||
+           action.kind == ActionKind::Downgrade;
 }
 
 bool is_semaphore_action(const Action& action) {
@@ -158,27 +160,12 @@ bool independent(const Action& lhs, const Action& rhs) {
     }
 
     if (is_rwlock_action(lhs) && is_rwlock_action(rhs) && lhs.rwlock == rhs.rwlock) {
-        if (lhs.kind == ActionKind::RLock && rhs.kind == ActionKind::RLock) {
-            // For two nonterminal acquisitions that DPOR considers from
-            // different threads, both are enabled only while no writer holds
-            // this rwlock. The two orders insert the same two reader holders,
-            // join the same writer-release clock into separate thread clocks,
-            // and leave shared values and race metadata untouched. The final
-            // enabled set is identical: in particular, a WLock is disabled
-            // after either first RLock and remains disabled after the second.
-            // Thus the full commuting diamond, including the potential
-            // writer's enabledness, is preserved. A reentrant RLock is also
-            // executable so it can report a modeled error; terminal endpoints
-            // are protected separately by the checker rule that clears sleep
-            // and backtracks every enabled sibling, so this action-level true
-            // result never prunes a transition across that terminal outcome.
-            return true;
-        }
-
-        // All remaining operations on one rwlock start dependent. Besides
-        // mutating overlapping ownership/HB state, reader releases can expose
-        // a middle writer in only one order. Widening any of these pairs needs
-        // both a state diamond and an explicit middle-witness argument.
+        // Same-name rwlock operations start dependent. In particular, the
+        // action-only relation cannot classify RLock/RLock without knowing
+        // whether either thread can next issue Upgrade: after the first read
+        // acquisition that thread's Upgrade is enabled, while after both
+        // acquisitions neither Upgrade is enabled. The checker restores the
+        // RLock/RLock diamond only for a statically Upgrade-free rwlock.
         return false;
     }
 

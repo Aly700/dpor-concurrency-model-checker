@@ -100,6 +100,14 @@ model::Action wunlock(std::string rwlock) {
     return rwlock_action(model::ActionKind::WUnlock, std::move(rwlock));
 }
 
+model::Action upgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Upgrade, std::move(rwlock));
+}
+
+model::Action downgrade(std::string rwlock) {
+    return rwlock_action(model::ActionKind::Downgrade, std::move(rwlock));
+}
+
 model::Action semaphore_action(model::ActionKind kind, std::string semaphore) {
     model::Action action;
     action.kind = kind;
@@ -172,7 +180,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 20> kEnumeratedActions{
+const std::array<model::Action, 22> kEnumeratedActions{
     read("x"),
     write("x"),
     write("y"),
@@ -190,12 +198,14 @@ const std::array<model::Action, 20> kEnumeratedActions{
     runlock("rw"),
     wlock("rw"),
     wunlock("rw"),
+    upgrade("rw"),
+    downgrade("rw"),
     sem_post("sem"),
     sem_wait("sem"),
     barrier_wait("bar", 2),
 };
 
-const std::array<model::Action, 24> kFuzzActions{
+const std::array<model::Action, 26> kFuzzActions{
     read("x", 0),
     read("y", 1),
     write("x", 1),
@@ -217,6 +227,8 @@ const std::array<model::Action, 24> kFuzzActions{
     runlock("rw"),
     wlock("rw"),
     wunlock("rw"),
+    upgrade("rw"),
+    downgrade("rw"),
     sem_post("sem"),
     sem_wait("sem"),
     barrier_wait("bar", 2),
@@ -341,6 +353,9 @@ struct InclusionStats {
     std::size_t try_lock_attempted{0};
     std::size_t try_lock_compared{0};
     std::size_t try_lock_skipped{0};
+    std::size_t conversion_attempted{0};
+    std::size_t conversion_compared{0};
+    std::size_t conversion_skipped{0};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> sc_antecedents{};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> tso_antecedents{};
 };
@@ -354,11 +369,15 @@ void compare_program(const model::Program& program,
     ++stats.attempted;
     const bool barrier_gate = std::string(source) == "barrier";
     const bool try_lock_gate = std::string(source) == "try-lock";
+    const bool conversion_gate = std::string(source) == "rwlock-conversion";
     if (barrier_gate) {
         ++stats.barrier_attempted;
     }
     if (try_lock_gate) {
         ++stats.try_lock_attempted;
+    }
+    if (conversion_gate) {
+        ++stats.conversion_attempted;
     }
 
     std::array<model::CheckResult, 3> results;
@@ -375,6 +394,9 @@ void compare_program(const model::Program& program,
             }
             if (try_lock_gate) {
                 ++stats.try_lock_skipped;
+            }
+            if (conversion_gate) {
+                ++stats.conversion_skipped;
             }
             return;
         }
@@ -418,6 +440,9 @@ void compare_program(const model::Program& program,
     }
     if (try_lock_gate) {
         ++stats.try_lock_compared;
+    }
+    if (conversion_gate) {
+        ++stats.conversion_compared;
     }
     if (std::string(source) == "enumerated") {
         ++stats.enumerated;
@@ -522,6 +547,24 @@ std::vector<model::Program> try_lock_programs() {
     };
 }
 
+std::vector<model::Program> rwlock_conversion_programs() {
+    return {
+        // Successful upgrade consumes a preceding reader epoch.
+        model::Program{{{rlock("rw"), read("x", 0), runlock("rw")},
+                        {rlock("rw"), upgrade("rw"), write("x", 1),
+                         wunlock("rw")}}},
+        // Downgrade publishes the writer section while retaining read mode.
+        model::Program{{{wlock("rw"), write("x", 1), downgrade("rw"),
+                         runlock("rw")},
+                        {rlock("rw"), read("x", 0), runlock("rw")}}},
+        // Both retained readers wait permanently on the other conversion.
+        model::Program{{{rlock("rw"), barrier_wait("ready", 2), upgrade("rw")},
+                        {rlock("rw"), barrier_wait("ready", 2), upgrade("rw")}}},
+        // Both wrong-mode conversions are deterministic modeled errors.
+        model::Program{{{upgrade("rw")}, {downgrade("rw")}}},
+    };
+}
+
 } // namespace
 
 int main() {
@@ -562,6 +605,10 @@ int main() {
     for (const model::Program& program : try_lock_programs()) {
         compare_program(program, "try-lock", program_index++, stats);
     }
+    for (const model::Program& program : rwlock_conversion_programs()) {
+        compare_program(
+            program, "rwlock-conversion", program_index++, stats);
+    }
 
     if (stats.skipped != 0) {
         throw std::runtime_error("model inclusion corpus must have zero skips");
@@ -575,6 +622,12 @@ int main() {
         stats.try_lock_compared != stats.try_lock_attempted ||
         stats.try_lock_skipped != 0) {
         throw std::runtime_error("model inclusion TryLock corpus was skipped");
+    }
+    if (stats.conversion_attempted != rwlock_conversion_programs().size() ||
+        stats.conversion_compared != stats.conversion_attempted ||
+        stats.conversion_skipped != 0) {
+        throw std::runtime_error(
+            "model inclusion rwlock conversion corpus was skipped");
     }
     for (std::size_t bug = 0; bug < static_cast<std::size_t>(BugKind::Count); ++bug) {
         if (stats.sc_antecedents[bug] == 0 || stats.tso_antecedents[bug] == 0) {
@@ -595,6 +648,9 @@ int main() {
               << " try_lock_attempted=" << stats.try_lock_attempted
               << " try_lock_compared=" << stats.try_lock_compared
               << " try_lock_skipped=" << stats.try_lock_skipped
+              << " conversion_attempted=" << stats.conversion_attempted
+              << " conversion_compared=" << stats.conversion_compared
+              << " conversion_skipped=" << stats.conversion_skipped
               << " bug_kinds_exercised=5"
               << " seed=0x7b83d52fa9614c0d\n";
     return 0;

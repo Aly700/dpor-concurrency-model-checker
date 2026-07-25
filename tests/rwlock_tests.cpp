@@ -364,8 +364,8 @@ void mutex_and_rwlock_namespaces_cannot_mix() {
 }
 
 void independence_clauses_match_the_proved_scope() {
-    require(model::independent(rlock("rw"), rlock("rw")),
-            "same-rwlock RLock/RLock was not independent");
+    require(!model::independent(rlock("rw"), rlock("rw")),
+            "public RLock/RLock bypassed the Upgrade-sensitive safeguard");
     require(model::independent(rlock("a"), wlock("b")),
             "different rwlock names were not independent");
     require(!model::independent(rlock("rw"), runlock("rw")),
@@ -399,12 +399,12 @@ void independence_clauses_match_the_proved_scope() {
 }
 
 void terminal_reentrant_reader_does_not_prune_enabled_siblings() {
-    // RLock/RLock is classified independent, and the writer-free refinement
-    // also commutes all reader-mode operations. The first thread's recursive
-    // RLock is nevertheless a terminal modeled error rather than a successful
-    // side of that diamond. Pin the generic terminal safeguard: after first
-    // choosing the low-id error endpoint, DPOR must still backtrack every
-    // enabled sibling far enough to find the peer write/write race.
+    // The writer-free checker-local refinement commutes all reader-mode
+    // operations. The first thread's recursive RLock is nevertheless a
+    // terminal modeled error rather than a successful side of that diamond.
+    // Pin the generic terminal safeguard: after first choosing the low-id
+    // error endpoint, DPOR must still backtrack every enabled sibling far
+    // enough to find the peer write/write race.
     const model::Program program{{
         {rlock("rw"), rlock("rw")},
         {rlock("rw"), write("x"), runlock("rw")},

@@ -1,0 +1,12 @@
+# Both readers retain their holds while waiting to upgrade. The barrier makes
+# both read acquisitions happen before either conversion attempt, so neither
+# thread can become the sole reader.
+thread:
+  rlock rw
+  barrier_wait ready 2
+  upgrade rw
+
+thread:
+  rlock rw
+  barrier_wait ready 2
+  upgrade rw
