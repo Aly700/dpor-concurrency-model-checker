@@ -32,7 +32,8 @@ bool is_mutex_action(const Action& action) {
     return action.kind == ActionKind::Lock ||
            action.kind == ActionKind::TryLock ||
            action.kind == ActionKind::Unlock ||
-           action.kind == ActionKind::Wait;
+           action.kind == ActionKind::Wait ||
+           action.kind == ActionKind::TimedWait;
 }
 
 bool is_rwlock_action(const Action& action) {
@@ -55,6 +56,7 @@ bool is_barrier_action(const Action& action) {
 
 bool is_condition_action(const Action& action) {
     return action.kind == ActionKind::Wait ||
+           action.kind == ActionKind::TimedWait ||
            action.kind == ActionKind::Signal ||
            action.kind == ActionKind::Broadcast;
 }
@@ -143,19 +145,20 @@ bool independent(const Action& lhs, const Action& rhs) {
     }
 
     if (is_condition_action(lhs) && is_condition_action(rhs) && lhs.condition == rhs.condition) {
-        // Operations on one condition variable are dependent: Wait mutates the
-        // ordered wait set, Signal wakes the lowest-numbered waiter, and
-        // Broadcast wakes all waiters. Reordering can change both the resulting
-        // wait/woken set and whether future reacquire transitions are enabled.
+        // Operations on one condition variable are dependent: Wait and
+        // TimedWait mutate the ordered wait set, TimedWait timeout removes its
+        // exact episode, Signal wakes the lowest-numbered waiter, and Broadcast
+        // wakes all waiters. Reordering can change the resulting wait/woken
+        // set, a TimedWait result, and whether future reacquires are enabled.
         return false;
     }
 
     if (is_mutex_action(lhs) && is_mutex_action(rhs) && lhs.mutex == rhs.mutex) {
         // Operations on one mutex are dependent because ownership, blocking,
-        // TryLock's success result, release/acquire vector-clock state, Wait's
-        // atomic release and later reacquire, and future enabledness all depend
-        // on their order. State-dependent refinements belong in the checker,
-        // not this action-only public predicate.
+        // TryLock's success result, release/acquire vector-clock state, Wait
+        // and TimedWait's atomic release and later reacquire, and future
+        // enabledness all depend on their order. State-dependent refinements
+        // belong in the checker, not this action-only public predicate.
         return false;
     }
 

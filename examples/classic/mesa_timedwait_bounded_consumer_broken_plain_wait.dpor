@@ -1,0 +1,11 @@
+# The notification is sent before the consumer starts, so Mesa semantics do
+# not retain it. Plain Wait then parks forever: unlike TimedWait, it has no
+# explicit timeout transition that can enter a retry or fallback path.
+thread:
+  signal work_available
+  spawn 1
+
+thread:
+  lock consumer
+  wait work_available consumer
+  unlock consumer

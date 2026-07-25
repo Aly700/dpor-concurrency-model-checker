@@ -1,0 +1,15 @@
+verdict: deadlock
+schedules_explored: 1
+deadlock:
+  blocked:
+    thread 1: condition work_available mutex consumer
+trace:
+  0: thread 0 action 0 signal work_available
+  1: thread 0 action 1 spawn 1
+  2: thread 1 action 0 lock consumer
+  3: thread 1 action 1 wait work_available consumer (sleep)
+schedule:
+  0 0
+  0 1
+  1 0
+  1 1

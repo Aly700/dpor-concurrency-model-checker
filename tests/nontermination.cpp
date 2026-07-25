@@ -1,3 +1,7 @@
+#ifdef NDEBUG
+#undef NDEBUG
+#endif
+
 #include "model/checker.hpp"
 #include "report.hpp"
 
@@ -78,6 +82,24 @@ model::Action write(std::string address, model::Value value) {
     return action;
 }
 
+model::Action lock(std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Lock;
+    action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action timed_wait(std::string condition,
+                         std::string mutex,
+                         model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action fence() {
     model::Action action;
     action.kind = model::ActionKind::Fence;
@@ -133,6 +155,63 @@ void pure_spin_has_a_one_step_cycle_and_replays_identically() {
         assert(std::string(error.what()).find("continues after a nontermination cycle") !=
                std::string::npos);
     }
+}
+
+void timeout_repark_spin_is_an_exact_fair_lasso_not_a_deadlock() {
+    // Labels are normalized out of the schedule. Each loop iteration still
+    // contains three distinct executions of endpoint (0, 3): park, timeout,
+    // and mutex reacquisition. The branch returns to the exact pre-park state.
+    const model::Program program{{
+        {
+            set(1, 1),
+            lock("m"),
+            label("spin"),
+            timed_wait("cv", "m", 0),
+            bnz(1, "spin"),
+        },
+    }};
+    const model::ModelChecker checker(program, 20);
+    const model::Schedule expected_stem{
+        {0, 0, std::nullopt},
+        {0, 1, std::nullopt},
+    };
+    const model::Schedule expected_cycle{
+        {0, 3, std::nullopt},
+        {0, 3, std::nullopt},
+        {0, 3, std::nullopt},
+        {0, 4, std::nullopt},
+    };
+    model::Schedule expected_schedule = expected_stem;
+    expected_schedule.insert(expected_schedule.end(),
+                             expected_cycle.begin(),
+                             expected_cycle.end());
+
+    const model::CheckResult naive = checker.explore_naive();
+    const model::CheckResult dpor = checker.explore_dpor();
+    for (const model::CheckResult* result : {&naive, &dpor}) {
+        assert(!result->first_deadlock.has_value());
+        assert(result->first_nontermination.has_value());
+        assert(result->cycles_detected == 1);
+        assert(result->fair_cycles == 1);
+        assert(result->strongly_unfair_cycles == 0);
+        assert(result->unfair_cycles == 0);
+        assert(result->bound_exceeded_executions == 0);
+        assert(result->first_nontermination->fairness ==
+               model::Fairness::FairDivergence);
+        assert(result->first_nontermination->stem == expected_stem);
+        assert(result->first_nontermination->cycle == expected_cycle);
+        assert(result->first_nontermination->schedule == expected_schedule);
+    }
+
+    const model::CheckResult replayed = checker.replay(expected_schedule);
+    require_same_nontermination(dpor, replayed);
+    assert(!replayed.first_deadlock.has_value());
+    assert(cli::verdict_of(replayed) == "nontermination");
+
+    std::ostringstream output;
+    cli::print_report(output, program, replayed, model::MemoryModel::SC, 20);
+    assert(output.str().find("  fairness: fair divergence\n") !=
+           std::string::npos);
 }
 
 void unfair_spin_cycle_exists_even_though_a_peer_can_complete_it() {
@@ -264,6 +343,7 @@ void cli_lists_nontermination_when_a_higher_priority_race_also_exists() {
 
 int main() {
     pure_spin_has_a_one_step_cycle_and_replays_identically();
+    timeout_repark_spin_is_an_exact_fair_lasso_not_a_deadlock();
     unfair_spin_cycle_exists_even_though_a_peer_can_complete_it();
     growing_fetch_add_loop_uses_the_bound_backstop();
     tso_cycle_closes_only_after_the_store_buffer_repeats();

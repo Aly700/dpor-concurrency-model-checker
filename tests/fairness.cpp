@@ -104,6 +104,17 @@ model::Action wait(std::string condition, std::string mutex) {
     return action;
 }
 
+model::Action timed_wait(std::string condition,
+                         std::string mutex,
+                         model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action signal(std::string condition) {
     model::Action action;
     action.kind = model::ActionKind::Signal;
@@ -185,6 +196,61 @@ void continuously_enabled_flag_setter_makes_the_spin_witness_unfair() {
     cli::print_report(output, program, dpor, model::MemoryModel::SC, 20);
     assert(output.str().find("  fairness: unfair-schedule witness\n") !=
            std::string::npos);
+}
+
+void continuously_enabled_signaler_makes_timeout_spin_unfair() {
+    // Thread 0 can perpetually choose its timeout, reacquire m, and re-park.
+    // Thread 1's exact Signal endpoint remains enabled at every state in that
+    // lasso, so omitting the nonparticipant is a weak-fairness violation under
+    // ADR 0026 rather than fair divergence.
+    const model::Program program{{
+        {
+            set(1, 1),
+            lock("m"),
+            label("spin"),
+            timed_wait("cv", "m", 0),
+            bnz(1, "spin"),
+        },
+        {signal("cv")},
+    }};
+    const model::ModelChecker checker(program, 20);
+    const model::Schedule witness{
+        {0, 0, std::nullopt},
+        {0, 1, std::nullopt},
+        {0, 3, std::nullopt},
+        {0, 3, std::nullopt},
+        {0, 3, std::nullopt},
+        {0, 4, std::nullopt},
+    };
+
+    const model::CheckResult replayed = checker.replay(witness);
+    assert(!replayed.first_deadlock.has_value());
+    assert(replayed.first_nontermination.has_value());
+    assert(replayed.first_nontermination->schedule == witness);
+    assert(replayed.first_nontermination->cycle ==
+           (model::Schedule{
+               {0, 3, std::nullopt},
+               {0, 3, std::nullopt},
+               {0, 3, std::nullopt},
+               {0, 4, std::nullopt},
+           }));
+    assert(replayed.first_nontermination->fairness ==
+           model::Fairness::UnfairScheduleWitness);
+    assert(replayed.unfair_cycles == 1);
+    assert(replayed.strongly_unfair_cycles == 0);
+    assert(replayed.fair_cycles == 0);
+    require_replay_identity(checker, replayed);
+
+    const model::CheckResult naive = checker.explore_naive();
+    const model::CheckResult dpor = checker.explore_dpor();
+    assert(naive.first_nontermination.has_value());
+    assert(dpor.first_nontermination.has_value());
+    assert(naive.first_nontermination->fairness ==
+           model::Fairness::UnfairScheduleWitness);
+    assert(dpor.first_nontermination->fairness ==
+           model::Fairness::UnfairScheduleWitness);
+    assert(naive.unfair_cycles > 0);
+    assert(dpor.unfair_cycles > 0);
 }
 
 void intermittently_enabled_mutex_waiter_makes_the_witness_strongly_unfair() {
@@ -385,6 +451,7 @@ void failed_try_lock_spinner_is_unfair_while_the_holder_can_unlock() {
 int main() {
     finished_peer_does_not_make_a_pure_spin_unfair();
     continuously_enabled_flag_setter_makes_the_spin_witness_unfair();
+    continuously_enabled_signaler_makes_timeout_spin_unfair();
     intermittently_enabled_mutex_waiter_makes_the_witness_strongly_unfair();
     mutual_backoff_cycle_with_both_threads_participating_is_fair_divergence();
     mutex_blocked_nonparticipant_does_not_make_the_cycle_unfair();

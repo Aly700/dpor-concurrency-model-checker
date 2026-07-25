@@ -231,6 +231,17 @@ model::Action wait_action(const std::string& condition, const std::string& mutex
     return action;
 }
 
+model::Action timed_wait_action(const std::string& condition,
+                                const std::string& mutex,
+                                model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = condition;
+    action.mutex = mutex;
+    action.destination = destination;
+    return action;
+}
+
 model::Action join_action(model::ThreadId target) {
     model::Action action;
     action.kind = model::ActionKind::Join;
@@ -448,6 +459,18 @@ model::Action parse_action(const std::vector<std::string>& words, std::size_t li
         require_arity(words, 3, line, keyword);
         return wait_action(words[1], words[2]);
     }
+    if (keyword == "timedwait") {
+        require_arity(words, 5, line, keyword);
+        if (words[3] != "->") {
+            throw ParseError(
+                line,
+                "keyword 'timedwait' expects condition mutex -> register");
+        }
+        return timed_wait_action(
+            words[1],
+            words[2],
+            parse_register_token(words[4], line, "destination register"));
+    }
     if (keyword == "signal") {
         require_arity(words, 2, line, keyword);
         return condition_action(model::ActionKind::Signal, words[1]);
@@ -525,7 +548,8 @@ model::Program parse_program_stream(std::istream& input) {
         const bool uses_mutex = action.kind == model::ActionKind::Lock ||
                                 action.kind == model::ActionKind::TryLock ||
                                 action.kind == model::ActionKind::Unlock ||
-                                action.kind == model::ActionKind::Wait;
+                                action.kind == model::ActionKind::Wait ||
+                                action.kind == model::ActionKind::TimedWait;
         const bool uses_rwlock = action.kind == model::ActionKind::RLock ||
                                  action.kind == model::ActionKind::RUnlock ||
                                  action.kind == model::ActionKind::WLock ||
@@ -535,6 +559,7 @@ model::Program parse_program_stream(std::istream& input) {
         const bool uses_semaphore = action.kind == model::ActionKind::SemPost ||
                                     action.kind == model::ActionKind::SemWait;
         const bool uses_condition = action.kind == model::ActionKind::Wait ||
+                                    action.kind == model::ActionKind::TimedWait ||
                                     action.kind == model::ActionKind::Signal ||
                                     action.kind == model::ActionKind::Broadcast;
         const bool uses_barrier = action.kind == model::ActionKind::BarrierWait;
@@ -857,6 +882,10 @@ std::string action_text(const model::Action& action) {
         break;
     case model::ActionKind::Wait:
         output << "wait " << action.condition << " " << action.mutex;
+        break;
+    case model::ActionKind::TimedWait:
+        output << "timedwait " << action.condition << " " << action.mutex
+               << " -> " << register_text(action.destination.value_or(0));
         break;
     case model::ActionKind::Signal:
         output << "signal " << action.condition;

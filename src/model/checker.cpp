@@ -566,22 +566,33 @@ struct StepReport {
     std::optional<ThreadId> spawned_thread;
 };
 
+struct WaitEpisodeIdentity {
+    ThreadId thread{0};
+    std::uint32_t action_index{0};
+    std::uint64_t episode{0};
+
+    bool operator==(const WaitEpisodeIdentity&) const = default;
+};
+
 struct TransitionOccurrenceIdentity {
     std::optional<std::uint64_t> barrier_generation;
-    // The immutable shared value keeps the common non-Broadcast occurrence
-    // compact and avoids repeatedly deep-copying a multi-wake set between the
-    // enabled map and executed trace. Equality remains collision-free: it
-    // compares the exact sorted vectors, never pointer identity or a hash.
-    std::shared_ptr<const std::vector<ThreadId>> broadcast_waking_set;
+    // Signal and Broadcast carry their exact dynamic wake effects, including
+    // an engaged empty vector. Thread IDs alone are insufficient because one
+    // thread can park repeatedly or at different source endpoints.
+    std::shared_ptr<const std::vector<WaitEpisodeIdentity>> wake_targets;
+    // Park and timeout share one public schedule endpoint and one static
+    // action. This private phase/episode stamp keeps historical enabledness,
+    // backtracking, and sleep inheritance occurrence-exact.
+    std::optional<TimedWaitOccurrence> timed_wait_occurrence;
 
     bool operator==(const TransitionOccurrenceIdentity& other) const {
         if (barrier_generation != other.barrier_generation ||
-            static_cast<bool>(broadcast_waking_set) !=
-                static_cast<bool>(other.broadcast_waking_set)) {
+            timed_wait_occurrence != other.timed_wait_occurrence ||
+            static_cast<bool>(wake_targets) !=
+                static_cast<bool>(other.wake_targets)) {
             return false;
         }
-        return !broadcast_waking_set ||
-               *broadcast_waking_set == *other.broadcast_waking_set;
+        return !wake_targets || *wake_targets == *other.wake_targets;
     }
 };
 
@@ -902,6 +913,7 @@ bool is_buffered_ordered_point(const Action& action) {
     case ActionKind::SemWait:
     case ActionKind::BarrierWait:
     case ActionKind::Wait:
+    case ActionKind::TimedWait:
     case ActionKind::Signal:
     case ActionKind::Broadcast:
     case ActionKind::Join:
@@ -929,14 +941,13 @@ Action flush_action_for(const StoreBufferEntry& entry) {
 
 Action effective_next_action(const Program& program, const ExecutionState& state, ThreadId tid) {
     Action action = next_action(program, state, tid);
-    if (action.kind == ActionKind::Wait && state.wait_phase.at(tid) == WaitPhase::Woken) {
-        // Wait is deliberately phase-aware for DPOR. The release/sleep phase
-        // mutates the condition wait set and releases the mutex, while the
-        // later woken phase is only the mutex reacquire. Keying sleep-set or
-        // backtracking dependence on the static Wait action would incorrectly
-        // make the reacquire look dependent with later Signal/Broadcast
-        // operations on the same cv; replay still records the original
-        // (thread, action_index), but reduction uses this effective Lock.
+    if ((action.kind == ActionKind::Wait ||
+         action.kind == ActionKind::TimedWait) &&
+        state.wait_phase.at(tid) == WaitPhase::Woken) {
+        // Wait and TimedWait are deliberately phase-aware for DPOR. Their
+        // release/sleep phase mutates the condition wait set and releases the
+        // mutex, while the later woken/timed-out phase is only the mutex
+        // reacquire. Replay retains the source endpoint; reduction uses Lock.
         Action reacquire;
         reacquire.kind = ActionKind::Lock;
         reacquire.mutex = action.mutex;
@@ -1069,6 +1080,17 @@ bool is_program_action_enabled(const Program& program, const ExecutionState& sta
             return state.mutex_owner.find(action.mutex) == state.mutex_owner.end();
         }
         return true;
+    case ActionKind::TimedWait:
+        if (state.wait_phase.at(tid) == WaitPhase::Waiting) {
+            // Nondeterministic logical timeout: once parked, this explicit
+            // scheduler choice remains enabled until a wake wins instead.
+            return true;
+        }
+        if (state.wait_phase.at(tid) == WaitPhase::Woken) {
+            return state.mutex_owner.find(action.mutex) ==
+                   state.mutex_owner.end();
+        }
+        return true;
     case ActionKind::Read:
     case ActionKind::Write:
     case ActionKind::Set:
@@ -1194,8 +1216,93 @@ std::optional<std::vector<ThreadId>> broadcast_waking_set_for(
                : waiters->second;
 }
 
-TransitionOccurrenceIdentity transition_occurrence_identity_for(
+std::uint64_t checked_episode(std::size_t value) {
+    if (value > std::numeric_limits<std::uint64_t>::max()) {
+        throw std::overflow_error("wait episode ordinal overflow");
+    }
+    return static_cast<std::uint64_t>(value);
+}
+
+WaitEpisodeIdentity wait_episode_identity_for(const Program& program,
+                                              const ExecutionState& state,
+                                              ThreadId waiter) {
+    assert(state.wait_phase.at(waiter) == WaitPhase::Waiting);
+    assert(has_next_action(program, state, waiter));
+    const Action& action = next_action(program, state, waiter);
+    assert(action.kind == ActionKind::Wait ||
+           action.kind == ActionKind::TimedWait);
+    (void)action;
+    assert(state.thread_steps.at(waiter) > 0);
+    return WaitEpisodeIdentity{
+        waiter,
+        state.pc.at(waiter),
+        checked_episode(state.thread_steps.at(waiter)),
+    };
+}
+
+std::optional<std::vector<WaitEpisodeIdentity>> condition_wake_targets_for(
+    const Program& program,
     const ExecutionState& state,
+    const Action& action) {
+    if (action.kind != ActionKind::Signal &&
+        action.kind != ActionKind::Broadcast) {
+        return std::nullopt;
+    }
+
+    std::vector<WaitEpisodeIdentity> targets;
+    const auto waiters = state.condition_waiters.find(action.condition);
+    if (waiters == state.condition_waiters.end()) {
+        return targets;
+    }
+
+    const std::size_t target_count =
+        action.kind == ActionKind::Signal
+            ? std::min<std::size_t>(1, waiters->second.size())
+            : waiters->second.size();
+    targets.reserve(target_count);
+    for (std::size_t index = 0; index < target_count; ++index) {
+        targets.push_back(
+            wait_episode_identity_for(program, state, waiters->second.at(index)));
+    }
+    return targets;
+}
+
+std::optional<TimedWaitOccurrence> timed_wait_occurrence_for(
+    const ExecutionState& state,
+    const ScheduleStep& step,
+    const Action& effective_action) {
+    if (effective_action.kind != ActionKind::TimedWait) {
+        return std::nullopt;
+    }
+
+    switch (state.wait_phase.at(step.thread)) {
+    case WaitPhase::None:
+        if (state.thread_steps.at(step.thread) ==
+            std::numeric_limits<std::size_t>::max()) {
+            throw std::overflow_error("timed-wait episode ordinal overflow");
+        }
+        return TimedWaitOccurrence{
+            TimedWaitTransition::Park,
+            checked_episode(state.thread_steps.at(step.thread) + 1),
+        };
+    case WaitPhase::Waiting:
+        return TimedWaitOccurrence{
+            TimedWaitTransition::Timeout,
+            checked_episode(state.thread_steps.at(step.thread)),
+        };
+    case WaitPhase::Woken:
+        // Woken TimedWait is materialized as an effective Lock before this
+        // helper is called.
+        assert(false && "woken TimedWait retained its static effective action");
+        return std::nullopt;
+    }
+    return std::nullopt;
+}
+
+TransitionOccurrenceIdentity transition_occurrence_identity_for(
+    const Program& program,
+    const ExecutionState& state,
+    const ScheduleStep& step,
     const Action& action) {
     TransitionOccurrenceIdentity identity;
     if (action.kind == ActionKind::BarrierWait) {
@@ -1203,11 +1310,14 @@ TransitionOccurrenceIdentity transition_occurrence_identity_for(
         assert(barrier != state.barriers.end());
         identity.barrier_generation = barrier->second.generation;
     }
-    if (auto waking_set = broadcast_waking_set_for(state, action)) {
-        identity.broadcast_waking_set =
-            std::make_shared<const std::vector<ThreadId>>(
-                std::move(*waking_set));
+    if (auto wake_targets =
+            condition_wake_targets_for(program, state, action)) {
+        identity.wake_targets =
+            std::make_shared<const std::vector<WaitEpisodeIdentity>>(
+                std::move(*wake_targets));
     }
+    identity.timed_wait_occurrence =
+        timed_wait_occurrence_for(state, step, action);
     return identity;
 }
 
@@ -1223,7 +1333,7 @@ std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& pro
 #if defined(DPOR_EXPLORATION_METRICS)
         Action action = effective_action_for_step(program, state, step);
         const auto occurrence =
-            transition_occurrence_identity_for(state, action);
+            transition_occurrence_identity_for(program, state, step, action);
         ++metrics.dpor_enabled_transition_entries;
         ++metrics.effective_actions_materialized;
         metrics.action_string_bytes_materialized += diagnostic_action_string_bytes(action);
@@ -1241,7 +1351,8 @@ std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& pro
             EnabledTransition{
                 step,
                 action,
-                transition_occurrence_identity_for(state, action),
+                transition_occurrence_identity_for(
+                    program, state, step, action),
             });
 #endif
     }
@@ -1298,7 +1409,9 @@ const Action& next_action_at_node(const Program& program, const DporNode& node, 
 
 Action effective_next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
     Action action = next_action_at_node(program, node, tid);
-    if (action.kind == ActionKind::Wait && node.wait_phase.at(tid) == WaitPhase::Woken) {
+    if ((action.kind == ActionKind::Wait ||
+         action.kind == ActionKind::TimedWait) &&
+        node.wait_phase.at(tid) == WaitPhase::Woken) {
         Action reacquire;
         reacquire.kind = ActionKind::Lock;
         reacquire.mutex = action.mutex;
@@ -2193,7 +2306,9 @@ ModelErrorReport make_wait_error(const Action& action,
     record_report_schedule_copy(schedule);
 #endif
     std::ostringstream message;
-    message << "thread " << endpoint.thread << " attempted to wait on condition '"
+    message << "thread " << endpoint.thread << " attempted to "
+            << (action.kind == ActionKind::TimedWait ? "timedwait" : "wait")
+            << " on condition '"
             << action.condition << "' with mutex '" << action.mutex << "'";
     const auto owner = state.mutex_owner.find(action.mutex);
     if (owner == state.mutex_owner.end()) {
@@ -2250,13 +2365,37 @@ void insert_waiter(ExecutionState& state, const std::string& condition, ThreadId
     waiters.insert(position, tid);
 }
 
-void wake_waiter(ExecutionState& state, ThreadId signaler, ThreadId waiter) {
-    assert(state.wait_phase.at(waiter) == WaitPhase::Waiting);
-    state.wait_phase.at(waiter) = WaitPhase::Woken;
-    state.thread_clock.at(waiter).join(state.thread_clock.at(signaler));
+void remove_waiter(ExecutionState& state,
+                   const std::string& condition,
+                   ThreadId waiter) {
+    auto& waiters = state.condition_waiters[condition];
+    const auto position = std::lower_bound(waiters.begin(), waiters.end(), waiter);
+    assert(position != waiters.end() && *position == waiter);
+    waiters.erase(position);
 }
 
-void signal_one_waiter(ExecutionState& state, const Action& action, ThreadId signaler) {
+void wake_waiter(const Program& program,
+                 ExecutionState& state,
+                 ThreadId signaler,
+                 ThreadId waiter) {
+    assert(state.wait_phase.at(waiter) == WaitPhase::Waiting);
+    const Action& waiting_action = next_action(program, state, waiter);
+    assert(waiting_action.kind == ActionKind::Wait ||
+           waiting_action.kind == ActionKind::TimedWait);
+    state.wait_phase.at(waiter) = WaitPhase::Woken;
+    state.thread_clock.at(waiter).join(state.thread_clock.at(signaler));
+    if (waiting_action.kind == ActionKind::TimedWait) {
+        write_register(state,
+                       waiter,
+                       waiting_action.destination.value_or(0),
+                       1);
+    }
+}
+
+void signal_one_waiter(const Program& program,
+                       ExecutionState& state,
+                       const Action& action,
+                       ThreadId signaler) {
     auto& waiters = state.condition_waiters[action.condition];
     if (waiters.empty()) {
         return;
@@ -2264,15 +2403,18 @@ void signal_one_waiter(ExecutionState& state, const Action& action, ThreadId sig
 
     const ThreadId waiter = waiters.front();
     waiters.erase(waiters.begin());
-    wake_waiter(state, signaler, waiter);
+    wake_waiter(program, state, signaler, waiter);
 }
 
-void broadcast_waiters(ExecutionState& state, const Action& action, ThreadId signaler) {
+void broadcast_waiters(const Program& program,
+                       ExecutionState& state,
+                       const Action& action,
+                       ThreadId signaler) {
     auto& waiters = state.condition_waiters[action.condition];
     const std::vector<ThreadId> to_wake = waiters;
     waiters.clear();
     for (const ThreadId waiter : to_wake) {
-        wake_waiter(state, signaler, waiter);
+        wake_waiter(program, state, signaler, waiter);
     }
 }
 
@@ -2603,13 +2745,25 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
         ++barrier.generation;
         break;
     }
-    case ActionKind::Wait: {
+    case ActionKind::Wait:
+    case ActionKind::TimedWait: {
         if (state.wait_phase.at(tid) == WaitPhase::Woken) {
             assert(state.mutex_owner.find(action.mutex) == state.mutex_owner.end());
             state.mutex_owner[action.mutex] = tid;
             state.thread_clock.at(tid).join(state.mutex_clock[action.mutex]);
             state.wait_phase.at(tid) = WaitPhase::None;
             advance_pc(program, state, tid);
+            break;
+        }
+
+        if (action.kind == ActionKind::TimedWait &&
+            state.wait_phase.at(tid) == WaitPhase::Waiting) {
+            // Logical timeout resolution is a visible scheduler transition.
+            // It removes exactly this parked episode, writes the result now,
+            // and intentionally performs no condition-variable clock join.
+            remove_waiter(state, action.condition, tid);
+            state.wait_phase.at(tid) = WaitPhase::Woken;
+            write_register(state, tid, action.destination.value_or(0), 0);
             break;
         }
 
@@ -2628,11 +2782,11 @@ StepReport execute_enabled_step(const Program& program, ExecutionState& state, c
     }
     case ActionKind::Signal:
         advance_pc(program, state, tid);
-        signal_one_waiter(state, action, tid);
+        signal_one_waiter(program, state, action, tid);
         break;
     case ActionKind::Broadcast:
         advance_pc(program, state, tid);
-        broadcast_waiters(state, action, tid);
+        broadcast_waiters(program, state, action, tid);
         break;
     case ActionKind::AtomicLoad:
         advance_pc(program, state, tid);
@@ -2838,8 +2992,12 @@ DeadlockReport make_deadlock_report(const Program& program, const ExecutionState
             blocked.kind = BlockedOnKind::Thread;
             blocked.target = action.target;
             report.blocked_threads.push_back(std::move(blocked));
-        } else if (action.kind == ActionKind::Wait) {
+        } else if (action.kind == ActionKind::Wait ||
+                   action.kind == ActionKind::TimedWait) {
             if (state.wait_phase.at(tid) == WaitPhase::Waiting) {
+                // A parked TimedWait has an enabled timeout transition and
+                // therefore cannot reach terminal deadlock reporting.
+                assert(action.kind == ActionKind::Wait);
                 BlockedThread blocked;
                 blocked.thread = tid;
                 blocked.kind = BlockedOnKind::ConditionVariable;
@@ -3148,7 +3306,10 @@ void add_disabled_backtracks(const Program& program,
             state.thread_clock.at(tid),
             std::nullopt,
             transition_occurrence_identity_for(
-                state, effective_next_action(program, state, tid)),
+                program,
+                state,
+                ScheduleStep{tid, state.pc.at(tid), std::nullopt},
+                effective_next_action(program, state, tid)),
         };
         // INVARIANTS.md Soundness/Deadlock: a blocked mutex/rwlock acquisition,
         // zero-permit SemWait, incomplete BarrierWait, Join, sleeping Wait, or
@@ -3819,6 +3980,7 @@ std::vector<EffectiveScheduleStep> replay_effective_trace(const Program& program
             schedule[i],
             effective_action,
             broadcast_waking_set_for(state, effective_action),
+            timed_wait_occurrence_for(state, schedule[i], effective_action),
         });
 
         const StepReport step_report = execute_enabled_step(program, state, schedule[i]);
@@ -4169,6 +4331,7 @@ ModelChecker::ModelChecker(Program program, std::size_t step_bound, MemoryModel 
                 mutex_names.insert(action.mutex);
                 break;
             case ActionKind::Wait:
+            case ActionKind::TimedWait:
                 mutex_names.insert(action.mutex);
                 condition_names.insert(action.condition);
                 break;

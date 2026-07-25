@@ -161,6 +161,25 @@ endpoint necessarily contains a self/backward control-flow edge, which already
 activates exact cycle history. The acyclic well-foundedness proof therefore
 extends without a new measure or fingerprint field.
 
+### Classifier extension for TimedWait
+
+ADR 0030 adds two fired same-pc transitions before the existing mutex
+reacquisition. `None -> Waiting` park changes fingerprinted mutex ownership,
+condition waiter membership, and Wait phase. `Waiting -> Woken` timeout removes
+that exact waiter, writes the register result, and changes the fingerprinted
+phase. Timeout is a real scheduled and ticked transition even though it does
+not advance the source pc. The following effective-Lock
+`Woken -> None` reacquisition changes ownership and phase and advances the
+normalized pc.
+
+A Signal or Broadcast wake replaces the timeout transition but advances the
+waker's pc before that same waiter reacquisition advances its own. Thus,
+without a self/backward branch, neither resolution path can return to the
+complete pre-park behavioral state. TimedWait extends the acyclic elision proof
+without a new fingerprint field; its exact episode ordinal remains analysis
+metadata so a genuine timeout-spin lasso can close when backward control flow
+enables cycle history.
+
 After these changes, the profiled three-thread sweep retained all 2,701,592
 branch state copies but reduced history copies and fingerprint bytes to zero.
 Enabled collections fell from 3,587,425 to 2,810,854 (776,571 fewer, 21.6%),
@@ -253,7 +272,8 @@ an exploration change.
   extended acyclic-classifier proof because arrivals are fingerprinted and
   release advances every parked pc. Broadcast satisfies the same proof because
   an empty fire advances pc and nonempty fan-out also changes fingerprinted
-  Wait state.
+  Wait state. TimedWait park and timeout make fingerprinted same-pc phase
+  progress, and its reacquisition advances pc.
 - **Restore exactness:** every inserted key is erased once, with deterministic
   sampled comparison against full reference values in Debug builds.
 - **Replay and behavior:** schedules, order, verdicts, witness bytes, oracle

@@ -12,6 +12,7 @@ static Action L(std::string m) { Action x; x.kind = ActionKind::Lock; x.mutex = 
 static Action TL(std::string m, RegisterId destination) { Action x; x.kind = ActionKind::TryLock; x.mutex = std::move(m); x.destination = destination; return x; }
 static Action U(std::string m) { Action x; x.kind = ActionKind::Unlock; x.mutex = std::move(m); return x; }
 static Action WAIT(std::string cv, std::string m) { Action x; x.kind = ActionKind::Wait; x.condition = std::move(cv); x.mutex = std::move(m); return x; }
+static Action TIMED_WAIT(std::string cv, std::string m, RegisterId destination) { Action x; x.kind = ActionKind::TimedWait; x.condition = std::move(cv); x.mutex = std::move(m); x.destination = destination; return x; }
 static Action SIG(std::string cv) { Action x; x.kind = ActionKind::Signal; x.condition = std::move(cv); return x; }
 static Action BCAST(std::string cv) { Action x; x.kind = ActionKind::Broadcast; x.condition = std::move(cv); return x; }
 static Action BW(std::string b, std::uint32_t parties) { Action x; x.kind = ActionKind::BarrierWait; x.barrier = std::move(b); x.parties = parties; return x; }
@@ -128,6 +129,88 @@ static void check_agreement(const Program& p, const char* name) {
 }
 
 int main() {
+    {
+        // A signaled TimedWait joins the signaler's clock exactly like Wait.
+        // The signaler deliberately does not hold m, so this wake join is the
+        // only HB path from its write to the post-reacquire read. Mirror the
+        // signaler across thread ids to expose either directional clock bug.
+        const Program low_to_high{{
+            {W("x"), SIG("cv")},
+            {L("m"), TIMED_WAIT("cv", "m", 0), R("x"), U("m")},
+        }};
+        require_clean_replay(
+            low_to_high,
+            {S(1, 0), S(1, 1), S(0, 0), S(0, 1),
+             S(1, 1), S(1, 2), S(1, 3)},
+            "TimedWait wake lost the low-to-high signaler-to-waiter edge");
+
+        const Program high_to_low{{
+            {L("m"), TIMED_WAIT("cv", "m", 0), R("x"), U("m")},
+            {W("x"), SIG("cv")},
+        }};
+        require_clean_replay(
+            high_to_low,
+            {S(0, 0), S(0, 1), S(1, 0), S(1, 1),
+             S(0, 1), S(0, 2), S(0, 3)},
+            "TimedWait wake lost the high-to-low signaler-to-waiter edge");
+    }
+    {
+        // A timeout has no condition-variable HB edge. Here Signal executes
+        // while the timed waiter is parked, but deterministically wakes the
+        // lower-id plain waiter. The timed waiter then times out. Its read must
+        // remain unordered with the signaler's write. Mirror signaler/timed
+        // waiter ids while retaining a lower-id sacrificial waiter.
+        const Program low_to_high{{
+            {L("sacrificial"), WAIT("cv", "sacrificial")},
+            {W("x"), SIG("cv")},
+            {L("timed"), TIMED_WAIT("cv", "timed", 0),
+             R("x"), U("timed")},
+        }};
+        require_racy_replay(
+            low_to_high,
+            {S(0, 0), S(0, 1), S(2, 0), S(2, 1),
+             S(1, 0), S(1, 1), S(2, 1), S(2, 1),
+             S(2, 2), S(2, 3)},
+            "TimedWait timeout inherited the low-to-high signaler clock");
+
+        const Program high_to_low{{
+            {L("sacrificial"), WAIT("cv", "sacrificial")},
+            {L("timed"), TIMED_WAIT("cv", "timed", 0),
+             R("x"), U("timed")},
+            {W("x"), SIG("cv")},
+        }};
+        require_racy_replay(
+            high_to_low,
+            {S(0, 0), S(0, 1), S(1, 0), S(1, 1),
+             S(2, 0), S(2, 1), S(1, 1), S(1, 1),
+             S(1, 2), S(1, 3)},
+            "TimedWait timeout inherited the high-to-low signaler clock");
+    }
+    {
+        // The no-edge guarantee is bidirectional: a later Signal must not
+        // acquire a timed-out waiter's pre-park clock. Neither signaler uses
+        // m, so schedule order and the empty Signal are the only possible
+        // phantom paths. Mirror the timed waiter across thread ids.
+        const Program low_to_high{{
+            {L("m"), W("x"), TIMED_WAIT("cv", "m", 0), U("m")},
+            {SIG("cv"), R("x")},
+        }};
+        require_racy_replay(
+            low_to_high,
+            {S(0, 0), S(0, 1), S(0, 2), S(0, 2),
+             S(0, 2), S(0, 3), S(1, 0), S(1, 1)},
+            "Signal inherited the low-to-high timed-out waiter clock");
+
+        const Program high_to_low{{
+            {SIG("cv"), R("x")},
+            {L("m"), W("x"), TIMED_WAIT("cv", "m", 0), U("m")},
+        }};
+        require_racy_replay(
+            high_to_low,
+            {S(1, 0), S(1, 1), S(1, 2), S(1, 2),
+             S(1, 2), S(1, 3), S(0, 0), S(0, 1)},
+            "Signal inherited the high-to-low timed-out waiter clock");
+    }
     {
         // Each waiter joins the broadcaster at the wake point. The broadcaster
         // deliberately does not hold m, so this join is the only HB path from

@@ -143,6 +143,17 @@ model::Action wait(std::string condition, std::string mutex) {
     return action;
 }
 
+model::Action timed_wait(std::string condition,
+                         std::string mutex,
+                         model::RegisterId destination = 0) {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action signal(std::string condition) {
     model::Action action;
     action.kind = model::ActionKind::Signal;
@@ -191,7 +202,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 27> kActions{
+const std::array<model::Action, 28> kActions{
     read("x"),
     write("x"),
     write("y"),
@@ -204,6 +215,7 @@ const std::array<model::Action, 27> kActions{
     unlock("m"),
     unlock("n"),
     wait("cv", "m"),
+    timed_wait("cv", "m"),
     signal("cv"),
     broadcast("cv"),
     spawn(1),
@@ -292,6 +304,11 @@ std::string action_string(const model::Action& action) {
         break;
     case model::ActionKind::Wait:
         out << "Wait " << action.condition << ' ' << action.mutex;
+        break;
+    case model::ActionKind::TimedWait:
+        out << "TimedWait " << action.condition << ' ' << action.mutex
+            << " -> r"
+            << static_cast<unsigned>(action.destination.value_or(0));
         break;
     case model::ActionKind::Signal:
         out << "Signal " << action.condition;
@@ -457,6 +474,8 @@ void cross_validate_program(const model::Program& program,
         {naive_ns, dpor_ns});
 #endif
 
+    require(!naive.exploration_capped && !dpor.exploration_capped,
+            "two-thread oracle must not cap or skip generated programs");
     if (dpor.first_race.has_value() != naive.first_race.has_value() ||
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
@@ -683,16 +702,17 @@ void assert_disabled_transition_fallback_finds_deadlock() {
 } // namespace
 
 int main() {
-    require(kActions.size() == 27,
-            "two-thread oracle alphabet must include TryLock and conversions");
+    require(kActions.size() == 28,
+            "two-thread oracle alphabet must include TimedWait and conversions");
     const model::Action& try_lock_entry = kActions.at(8);
     require(try_lock_entry.kind == model::ActionKind::TryLock &&
                 try_lock_entry.mutex == "m" &&
                 try_lock_entry.destination.has_value() &&
                 *try_lock_entry.destination == 0,
             "two-thread oracle TryLock entry must be try_lock m -> r0");
-    const std::array<model::ActionKind, 3> condition_kinds{
+    const std::array<model::ActionKind, 4> condition_kinds{
         model::ActionKind::Wait,
+        model::ActionKind::TimedWait,
         model::ActionKind::Signal,
         model::ActionKind::Broadcast,
     };
@@ -700,9 +720,13 @@ int main() {
         const model::Action& action = kActions.at(11 + i);
         require(action.kind == condition_kinds.at(i) &&
                     action.condition == "cv" &&
-                    (action.kind != model::ActionKind::Wait ||
-                     action.mutex == "m"),
-                "two-thread oracle must contain Wait/Signal/Broadcast on cv");
+                    ((action.kind != model::ActionKind::Wait &&
+                      action.kind != model::ActionKind::TimedWait) ||
+                     action.mutex == "m") &&
+                    (action.kind != model::ActionKind::TimedWait ||
+                     (action.destination.has_value() &&
+                      *action.destination == 0)),
+                "two-thread oracle must contain valid Wait/TimedWait/Signal/Broadcast on cv");
     }
     const std::array<model::ActionKind, 6> rwlock_kinds{
         model::ActionKind::RLock,
@@ -713,7 +737,7 @@ int main() {
         model::ActionKind::Downgrade,
     };
     for (std::size_t i = 0; i < rwlock_kinds.size(); ++i) {
-        const model::Action& action = kActions.at(18 + i);
+        const model::Action& action = kActions.at(19 + i);
         require(action.kind == rwlock_kinds.at(i) && action.rwlock == "rw",
                 "two-thread oracle must contain all six rwlock operations");
     }

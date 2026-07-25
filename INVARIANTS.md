@@ -37,10 +37,16 @@
   Every fired `Broadcast`, including an empty one, likewise advances its
   normalized pc exactly once; a nonempty Broadcast also changes the already
   fingerprinted condition waiter and Wait-phase state.
+  `TimedWait` may fire park and timeout transitions without advancing its
+  source pc, but park changes fingerprinted mutex ownership, waiter membership,
+  and phase; timeout changes membership and phase; and the following
+  reacquisition changes ownership and phase and advances the pc. A wake instead
+  requires a pc-advancing Signal or Broadcast before the same pc-advancing
+  reacquisition.
   Therefore a complete behavioral state cannot recur. Any future action that
   can decrease a pc or repeatedly mutate behavioral state without advancing a
   pc must extend or invalidate this proof before fingerprint elision is allowed
-  (adr/0023, adr/0024, adr/0025, adr/0028, adr/0029).
+  (adr/0023, adr/0024, adr/0025, adr/0028, adr/0029, adr/0030).
 - The behavioral state includes normalized per-thread PCs, startedness, wait
   phases, registers, memory values, mutex owners, reader-writer lock holders,
   nonzero semaphore permit counts, every nonempty barrier's configured party
@@ -48,7 +54,8 @@
   sets, and ordered TSO store buffers or canonical per-address PSO FIFO maps.
   Vector clocks, absolute barrier generation ordinals,
   atomic/mutex/rwlock/semaphore/barrier clocks, race metadata, step counters,
-  Broadcast waking-set occurrence stamps, and schedule history are
+  exact Signal/Broadcast wake-target stamps, TimedWait episode stamps, and
+  schedule history are
   analysis/budget/history state and are excluded. Consequently a
   lasso proves schedule-existence of non-termination only, not repetition of
   analysis instrumentation. `TryLock` needs no new fingerprint field: its
@@ -60,6 +67,11 @@
   Broadcast likewise needs no new field: nonempty fan-out changes the existing
   condition waiter and per-thread Wait-phase state, while every fired
   Broadcast, including an empty one, advances pc.
+  TimedWait needs no new field either: within a fixed Program, normalized pc
+  identifies the static Wait or TimedWait action; the existing phase and waiter
+  set record parking/resolution, the register records `0` timeout or `1` wake,
+  and mutex ownership plus pc record reacquisition. Absolute episode ordinals
+  must remain excluded so a real timeout-spin lasso can close.
 - A cycle witness is `stem + one cycle`, split at the first occurrence of the
   revisited state. The claim is existential. Its fairness field classifies only
   that witness and makes no system-level scheduler-fairness,
@@ -113,6 +125,12 @@
 - Numeric schedules need no Broadcast suffix, but DPOR must retain the exact
   sorted waking set as internal occurrence identity. A non-Broadcast has no
   such component; an empty Broadcast has an engaged empty set.
+- Numeric schedules also need no TimedWait suffix. Public effective traces and
+  internal DPOR occurrences distinguish `park` from `timeout` and carry the
+  exact per-thread park episode; the reacquisition is an effective `Lock`.
+  Internally, Signal and Broadcast wake targets are exact
+  `(thread, wait action_index, episode)` vectors, including engaged empty
+  vectors, so repeated parked episodes cannot alias.
 
 ## Happens-before
 
@@ -140,6 +158,12 @@
 - `Wait(cv, mutex)` must release `mutex` with the same clock update as
   `Unlock`; after wakeup it must reacquire `mutex` with the same clock join as
   `Lock` before advancing past the wait action.
+- `TimedWait(cv, mutex) -> rN` has that same park/reacquire structure. While
+  parked, its exact timeout transition is permanently enabled until a wake
+  wins. Timeout removes the parked episode and writes exactly `0`; Signal or
+  Broadcast wake writes exactly `1`. Wake joins the waker's clock exactly as
+  Wait does. Timeout performs no condition-variable join in either direction;
+  its only later ordering is the ordinary mutex reacquisition join.
 - `TryLock(m) -> rN` always advances. On success it writes exactly `1`, becomes
   the mutex owner, and joins the acquiring thread with `mutex_clock[m]` exactly
   as `Lock` does. If `m` is held by any thread, including the caller, it writes
@@ -212,6 +236,10 @@
 - Under TSO and PSO, both phases of `Wait`, plus `Signal` and `Broadcast`, are
   ordered points. Their source transition remains disabled until every buffer
   owned by the caller is empty, and none performs a hidden drain.
+- Under TSO and PSO, TimedWait follows the same ordered-point rule. Park cannot
+  fire before explicit drains; a parked thread cannot enqueue a new store, so
+  timeout performs no hidden drain or shared-memory synchronization; its
+  effective reacquisition is the ordinary ordered `Lock`.
 - Atomic/atomic accesses are never races. Mixed plain/atomic same-address
   accesses are races when unordered by happens-before and at least one side is
   write-like: plain write, atomic store, successful CAS, or atomic RMW. CAS is
@@ -240,18 +268,22 @@
   Reentrant error endpoints remain protected by the terminal all-siblings
   backtrack safeguard; all conversion pairs and every other same-name pair
   remain dependent (adr/0021, adr/0028).
-- Same-condition `Wait`, `Signal`, and `Broadcast` actions are pairwise
-  dependent. Distinct conditions commute subject to the existing cross-cutting
-  thread, mutex, spawn/join, and buffered-transition rules; no
-  empty-Broadcast/empty-Broadcast exception ships. Each effective Broadcast
-  occurrence carries its engaged exact sorted parked-thread set, including
-  `{}`, through enabled/executed records, node matching, backtracking,
-  persistent closure, disabled repair, checker-local independence, and sleep
-  inheritance. A changed waking set cannot match or inherit an old
-  occurrence. The conservative relation already prevents a parked-set
-  mutation from crossing a sleep edge, while the exact stamp separately
-  protects cyclic historical backtrack matching. Woken second-phase Waits
-  contend through ordinary same-mutex dependence (adr/0029).
+- Same-condition `Wait`, `TimedWait`, `Signal`, and `Broadcast` actions are
+  pairwise dependent. This includes different waiters' co-enabled timeouts:
+  their local adjacent removals commute, but no complete persistent-set,
+  middle-wake, historical-matching, repair, and sleep proof justifies the
+  refinement. Distinct conditions commute subject to the existing
+  cross-cutting thread, mutex, spawn/join, and buffered-transition rules; no
+  empty-wake exception ships. Each TimedWait park/timeout carries exact
+  phase-and-episode identity. Signal and Broadcast carry engaged exact target
+  vectors of `(thread, wait action_index, episode)`, including `{}`, through
+  enabled/executed records, node matching, backtracking, persistent closure,
+  disabled repair, checker-local independence, and sleep inheritance. A
+  changed episode or wake set cannot match or inherit an old occurrence. The
+  conservative relation already prevents a parked-set mutation from crossing
+  a sleep edge, while exact stamps separately protect cyclic historical
+  backtrack matching. Woken or timed-out reacquisition phases contend through
+  ordinary same-mutex dependence (adr/0029, adr/0030).
 - Cross-thread, co-enabled `SemPost(s)` actions are independent: count addition
   and accumulated release-clock joins commute, neither poster acquires the
   other, and either first post enables the same waiter set. Every same-name

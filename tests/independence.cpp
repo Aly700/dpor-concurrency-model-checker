@@ -111,6 +111,17 @@ model::Action wait(std::string condition, std::string mutex) {
     return action;
 }
 
+model::Action timed_wait(std::string condition,
+                         std::string mutex,
+                         model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action signal(std::string condition) {
     model::Action action;
     action.kind = model::ActionKind::Signal;
@@ -263,6 +274,20 @@ int main() {
     assert(!model::independent(wait("cv", "m"), broadcast("cv")));
     assert(!model::independent(wait("cv0", "m"), lock("m")));
     assert(model::independent(wait("cv0", "m"), signal("cv1")));
+    assert(!model::independent(timed_wait("cv", "m", 0), signal("cv")));
+    assert(!model::independent(timed_wait("cv", "m", 0), broadcast("cv")));
+    assert(!model::independent(
+        timed_wait("cv", "left-m", 0),
+        timed_wait("cv", "right-m", 1)));
+    assert(!model::independent(
+        timed_wait("left-cv", "m", 0),
+        timed_wait("right-cv", "m", 1)));
+    assert(model::independent(
+        timed_wait("left-cv", "left-m", 0),
+        timed_wait("right-cv", "right-m", 1)));
+    assert(model::independent(
+        timed_wait("cv0", "m", 0),
+        signal("cv1")));
     assert(model::independent(set(0, 1), write("x")));
     assert(model::independent(assert_nonzero(0), spawn(1)));
     assert(model::independent(flush("x"), read("y")));
@@ -271,21 +296,27 @@ int main() {
     assert(!model::independent(sem_wait("sem"), join(0)));
     assert(model::independent(sem_post("sem"), write("x")));
 
-    const std::array<model::Action, 3> same_condition_actions{
-        wait("cv", "left-m"), signal("cv"), broadcast("cv")};
+    const std::array<model::Action, 4> same_condition_actions{
+        wait("cv", "left-m"),
+        timed_wait("cv", "left-m", 0),
+        signal("cv"),
+        broadcast("cv")};
     for (const model::Action& lhs : same_condition_actions) {
         for (const model::Action& rhs : same_condition_actions) {
             require(!model::independent(lhs, rhs),
-                    "same-condition Wait/Signal/Broadcast matrix changed");
+                    "same-condition Wait/TimedWait/Signal/Broadcast matrix changed");
         }
     }
-    const std::array<model::Action, 3> other_condition_actions{
-        wait("other-cv", "right-m"), signal("other-cv"),
+    const std::array<model::Action, 4> other_condition_actions{
+        wait("other-cv", "right-m"),
+        timed_wait("other-cv", "right-m", 1),
+        signal("other-cv"),
         broadcast("other-cv")};
     for (const model::Action& lhs : same_condition_actions) {
         for (const model::Action& rhs : other_condition_actions) {
             require(model::independent(lhs, rhs),
-                    "different-condition Wait/Signal/Broadcast actions must remain independent");
+                    "different-condition Wait/TimedWait/Signal/Broadcast actions "
+                    "must remain independent");
         }
     }
 

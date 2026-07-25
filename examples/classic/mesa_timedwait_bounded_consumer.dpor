@@ -1,0 +1,16 @@
+# A notification sent before the consumer starts is deliberately lost.
+# TimedWait makes that Mesa schedule recoverable: the consumer retries once,
+# then performs a bounded fallback instead of parking forever.
+thread:
+  signal work_available
+  spawn 1
+
+thread:
+  lock consumer
+  timedwait work_available consumer -> r0
+  bnz r0 consumed
+  timedwait work_available consumer -> r0
+  bnz r0 consumed
+  write fallback 1
+consumed:
+  unlock consumer

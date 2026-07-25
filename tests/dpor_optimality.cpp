@@ -566,12 +566,27 @@ std::string broadcast_waking_set_key(
     return out.str();
 }
 
+std::string timed_wait_occurrence_key(
+    const std::optional<model::TimedWaitOccurrence>& occurrence) {
+    if (!occurrence.has_value()) {
+        return "-";
+    }
+    std::ostringstream out;
+    out << (occurrence->transition == model::TimedWaitTransition::Park
+                ? "park"
+                : "timeout")
+        << ':' << occurrence->episode;
+    return out.str();
+}
+
 std::string transition_label(const model::EffectiveScheduleStep& step, std::size_t occurrence) {
     std::ostringstream out;
     out << "t=" << step.endpoint.thread
         << "|pc=" << step.endpoint.action_index
         << "|occ=" << occurrence
         << "|wake=" << broadcast_waking_set_key(step.broadcast_waking_set)
+        << "|timedwait="
+        << timed_wait_occurrence_key(step.timed_wait_occurrence)
         << "|" << action_key(step.effective_action);
     return out.str();
 }
@@ -585,7 +600,9 @@ std::vector<std::string> transition_labels(const std::vector<model::EffectiveSch
         base << step.endpoint.thread << '|' << step.endpoint.action_index
              << '|' << action_key(step.effective_action)
              << "|wake="
-             << broadcast_waking_set_key(step.broadcast_waking_set);
+             << broadcast_waking_set_key(step.broadcast_waking_set)
+             << "|timedwait="
+             << timed_wait_occurrence_key(step.timed_wait_occurrence);
         const std::size_t occurrence = occurrences[base.str()]++;
         labels.push_back(transition_label(step, occurrence));
     }
@@ -797,6 +814,11 @@ std::string action_string(const model::Action& action) {
     case model::ActionKind::Wait:
         out << "Wait " << action.condition << ' ' << action.mutex;
         break;
+    case model::ActionKind::TimedWait:
+        out << "TimedWait " << action.condition << ' ' << action.mutex
+            << " -> r"
+            << static_cast<unsigned>(action.destination.value_or(0));
+        break;
     case model::ActionKind::Signal:
         out << "Signal " << action.condition;
         break;
@@ -844,6 +866,35 @@ void test_try_lock_identity_support() {
             "TryLock destinations collapsed in optimality occurrence identity");
     require(action_string(r1) == "TryLock m -> r1",
             "TryLock optimality diagnostic rendering changed");
+}
+
+void test_timed_wait_identity_support() {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = "cv";
+    action.mutex = "m";
+    action.destination = 3;
+    const model::EffectiveScheduleStep park{
+        model::ScheduleStep{0, 1, std::nullopt},
+        action,
+        std::nullopt,
+        model::TimedWaitOccurrence{
+            model::TimedWaitTransition::Park, 7},
+    };
+    model::EffectiveScheduleStep timeout = park;
+    timeout.timed_wait_occurrence = model::TimedWaitOccurrence{
+        model::TimedWaitTransition::Timeout, 7};
+    model::EffectiveScheduleStep next_episode = park;
+    next_episode.timed_wait_occurrence = model::TimedWaitOccurrence{
+        model::TimedWaitTransition::Park, 8};
+
+    const std::string park_label = transition_label(park, 0);
+    require(park_label != transition_label(timeout, 0),
+            "TimedWait park/timeout phases collapsed in optimality identity");
+    require(park_label != transition_label(next_episode, 0),
+            "TimedWait parked episodes collapsed in optimality identity");
+    require(action_string(action) == "TimedWait cv m -> r3",
+            "TimedWait optimality diagnostic rendering changed");
 }
 
 void print_program(const model::Program& program) {
@@ -1124,6 +1175,7 @@ int main() {
     test_replay_exposes_pso_flush_identity();
     test_pso_flush_reordering_changes_class_count();
     test_try_lock_identity_support();
+    test_timed_wait_identity_support();
 
     const model::Program enqueue_read_repair{{
         {write("y")},

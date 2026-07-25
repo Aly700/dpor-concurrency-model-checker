@@ -106,6 +106,18 @@ struct CheckResult {
     std::size_t strongly_unfair_cycles{0};
 };
 
+enum class TimedWaitTransition {
+    Park,
+    Timeout,
+};
+
+struct TimedWaitOccurrence {
+    TimedWaitTransition transition{TimedWaitTransition::Park};
+    std::uint64_t episode{0};
+
+    bool operator==(const TimedWaitOccurrence&) const = default;
+};
+
 struct EffectiveScheduleStep {
     ScheduleStep endpoint;
     Action effective_action;
@@ -113,6 +125,11 @@ struct EffectiveScheduleStep {
     // action is not Broadcast; an engaged vector is the exact sorted set of
     // waiters parked when Broadcast fired, including the engaged empty set.
     std::optional<std::vector<ThreadId>> broadcast_waking_set;
+
+    // Verification-only identity for the two non-reacquire transitions of a
+    // TimedWait episode. Reacquisition remains distinguishable as the same
+    // numeric endpoint with an effective Lock action.
+    std::optional<TimedWaitOccurrence> timed_wait_occurrence;
 
     bool operator==(const EffectiveScheduleStep&) const = default;
 };

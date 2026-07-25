@@ -56,7 +56,8 @@ enum class ActionKind {
     SemWait,
     BarrierWait,
     Upgrade,
-    Downgrade
+    Downgrade,
+    TimedWait
 };
 
 struct Action {

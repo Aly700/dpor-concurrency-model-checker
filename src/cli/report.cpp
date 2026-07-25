@@ -218,6 +218,24 @@ void print_trace(std::ostream& output,
                 output << " (reacquire)";
             }
         }
+        if (!flush &&
+            action.kind == model::ActionKind::TimedWait &&
+            !is_selected_error_endpoint(result, step, index, schedule)) {
+            const std::optional<model::TimedWaitOccurrence>& occurrence =
+                effective_trace.at(index).timed_wait_occurrence;
+            if (occurrence.has_value()) {
+                switch (occurrence->transition) {
+                case model::TimedWaitTransition::Park:
+                    output << " (sleep)";
+                    break;
+                case model::TimedWaitTransition::Timeout:
+                    output << " (timeout)";
+                    break;
+                }
+            } else if (effective_action.kind == model::ActionKind::Lock) {
+                output << " (reacquire)";
+            }
+        }
         output << '\n';
     }
 }

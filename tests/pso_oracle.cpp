@@ -121,6 +121,17 @@ model::Action wait(std::string condition, std::string mutex) {
     return action;
 }
 
+model::Action timed_wait(std::string condition,
+                         std::string mutex,
+                         model::RegisterId destination = 0) {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action signal(std::string condition) {
     model::Action action;
     action.kind = model::ActionKind::Signal;
@@ -165,7 +176,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 22> kActions{
+const std::array<model::Action, 23> kActions{
     read("x"),
     read("y"),
     write("x"),
@@ -186,6 +197,7 @@ const std::array<model::Action, 22> kActions{
     fence(),
     barrier_wait("bar", 2),
     wait("cv", "m"),
+    timed_wait("cv", "m"),
     signal("cv"),
     broadcast("cv"),
 };
@@ -260,6 +272,11 @@ std::string action_string(const model::Action& action) {
         return "Downgrade " + action.rwlock;
     case model::ActionKind::Wait:
         return "Wait " + action.condition + " " + action.mutex;
+    case model::ActionKind::TimedWait:
+        return "TimedWait " + action.condition + " " + action.mutex +
+               " -> r" +
+               std::to_string(
+                   static_cast<unsigned>(action.destination.value_or(0)));
     case model::ActionKind::Signal:
         return "Signal " + action.condition;
     case model::ActionKind::Broadcast:
@@ -419,9 +436,9 @@ void cross_validate_program(const model::Program& program,
 } // namespace
 
 int main() {
-    if (kActions.size() != 22) {
+    if (kActions.size() != 23) {
         throw std::runtime_error(
-            "PSO oracle alphabet must include TryLock, rwlocks, and condvars");
+            "PSO oracle alphabet must include TimedWait, rwlocks, and condvars");
     }
     const model::Action& try_lock_entry = kActions.at(9);
     if (try_lock_entry.kind != model::ActionKind::TryLock ||
@@ -446,8 +463,9 @@ int main() {
                 "PSO oracle must contain all six same-name rwlock operations");
         }
     }
-    const std::array<model::ActionKind, 3> condition_kinds{
+    const std::array<model::ActionKind, 4> condition_kinds{
         model::ActionKind::Wait,
+        model::ActionKind::TimedWait,
         model::ActionKind::Signal,
         model::ActionKind::Broadcast,
     };
@@ -455,9 +473,14 @@ int main() {
         const model::Action& action = kActions.at(19 + i);
         if (action.kind != condition_kinds.at(i) ||
             action.condition != "cv" ||
-            (action.kind == model::ActionKind::Wait && action.mutex != "m")) {
+            ((action.kind == model::ActionKind::Wait ||
+              action.kind == model::ActionKind::TimedWait) &&
+             action.mutex != "m") ||
+            (action.kind == model::ActionKind::TimedWait &&
+             (!action.destination.has_value() ||
+              *action.destination != 0))) {
             throw std::runtime_error(
-                "PSO oracle must contain Wait/Signal/Broadcast on cv");
+                "PSO oracle must contain valid Wait/TimedWait/Signal/Broadcast on cv");
         }
     }
     std::size_t programs_checked = 0;

@@ -1285,6 +1285,288 @@ void assert_try_lock_parser_is_strict_and_uses_the_mutex_namespace(
     }
 }
 
+void assert_timedwait_syntax_and_outcome_traces_round_trip(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    // With no signaler, the only parked outcome is the explicit timeout.
+    // The assertion therefore supplies a deterministic witness whose three
+    // TimedWait phases must remain byte-identical through schedule replay.
+    assert_check_replay_byte_identity(
+        binary,
+        work_dir,
+        "cli_timedwait_timeout_spelling",
+        "thread:\n"
+        "  lock m\n"
+        "  timedwait cv m -> r7\n"
+        "  assert r7\n",
+        "assertion",
+        {
+            "timedwait cv m -> r7 (sleep)",
+            "timedwait cv m -> r7 (timeout)",
+            "timedwait cv m -> r7 (reacquire)",
+            "register: r7",
+            "value: 0",
+        });
+
+    // A readiness handshake forces the signaler to wait until the mutex owner
+    // can park. The timeout path exits cleanly; only r6==1 branches to the
+    // assertion failure, so the selected witness is necessarily the wake
+    // outcome and must not contain a timeout phase.
+    const auto program_path = work_dir / "cli_timedwait_wake_spelling.dpor";
+    write_file(
+        program_path,
+        "thread:\n"
+        "  lock m\n"
+        "  sem_post ready\n"
+        "  timedwait cv m -> r6\n"
+        "  unlock m\n"
+        "  set r5 1\n"
+        "  bnz r6 woke\n"
+        "  assert r5\n"
+        "  bnz r5 done\n"
+        "woke:\n"
+        "  assert r0\n"
+        "done:\n"
+        "  yield\n"
+        "\n"
+        "thread:\n"
+        "  sem_wait ready\n"
+        "  lock m\n"
+        "  signal cv\n"
+        "  unlock m\n");
+
+    const auto check = run_command(
+        binary,
+        {
+            "check",
+            program_path.string(),
+            "--explorer",
+            "dpor",
+            "--step-bound",
+            "30",
+            "--max-schedules",
+            "100000",
+        },
+        work_dir / "cli_timedwait_wake_spelling.check.out",
+        work_dir / "cli_timedwait_wake_spelling.check.err");
+    require_cli(check.exit_code == 1,
+                "timedwait wake check should report the wake-only assertion");
+    require_cli(check.stderr_text.empty(),
+                "timedwait wake check wrote stderr: " + check.stderr_text);
+    require_cli(first_line(check.stdout_text) == "verdict: assertion",
+                "timedwait wake check verdict mismatch");
+    require_cli(
+        check.stdout_text.find("timedwait cv m -> r6 (sleep)") !=
+            std::string::npos,
+        "timedwait wake trace omitted its sleep phase");
+    require_cli(
+        check.stdout_text.find("timedwait cv m -> r6 (reacquire)") !=
+            std::string::npos,
+        "timedwait wake trace omitted its reacquire phase");
+    require_cli(
+        check.stdout_text.find("timedwait cv m -> r6 (timeout)") ==
+            std::string::npos,
+        "timedwait wake trace incorrectly rendered a timeout phase");
+    require_cli(
+        check.stdout_text.find("bnz r6 woke") != std::string::npos,
+        "timedwait wake trace did not branch on the result register");
+
+    const auto schedule_path =
+        work_dir / "cli_timedwait_wake_spelling.schedule";
+    write_file(schedule_path, schedule_block(check.stdout_text));
+    const auto replay = run_command(
+        binary,
+        {
+            "replay",
+            program_path.string(),
+            "--schedule",
+            schedule_path.string(),
+        },
+        work_dir / "cli_timedwait_wake_spelling.replay.out",
+        work_dir / "cli_timedwait_wake_spelling.replay.err");
+    require_cli(replay.exit_code == 1,
+                "timedwait wake replay should reproduce the assertion");
+    require_cli(replay.stderr_text.empty(),
+                "timedwait wake replay wrote stderr: " + replay.stderr_text);
+    require_cli(
+        details_for_round_trip(replay.stdout_text) ==
+            details_for_round_trip(check.stdout_text),
+        "timedwait wake check/replay details differed");
+    require_cli(
+        schedule_block(replay.stdout_text) == schedule_block(check.stdout_text),
+        "timedwait wake replay changed the schedule");
+}
+
+void assert_timedwait_parser_is_strict_and_uses_both_namespaces(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    struct ParseCase {
+        std::string stem;
+        std::string action;
+        std::string expected;
+    };
+    const std::vector<ParseCase> parse_cases = {
+        {
+            "uppercase",
+            "TimedWait cv m -> r0",
+            "unknown keyword 'TimedWait'",
+        },
+        {
+            "underscored",
+            "timed_wait cv m -> r0",
+            "unknown keyword 'timed_wait'",
+        },
+        {
+            "missing_all",
+            "timedwait",
+            "keyword 'timedwait' expects 4 operands",
+        },
+        {
+            "missing_mutex",
+            "timedwait cv",
+            "keyword 'timedwait' expects 4 operands",
+        },
+        {
+            "missing_arrow",
+            "timedwait cv m r0",
+            "keyword 'timedwait' expects 4 operands",
+        },
+        {
+            "missing_register",
+            "timedwait cv m ->",
+            "keyword 'timedwait' expects 4 operands",
+        },
+        {
+            "wrong_arrow",
+            "timedwait cv m => r0",
+            "expects condition mutex -> register",
+        },
+        {
+            "extra",
+            "timedwait cv m -> r0 extra",
+            "keyword 'timedwait' expects 4 operands",
+        },
+        {
+            "invalid_register",
+            "timedwait cv m -> rx",
+            "invalid destination register 'rx'",
+        },
+        {
+            "out_of_range_register",
+            "timedwait cv m -> r8",
+            "destination register is out of range",
+        },
+    };
+    for (const ParseCase& parse_case : parse_cases) {
+        const auto program_path =
+            work_dir / ("cli_timedwait_" + parse_case.stem + ".dpor");
+        write_file(program_path, "thread:\n  " + parse_case.action + "\n");
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_timedwait_" + parse_case.stem + ".out"),
+            work_dir / ("cli_timedwait_" + parse_case.stem + ".err"));
+        require_cli(result.exit_code == 2,
+                    parse_case.stem + " timedwait syntax should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    parse_case.stem + " timedwait syntax wrote stdout");
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    parse_case.stem + " timedwait syntax omitted its line");
+        require_cli(
+            result.stderr_text.find(parse_case.expected) != std::string::npos,
+            parse_case.stem + " timedwait diagnostic mismatch: " +
+                result.stderr_text);
+    }
+
+    struct CollisionCase {
+        std::string stem;
+        std::string program_text;
+        std::string expected_namespace;
+    };
+    const std::vector<CollisionCase> collisions = {
+        {
+            "timedwait_mutex_then_rwlock",
+            "thread:\n"
+            "  timedwait cv shared -> r0\n"
+            "  rlock shared\n",
+            "rwlock",
+        },
+        {
+            "rwlock_then_timedwait_mutex",
+            "thread:\n"
+            "  wlock shared\n"
+            "  timedwait cv shared -> r0\n",
+            "rwlock",
+        },
+        {
+            "timedwait_mutex_then_semaphore",
+            "thread:\n"
+            "  timedwait cv shared -> r0\n"
+            "  sem_post shared\n",
+            "semaphore",
+        },
+        {
+            "semaphore_then_timedwait_mutex",
+            "thread:\n"
+            "  sem_wait shared\n"
+            "  timedwait cv shared -> r0\n",
+            "semaphore",
+        },
+        {
+            "timedwait_mutex_then_barrier",
+            "thread:\n"
+            "  timedwait cv shared -> r0\n"
+            "  barrier_wait shared 1\n",
+            "barrier",
+        },
+        {
+            "barrier_then_timedwait_mutex",
+            "thread:\n"
+            "  barrier_wait shared 1\n"
+            "  timedwait cv shared -> r0\n",
+            "barrier",
+        },
+        {
+            "timedwait_condition_then_barrier",
+            "thread:\n"
+            "  timedwait shared m -> r0\n"
+            "  barrier_wait shared 1\n",
+            "condition variable",
+        },
+        {
+            "barrier_then_timedwait_condition",
+            "thread:\n"
+            "  barrier_wait shared 1\n"
+            "  timedwait shared m -> r0\n",
+            "barrier",
+        },
+    };
+    for (const CollisionCase& collision : collisions) {
+        const auto program_path =
+            work_dir / ("cli_" + collision.stem + ".dpor");
+        write_file(program_path, collision.program_text);
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_" + collision.stem + ".out"),
+            work_dir / ("cli_" + collision.stem + ".err"));
+        require_cli(
+            result.exit_code == 2,
+            collision.stem + " namespace collision should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    collision.stem + " namespace collision wrote stdout");
+        require_cli(result.stderr_text.find("line 3") != std::string::npos,
+                    collision.stem + " collision omitted the conflict line");
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    collision.stem + " collision omitted the first-use line");
+        require_cli(
+            result.stderr_text.find(collision.expected_namespace) !=
+                std::string::npos,
+            collision.stem + " collision omitted " +
+                collision.expected_namespace);
+    }
+}
+
 } // namespace
 
 int main(int argc, char** argv) {
@@ -1316,5 +1598,7 @@ int main(int argc, char** argv) {
     assert_broadcast_syntax_and_consumer_differential(binary, work_dir);
     assert_try_lock_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
     assert_try_lock_parser_is_strict_and_uses_the_mutex_namespace(binary, work_dir);
+    assert_timedwait_syntax_and_outcome_traces_round_trip(binary, work_dir);
+    assert_timedwait_parser_is_strict_and_uses_both_namespaces(binary, work_dir);
     return 0;
 }

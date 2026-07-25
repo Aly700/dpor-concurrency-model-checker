@@ -22,7 +22,7 @@ state that proves the cycle.
 | Reader-writer locks | `rlock`, `runlock`, `wlock`, `wunlock`, `upgrade`, `downgrade` | Parallel readers, exclusive writers, atomic read→write and write→read conversion, exact writer/reader-epoch HB, reentrancy and wrong-mode errors |
 | Counting semaphores | `sem_post`, `sem_wait` | Zero-initialized anonymous permits; posts accumulate release clocks and successful waits acquire the lifetime accumulator (the documented strong model) |
 | Cyclic barriers | `barrier_wait NAME PARTIES` | Each generation blocks until `PARTIES` arrivals, then releases every participant with an exact all-arrivals HB join and resets |
-| Condition variables | `wait`, `signal`, `broadcast` | Mesa semantics, two-phase wait (release+sleep, then reacquire); no permit queuing, so lost wakeups deadlock |
+| Condition variables | `wait`, `timedwait`, `signal`, `broadcast` | Mesa semantics and mutex reacquisition; plain lost wakeups deadlock, while a parked timed wait has an explicit nondeterministic timeout that writes 0 (wake writes 1) |
 | Threads | `spawn`, `join`, `yield` | Static thread bodies with dynamic start; spawn starts a target and creates a happens-before edge, join blocks until a started target finishes and inherits its clock |
 
 Two explorers share one execution semantics:
@@ -136,6 +136,7 @@ sem_post sem
 sem_wait sem
 barrier_wait phase 3
 wait cv m
+timedwait cv m -> r0    # timeout writes 0; Signal/Broadcast wake writes 1
 signal cv
 broadcast cv
 spawn THREAD_ID
@@ -151,6 +152,16 @@ is no declaration or initialization action, so initial permits are explicit
 operations, every semaphore operation, barrier wait, and condition-variable
 operation is a full ordered point and waits for that thread's pending stores
 to drain.
+
+`timedwait cv m -> rN` uses the same Mesa release-and-park behavior as `wait`.
+While parked, it has an explicit timeout transition that remains enabled until
+either timeout or a same-condition Signal/Broadcast wins. Timeout writes `0`;
+wake writes `1` and carries the ordinary condition-variable happens-before
+edge. Both outcomes must reacquire `m` before the instruction advances. Timeout
+adds no condition edge, deadline value, wall-clock query, or step-count rule:
+logical expiration is a replayable scheduler choice. A parked timed waiter is
+therefore not a condition deadlock, although its later mutex reacquisition can
+block normally.
 
 `try_lock` uses the same mutex owner and namespace as `lock`/`unlock` and always
 advances. If the mutex is free it writes `1`, acquires ownership, and joins the
@@ -222,6 +233,13 @@ not execute; every fired `upgrade` or `downgrade` advances pc, and successful
 mode is already represented by the canonical reader-holder set and optional
 writer owner.
 
+`timedwait` also needs no new fingerprint field. Within one fixed program, its
+normalized pc identifies the static action; existing wait phase and waiter
+membership distinguish park and resolution, its destination register stores
+the outcome, and mutex ownership plus pc record reacquisition. Exact episode
+ordinals are DPOR history only and are excluded so a real
+park→timeout→reacquire loop can close as a lasso.
+
 On a revisit, the report splits the executed schedule at the first occurrence:
 
 ```text
@@ -264,6 +282,10 @@ per-action fairness within a participating thread. Verdict priority is
 race/deadlock/error/assertion, then
 non-termination, then clean up to bound, then clean; `also_found` preserves
 lower-priority findings from the same exploration.
+
+A single-thread TimedWait timeout/repark cycle is therefore `fair divergence`.
+If a separate Signal endpoint stays enabled throughout that exact cycle but is
+never scheduled, it is an `unfair-schedule witness`.
 
 More in `examples/`: data race, AB-BA deadlock, lost wakeup, atomic message
 passing, spawn+join pipeline, clean locked counter, unlock error.
@@ -340,7 +362,9 @@ simplification, a test-and-set spinlock built from `try_lock`, a Treiber push
 skeleton, a failed-CAS handoff, reader-writer
 lock publication, a read→upgrade→write conversion paired with a deterministic
 double-upgrade deadlock, a three-thread dining-philosophers pair, and a
-two-generation three-worker cyclic-barrier computation. The barrier's broken
+two-generation three-worker cyclic-barrier computation. The gallery also pairs
+a bounded Mesa TimedWait retry/fallback with the equivalent plain-Wait lost
+wakeup that deadlocks. The barrier's broken
 variant omits one worker from the final generation and deterministically
 deadlocks the other two.
 Each model is paired with a deliberately broken variant and documented in
@@ -356,24 +380,27 @@ whether any execution hit the step bound; that DPOR never explores more
 schedules; that every DPOR report replays to an identical report; and how far
 DPOR is from one schedule per Mazurkiewicz class:
 
-1. **Exhaustive 2-thread sweep** — every program over a 27-action alphabet
-   (capped per length pair; 22,736 programs and 59,119 naive versus 34,419
+1. **Exhaustive 2-thread sweep** — every program over a 28-action alphabet
+   (capped per length pair; 22,903 programs and 64,582 naive versus 35,705
    DPOR schedules, including hand-picked fixtures).
 2. **Strided 3-thread sweep** — 65,547 programs evenly sampled from the full
-   25-action, 6-slot space, totaling 789,230 naive versus 331,415 DPOR
+   26-action, 6-slot space, totaling 770,547 naive versus 339,177 DPOR
    schedules; it also retains an asserted three-reader discriminator with
    1,680 naive schedules and one DPOR representative and a barrier
    discriminator with six naive schedules and three DPOR representatives. The
    third-holder TryLock discriminator has four naive schedules and exactly
    three DPOR representatives.
-3. **Seeded differential fuzz** — 3,000 random 2–5-thread programs per run,
-   including rwlocks, semaphores, barriers, spawn-shaped,
+3. **Seeded differential fuzz** — 3,000 random 2–5-thread programs plus
+   deterministic one-thread TimedWait coverage programs per run, including
+   rwlocks, semaphores, barriers, TimedWait, spawn-shaped,
    value/branch/CAS/assertion programs, exact spin cycles, growing-state bound
    backstops, and deliberately malformed ones; failures print the seed and the
    program in `.dpor` syntax for by-hand reproduction. The fixed acceptance run
-   generated 892 barrier waits, 1,612 TryLock actions, 317 Upgrades, and 363
-   Downgrades; it compared 2,978 programs, with 22 capped programs
-   reported and excluded from verdict equality. Deterministic
+   evaluates 3,392 programs and compares 3,369, with 23 capped programs
+   reported and excluded from verdict equality. It generates 407 TimedWait
+   actions and compares 406 (202/201 mostly well formed and 205/205
+   adversarial), while fixed uncapped probes observe both timeout `0` and wake
+   `1`. Deterministic
    fractions run under TSO and PSO, and the summary prints both model counts
    plus naive/DPOR total, fair, strongly-unfair, and unfair cycle counters. A
    fixed uncapped mutex-blink discriminator keeps the new comparison
@@ -391,15 +418,14 @@ DPOR is from one schedule per Mazurkiewicz class:
 5. **Buffered-model oracles** — capped TSO and PSO program sweeps compare
    naive and DPOR verdict/total-cycle/fair-cycle/strongly-unfair-cycle/
    unfair-cycle existence, schedule dominance, and exact replay. The
-   Campaign 14 runs check 11,365 TSO and 6,246 PSO programs over 19-action
-   alphabets, with zero capped skips
+   TimedWait-widened runs check 11,877 TSO and 6,707 PSO programs over
+   23-action alphabets, with zero capped skips
    in either oracle.
-6. **Cross-model inclusion** — 1,731 deterministic two-thread and hand-picked
-   programs perform 17,310 per-kind checks that bug existence is monotone
+6. **Cross-model inclusion** — 1,747 deterministic two-thread and hand-picked
+   programs perform 17,470 per-kind checks that bug existence is monotone
    `SC => TSO => PSO`, including all six rwlock actions, both semaphore
-   actions, TryLock, and dedicated four-program barrier, TryLock, and rwlock
-   conversion corpora. Every program compares with zero skips; all dedicated
-   corpora are 4/4/0.
+   actions, TryLock, TimedWait, and dedicated four-program corpora. Every
+   program compares with zero skips; the TimedWait corpus is 4/4/0.
 
 All gates are deterministic and run in CI on Linux and macOS.
 
@@ -407,7 +433,7 @@ All gates are deterministic and run in CI on Linux and macOS.
 
 Architecture in `ARCHITECTURE.md`, invariants in `INVARIANTS.md`, and every
 soundness-relevant decision in `adr/` (0001 architecture crux through ADR
-0028's rwlock-conversion design), including the exact vector-clock edge for
+0030's nondeterministic timed-wait design), including the exact vector-clock edge for
 each synchronization kind and why each DPOR pruning step cannot lose a bug
 class.
 

@@ -47,6 +47,7 @@ enum class Choice {
     SemWait,
     BarrierWait,
     Wait,
+    TimedWait,
     Signal,
     Broadcast,
     Spawn,
@@ -99,6 +100,10 @@ struct FuzzStats {
     // programs discarded because either explorer reached the schedule cap.
     std::array<std::size_t, 2> broadcast_actions_generated{};
     std::array<std::size_t, 2> broadcast_actions_compared{};
+    // MostlyWellFormed/Adversarial TimedWait counts. Compared excludes
+    // programs discarded because either explorer reached the schedule cap.
+    std::array<std::size_t, 2> timed_wait_actions_generated{};
+    std::array<std::size_t, 2> timed_wait_actions_compared{};
 };
 
 model::Action read(std::string address) {
@@ -217,6 +222,17 @@ model::Action wait(std::string condition, std::string mutex) {
     action.kind = model::ActionKind::Wait;
     action.condition = std::move(condition);
     action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action timed_wait(std::string condition,
+                         std::string mutex,
+                         model::RegisterId destination) {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    action.destination = destination;
     return action;
 }
 
@@ -564,6 +580,7 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
     if (!held_mutexes.empty()) {
         choices.push_back({Choice::Unlock, 8});
         choices.push_back({Choice::Wait, 24});
+        choices.push_back({Choice::TimedWait, 2});
     }
     if (std::any_of(held_rwlocks.begin(), held_rwlocks.end(),
                     [](const HeldRwLock& held) { return !held.writer; })) {
@@ -621,6 +638,12 @@ model::Action generate_mostly_well_formed_action(std::mt19937_64& rng,
     case Choice::Wait:
         return wait(random_condition(rng, condition_count),
                     held_mutexes.at(bounded(rng, held_mutexes.size())));
+    case Choice::TimedWait:
+        return timed_wait(
+            random_condition(rng, condition_count),
+            held_mutexes.at(bounded(rng, held_mutexes.size())),
+            static_cast<model::RegisterId>(
+                bounded(rng, model::kRegisterCount)));
     case Choice::Signal:
         return signal(random_condition(rng, condition_count));
     case Choice::Broadcast:
@@ -658,6 +681,7 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         {Choice::Upgrade, 90},
         {Choice::Downgrade, 90},
         {Choice::Wait, 18},
+        {Choice::TimedWait, 2},
         {Choice::Signal, 8},
         {Choice::Broadcast, 6},
         {Choice::Spawn, 12},
@@ -702,6 +726,12 @@ model::Action generate_adversarial_action(std::mt19937_64& rng,
         return random_barrier(rng);
     case Choice::Wait:
         return wait(random_condition(rng, condition_count), random_mutex(rng));
+    case Choice::TimedWait:
+        return timed_wait(
+            random_condition(rng, condition_count),
+            random_mutex(rng),
+            static_cast<model::RegisterId>(
+                bounded(rng, model::kRegisterCount)));
     case Choice::Signal:
         return signal(random_condition(rng, condition_count));
     case Choice::Broadcast:
@@ -856,6 +886,33 @@ model::Program generate_program(std::mt19937_64& rng, GenerationMode mode) {
         assert(mode == GenerationMode::Adversarial || held_rwlocks.empty());
     }
     return program;
+}
+
+model::Program generate_timed_wait_coverage_program(
+    std::mt19937_64& rng,
+    GenerationMode mode) {
+    const std::string condition =
+        bounded(rng, 2) == 0 ? "timed_cv0" : "timed_cv1";
+    const std::string mutex =
+        bounded(rng, 2) == 0 ? "timed_m0" : "timed_m1";
+    const auto destination = static_cast<model::RegisterId>(
+        bounded(rng, model::kRegisterCount));
+    if (mode == GenerationMode::MostlyWellFormed) {
+        return model::Program{{{
+            lock(mutex),
+            timed_wait(condition, mutex, destination),
+            unlock(mutex),
+        }}};
+    }
+    if (mode == GenerationMode::Adversarial) {
+        // This lane deliberately preserves its modeled-error character:
+        // TimedWait is attempted without owning the mutex.
+        return model::Program{{{
+            timed_wait(condition, mutex, destination),
+        }}};
+    }
+    throw std::runtime_error(
+        "value fuzz lane requested a TimedWait coverage program");
 }
 
 bool hit_cap(const model::CheckResult& result, std::size_t cap) {
@@ -1096,19 +1153,108 @@ void assert_try_lock_spelling_round_trips() {
 void assert_condition_spellings_round_trip() {
     const model::Program program{{{
         wait("cv0", "m0"),
-        signal("cv1"),
-        broadcast("cv2"),
+        timed_wait("cv1", "m1", 4),
+        signal("cv2"),
+        broadcast("cv3"),
     }}};
     const std::string rendered = cli::render_program(program);
     if (rendered !=
             "thread:\n"
             "  wait cv0 m0\n"
-            "  signal cv1\n"
-            "  broadcast cv2\n" ||
+            "  timedwait cv1 m1 -> r4\n"
+            "  signal cv2\n"
+            "  broadcast cv3\n" ||
         cli::parse_program_text(rendered).threads != program.threads) {
         throw std::runtime_error(
             "condition-variable spellings did not round-trip exactly");
     }
+}
+
+std::array<std::size_t, 2> require_timed_wait_outcome_discriminator() {
+    const auto step = [](model::ThreadId thread,
+                         std::uint32_t action_index) {
+        return model::ScheduleStep{thread, action_index, std::nullopt};
+    };
+    std::array<std::size_t, 2> outcomes{};
+
+    const model::Program timeout_program{{{
+        lock("m"),
+        timed_wait("cv", "m", 4),
+        assert_nonzero(4),
+    }}};
+    const model::Schedule timeout_schedule{
+        step(0, 0),
+        step(0, 1),
+        step(0, 1),
+        step(0, 1),
+        step(0, 2),
+    };
+    const model::ModelChecker timeout_checker(timeout_program);
+    const model::CheckResult timeout =
+        timeout_checker.replay(timeout_schedule);
+    if (!timeout.first_assertion.has_value() ||
+        timeout.first_assertion->reg != 4 ||
+        timeout.first_assertion->value != 0) {
+        throw std::runtime_error(
+            "fixed TimedWait timeout witness did not write result zero");
+    }
+    const auto timeout_trace =
+        timeout_checker.replay_effective_trace(timeout_schedule);
+    if (!timeout_trace.at(1).timed_wait_occurrence.has_value() ||
+        timeout_trace.at(1).timed_wait_occurrence->transition !=
+            model::TimedWaitTransition::Park ||
+        !timeout_trace.at(2).timed_wait_occurrence.has_value() ||
+        timeout_trace.at(2).timed_wait_occurrence->transition !=
+            model::TimedWaitTransition::Timeout ||
+        timeout_trace.at(3).effective_action.kind !=
+            model::ActionKind::Lock) {
+        throw std::runtime_error(
+            "fixed TimedWait timeout witness lost a transition phase");
+    }
+    ++outcomes[0];
+
+    const model::Program wake_program{{
+        {
+            lock("m"),
+            timed_wait("cv", "m", 4),
+            assert_nonzero(4),
+            unlock("m"),
+        },
+        {signal("cv")},
+    }};
+    const model::Schedule wake_schedule{
+        step(0, 0),
+        step(0, 1),
+        step(1, 0),
+        step(0, 1),
+        step(0, 2),
+        step(0, 3),
+    };
+    const model::ModelChecker wake_checker(wake_program);
+    const model::CheckResult wake = wake_checker.replay(wake_schedule);
+    if (wake.first_race.has_value() ||
+        wake.first_deadlock.has_value() ||
+        wake.first_error.has_value() ||
+        wake.first_assertion.has_value() ||
+        wake.first_nontermination.has_value() ||
+        wake.bound_exceeded_executions != 0) {
+        throw std::runtime_error(
+            "fixed TimedWait wake witness did not write result one");
+    }
+    const auto wake_trace =
+        wake_checker.replay_effective_trace(wake_schedule);
+    if (!wake_trace.at(1).timed_wait_occurrence.has_value() ||
+        wake_trace.at(1).timed_wait_occurrence->transition !=
+            model::TimedWaitTransition::Park ||
+        wake_trace.at(3).timed_wait_occurrence.has_value() ||
+        wake_trace.at(3).effective_action.kind !=
+            model::ActionKind::Lock) {
+        throw std::runtime_error(
+            "fixed TimedWait wake witness acquired a timeout phase");
+    }
+    ++outcomes[1];
+
+    return outcomes;
 }
 
 void check_program(std::uint64_t seed,
@@ -1155,6 +1301,7 @@ void check_program(std::uint64_t seed,
     std::size_t try_lock_actions_in_program = 0;
     std::array<std::size_t, 2> conversion_actions_in_program{};
     std::size_t broadcast_actions_in_program = 0;
+    std::size_t timed_wait_actions_in_program = 0;
     for (const auto& thread : program.threads) {
         for (const model::Action& action : thread) {
             switch (action.kind) {
@@ -1217,6 +1364,15 @@ void check_program(std::uint64_t seed,
                     ++stats.broadcast_actions_generated[
                         mode == GenerationMode::MostlyWellFormed ? 0 : 1];
                 }
+                break;
+            case model::ActionKind::TimedWait:
+                if (mode == GenerationMode::Value) {
+                    throw std::runtime_error(
+                        "value fuzz lane unexpectedly generated TimedWait");
+                }
+                ++timed_wait_actions_in_program;
+                ++stats.timed_wait_actions_generated[
+                    mode == GenerationMode::MostlyWellFormed ? 0 : 1];
                 break;
             default:
                 break;
@@ -1301,6 +1457,11 @@ void check_program(std::uint64_t seed,
             mode == GenerationMode::MostlyWellFormed ? 0 : 1] +=
             broadcast_actions_in_program;
     }
+    if (timed_wait_actions_in_program != 0) {
+        stats.timed_wait_actions_compared[
+            mode == GenerationMode::MostlyWellFormed ? 0 : 1] +=
+            timed_wait_actions_in_program;
+    }
     ++stats.checked;
     if (naive.first_race.has_value()) {
         ++stats.race;
@@ -1368,6 +1529,8 @@ int main(int argc, char** argv) {
     assert_try_lock_spelling_round_trips();
     assert_condition_spellings_round_trip();
     require_strong_fairness_discriminator();
+    const std::array<std::size_t, 2> timed_wait_outcomes =
+        require_timed_wait_outcome_discriminator();
 
     // CTest uses these fixed seeds for deterministic coverage. Supplying one
     // or more argv seeds replaces the fixed set for manual exploration, e.g.
@@ -1390,6 +1553,9 @@ int main(int argc, char** argv) {
     // CAS/fetch-add, assertions, exact cycles, and growing-state step-bound
     // backstops.
     constexpr std::size_t kProgramsPerSeed = 750;
+    // 49 x four fixed seeds yields 196 actions per lane: the >=200 guard also
+    // witnesses that each random weighted alphabet contributes TimedWait.
+    constexpr std::size_t kTimedWaitProgramsPerLanePerSeed = 49;
     FuzzStats stats;
     for (const std::uint64_t seed : seeds) {
         std::mt19937_64 rng(seed);
@@ -1410,6 +1576,42 @@ int main(int argc, char** argv) {
             }
             check_program(seed, index, mode, memory_model, generate_program(rng, mode), stats);
         }
+
+        // Keep the random alphabet wide while making the TimedWait coverage
+        // floor independent of a lucky seed. The mostly-well-formed tranche
+        // owns its mutex; the adversarial tranche intentionally does not.
+        std::mt19937_64 timed_wait_rng(
+            seed ^ 0x74c6215a9d38e0bfull);
+        for (std::size_t index = 0;
+             index < kTimedWaitProgramsPerLanePerSeed;
+             ++index) {
+            model::MemoryModel memory_model = model::MemoryModel::SC;
+            if (index % 4 == 3) {
+                memory_model = model::MemoryModel::TSO;
+            } else if (index % 8 == 2) {
+                memory_model = model::MemoryModel::PSO;
+            }
+            const std::size_t program_index =
+                kProgramsPerSeed + index * 2;
+            check_program(
+                seed,
+                program_index,
+                GenerationMode::MostlyWellFormed,
+                memory_model,
+                generate_timed_wait_coverage_program(
+                    timed_wait_rng,
+                    GenerationMode::MostlyWellFormed),
+                stats);
+            check_program(
+                seed,
+                program_index + 1,
+                GenerationMode::Adversarial,
+                memory_model,
+                generate_timed_wait_coverage_program(
+                    timed_wait_rng,
+                    GenerationMode::Adversarial),
+                stats);
+        }
     }
 
     const std::size_t try_lock_actions_generated =
@@ -1422,6 +1624,12 @@ int main(int argc, char** argv) {
     const std::size_t broadcast_actions_compared =
         stats.broadcast_actions_compared[0] +
         stats.broadcast_actions_compared[1];
+    const std::size_t timed_wait_actions_generated =
+        stats.timed_wait_actions_generated[0] +
+        stats.timed_wait_actions_generated[1];
+    const std::size_t timed_wait_actions_compared =
+        stats.timed_wait_actions_compared[0] +
+        stats.timed_wait_actions_compared[1];
     std::cout << "fuzz_differential: programs=" << stats.total
               << " checked=" << stats.checked
               << " skipped_capped=" << stats.skipped
@@ -1507,6 +1715,22 @@ int main(int argc, char** argv) {
               << stats.broadcast_actions_generated[1]
               << " broadcast_adversarial_compared="
               << stats.broadcast_actions_compared[1]
+              << " timedwait_actions_generated="
+              << timed_wait_actions_generated
+              << " timedwait_actions_compared="
+              << timed_wait_actions_compared
+              << " timedwait_mostly_generated="
+              << stats.timed_wait_actions_generated[0]
+              << " timedwait_mostly_compared="
+              << stats.timed_wait_actions_compared[0]
+              << " timedwait_adversarial_generated="
+              << stats.timed_wait_actions_generated[1]
+              << " timedwait_adversarial_compared="
+              << stats.timed_wait_actions_compared[1]
+              << " timedwait_timeout_results="
+              << timed_wait_outcomes[0]
+              << " timedwait_wake_results="
+              << timed_wait_outcomes[1]
               << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
@@ -1589,6 +1813,22 @@ int main(int argc, char** argv) {
             if (compared == 0 || compared * 4 < generated * 3) {
                 throw std::runtime_error(
                     "each fuzz lane must compare substantial Broadcast coverage");
+            }
+        }
+        for (std::size_t lane = 0;
+             lane < stats.timed_wait_actions_generated.size();
+             ++lane) {
+            const std::size_t generated =
+                stats.timed_wait_actions_generated[lane];
+            const std::size_t compared =
+                stats.timed_wait_actions_compared[lane];
+            if (generated < 200) {
+                throw std::runtime_error(
+                    "each non-value fuzz lane must generate hundreds of TimedWait actions");
+            }
+            if (compared * 4 < generated * 3) {
+                throw std::runtime_error(
+                    "each fuzz lane must compare at least 75% of TimedWait coverage");
             }
         }
     }

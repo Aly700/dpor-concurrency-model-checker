@@ -21,6 +21,7 @@ treated as findings, not as a reason to adjust core semantics.
 | Dining philosophers (`dining_philosophers.dpor`) | A total fork order lets all three philosophers finish | Clean | `dining_philosophers_broken.dpor` acquires every left fork first, exposing a three-thread circular-wait deadlock |
 | Cyclic barrier phases (`cyclic_barrier_phases.dpor`) | Every worker sees all publications made before each three-party phase boundary, and the same barrier resets for generation two | Clean | `cyclic_barrier_phases_broken_missing_worker.dpor` omits one worker from the final phase, leaving the other two waiting forever |
 | Mesa condition-variable consumers (`mesa_broadcast_consumers.dpor`) | A readiness handshake forces both consumers to park before one Broadcast wakes the complete waiter set | Clean | `mesa_broadcast_consumers_broken_single_signal.dpor` wakes only one parked consumer, leaving the other in a replayable deadlock |
+| Mesa bounded wait (`mesa_timedwait_bounded_consumer.dpor`) | A lost notification is handled by one TimedWait retry followed by an explicit fallback | Clean | `mesa_timedwait_bounded_consumer_broken_plain_wait.dpor` uses plain Wait after the notification is lost and deadlocks |
 
 ### SC/TSO/PSO verdicts
 
@@ -89,3 +90,8 @@ fences drain every pending address before the entry checks.
   paired single-Signal model wakes the lowest-id waiter and stores no permit
   for the other. Both CLI outputs are compared byte-for-byte with stored
   goldens.
+- The Mesa bounded-wait pair sends its notification before spawning the
+  consumer, so the lost wake is deterministic. The TimedWait model retries
+  once and then executes a fallback after result `0`; the plain-Wait model has
+  no enabled timeout transition and remains blocked on the condition. Both CLI
+  outputs are compared byte-for-byte with stored goldens.

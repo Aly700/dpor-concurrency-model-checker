@@ -244,6 +244,19 @@ std::string broadcast_waking_set_key(
     return out.str();
 }
 
+std::string timed_wait_occurrence_key(
+    const std::optional<model::TimedWaitOccurrence>& occurrence) {
+    if (!occurrence.has_value()) {
+        return "-";
+    }
+    std::ostringstream out;
+    out << (occurrence->transition == model::TimedWaitTransition::Park
+                ? "park"
+                : "timeout")
+        << ':' << occurrence->episode;
+    return out.str();
+}
+
 bool same_thread_steps_ordered(model::MemoryModel memory_model,
                                const model::EffectiveScheduleStep& lhs,
                                const model::EffectiveScheduleStep& rhs) {
@@ -290,7 +303,9 @@ std::vector<std::string> transition_labels(
         }
         base << '|' << action_key(effective)
              << "|wake="
-             << broadcast_waking_set_key(step.broadcast_waking_set);
+             << broadcast_waking_set_key(step.broadcast_waking_set)
+             << "|timedwait="
+             << timed_wait_occurrence_key(step.timed_wait_occurrence);
         const std::size_t occurrence = occurrences[base.str()]++;
 
         std::ostringstream label;
@@ -305,6 +320,8 @@ std::vector<std::string> transition_labels(
         label << "|occ=" << occurrence
               << "|wake="
               << broadcast_waking_set_key(step.broadcast_waking_set)
+              << "|timedwait="
+              << timed_wait_occurrence_key(step.timed_wait_occurrence)
               << '|' << action_key(effective);
         labels.push_back(label.str());
     }
@@ -460,7 +477,8 @@ bool has_node_sensitive_transition(const model::Program& program) {
     for (const auto& body : program.threads) {
         for (const model::Action& action : body) {
             if (action.kind == model::ActionKind::TryLock ||
-                action.kind == model::ActionKind::BarrierWait) {
+                action.kind == model::ActionKind::BarrierWait ||
+                action.kind == model::ActionKind::TimedWait) {
                 return true;
             }
         }

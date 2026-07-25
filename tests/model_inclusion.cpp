@@ -131,6 +131,17 @@ model::Action wait(std::string condition, std::string mutex) {
     return action;
 }
 
+model::Action timed_wait(std::string condition,
+                         std::string mutex,
+                         model::RegisterId destination = 0) {
+    model::Action action;
+    action.kind = model::ActionKind::TimedWait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 model::Action signal(std::string condition) {
     model::Action action;
     action.kind = model::ActionKind::Signal;
@@ -202,7 +213,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 25> kEnumeratedActions{
+const std::array<model::Action, 26> kEnumeratedActions{
     read("x"),
     write("x"),
     write("y"),
@@ -226,11 +237,12 @@ const std::array<model::Action, 25> kEnumeratedActions{
     sem_wait("sem"),
     barrier_wait("bar", 2),
     wait("cv", "m"),
+    timed_wait("cv", "m", 3),
     signal("cv"),
     broadcast("cv"),
 };
 
-const std::array<model::Action, 29> kFuzzActions{
+const std::array<model::Action, 30> kFuzzActions{
     read("x", 0),
     read("y", 1),
     write("x", 1),
@@ -258,6 +270,7 @@ const std::array<model::Action, 29> kFuzzActions{
     sem_wait("sem"),
     barrier_wait("bar", 2),
     wait("cv", "m"),
+    timed_wait("cv", "m", 3),
     signal("cv"),
     broadcast("cv"),
 };
@@ -300,6 +313,12 @@ std::string action_text(const model::Action& action) {
             << static_cast<unsigned>(action.destination.value_or(0));
         return out.str();
     }
+    if (action.kind == model::ActionKind::TimedWait) {
+        out << "timedwait " << action.condition << ' ' << action.mutex
+            << " -> r"
+            << static_cast<unsigned>(action.destination.value_or(0));
+        return out.str();
+    }
     out << static_cast<int>(action.kind);
     if (!action.address.empty()) {
         out << " address=" << action.address;
@@ -332,6 +351,14 @@ void assert_try_lock_action_text() {
     if (action_text(try_lock("m", 3)) != "try_lock m -> r3") {
         throw std::runtime_error(
             "model inclusion TryLock diagnostic spelling changed");
+    }
+}
+
+void assert_timed_wait_action_text() {
+    if (action_text(timed_wait("cv", "m", 3)) !=
+        "timedwait cv m -> r3") {
+        throw std::runtime_error(
+            "model inclusion TimedWait diagnostic spelling changed");
     }
 }
 
@@ -390,6 +417,9 @@ struct InclusionStats {
     std::size_t broadcast_attempted{0};
     std::size_t broadcast_compared{0};
     std::size_t broadcast_skipped{0};
+    std::size_t timed_wait_attempted{0};
+    std::size_t timed_wait_compared{0};
+    std::size_t timed_wait_skipped{0};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> sc_antecedents{};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> tso_antecedents{};
 };
@@ -405,6 +435,7 @@ void compare_program(const model::Program& program,
     const bool try_lock_gate = std::string(source) == "try-lock";
     const bool conversion_gate = std::string(source) == "rwlock-conversion";
     const bool broadcast_gate = std::string(source) == "broadcast";
+    const bool timed_wait_gate = std::string(source) == "timedwait";
     if (barrier_gate) {
         ++stats.barrier_attempted;
     }
@@ -416,6 +447,9 @@ void compare_program(const model::Program& program,
     }
     if (broadcast_gate) {
         ++stats.broadcast_attempted;
+    }
+    if (timed_wait_gate) {
+        ++stats.timed_wait_attempted;
     }
 
     std::array<model::CheckResult, 3> results;
@@ -438,6 +472,9 @@ void compare_program(const model::Program& program,
             }
             if (broadcast_gate) {
                 ++stats.broadcast_skipped;
+            }
+            if (timed_wait_gate) {
+                ++stats.timed_wait_skipped;
             }
             return;
         }
@@ -487,6 +524,9 @@ void compare_program(const model::Program& program,
     }
     if (broadcast_gate) {
         ++stats.broadcast_compared;
+    }
+    if (timed_wait_gate) {
+        ++stats.timed_wait_compared;
     }
     if (std::string(source) == "enumerated") {
         ++stats.enumerated;
@@ -636,26 +676,60 @@ std::vector<model::Program> broadcast_programs() {
     };
 }
 
+std::vector<model::Program> timed_wait_programs() {
+    return {
+        // With no notifier, the timeout transition is the sole path out of
+        // the parked episode and must complete under every memory model.
+        model::Program{{{lock("m"), timed_wait("cv", "m", 0), unlock("m")},
+                        {yield()}}},
+        // Signal may either wake the parked waiter or lose the race to its
+        // timeout. Both result paths remain part of each model's behavior.
+        model::Program{{{lock("m"), timed_wait("cv", "m", 1),
+                         read("published", 0), unlock("m")},
+                        {write("published", 1), signal("cv")}}},
+        // A single broadcast wakes both currently parked timed waiters. The
+        // two destinations make both register writes part of state identity.
+        model::Program{{{lock("m0"), timed_wait("cv", "m0", 2),
+                         unlock("m0")},
+                        {lock("m1"), timed_wait("cv", "m1", 3),
+                         unlock("m1")},
+                        {lock("m0"), lock("m1"), broadcast("cv"),
+                         unlock("m1"), unlock("m0")}}},
+        // Feed the timeout/wake result into the ordinary forward-branch
+        // machinery without creating an unbounded control-flow cycle.
+        model::Program{{{lock("m"), timed_wait("cv", "m", 4),
+                         bnz(4, "woke"), yield(), label("woke"),
+                         unlock("m")},
+                        {signal("cv")}}},
+    };
+}
+
 } // namespace
 
 int main() {
     assert_try_lock_action_text();
+    assert_timed_wait_action_text();
     const auto require_condition_tail = [](const auto& actions,
                                            const char* alphabet_name) {
-        const std::size_t first = actions.size() - 3;
-        const std::array<model::ActionKind, 3> kinds{
+        const std::size_t first = actions.size() - 4;
+        const std::array<model::ActionKind, 4> kinds{
             model::ActionKind::Wait,
+            model::ActionKind::TimedWait,
             model::ActionKind::Signal,
             model::ActionKind::Broadcast,
         };
         for (std::size_t index = 0; index < kinds.size(); ++index) {
             const model::Action& action = actions.at(first + index);
             if (action.kind != kinds.at(index) || action.condition != "cv" ||
-                (action.kind == model::ActionKind::Wait &&
-                 action.mutex != "m")) {
+                ((action.kind == model::ActionKind::Wait ||
+                  action.kind == model::ActionKind::TimedWait) &&
+                 action.mutex != "m") ||
+                (action.kind == model::ActionKind::TimedWait &&
+                 (!action.destination.has_value() ||
+                  *action.destination != 3))) {
                 throw std::runtime_error(
                     std::string("model inclusion ") + alphabet_name +
-                    " alphabet must contain Wait/Signal/Broadcast on cv");
+                    " alphabet must contain valid Wait/TimedWait/Signal/Broadcast on cv");
             }
         }
     };
@@ -704,6 +778,9 @@ int main() {
     for (const model::Program& program : broadcast_programs()) {
         compare_program(program, "broadcast", program_index++, stats);
     }
+    for (const model::Program& program : timed_wait_programs()) {
+        compare_program(program, "timedwait", program_index++, stats);
+    }
 
     if (stats.skipped != 0) {
         throw std::runtime_error("model inclusion corpus must have zero skips");
@@ -730,6 +807,12 @@ int main() {
         throw std::runtime_error(
             "model inclusion Broadcast corpus was skipped");
     }
+    if (stats.timed_wait_attempted != timed_wait_programs().size() ||
+        stats.timed_wait_compared != stats.timed_wait_attempted ||
+        stats.timed_wait_skipped != 0) {
+        throw std::runtime_error(
+            "model inclusion TimedWait corpus was skipped");
+    }
     for (std::size_t bug = 0; bug < static_cast<std::size_t>(BugKind::Count); ++bug) {
         if (stats.sc_antecedents[bug] == 0 || stats.tso_antecedents[bug] == 0) {
             throw std::runtime_error(
@@ -755,6 +838,9 @@ int main() {
               << " broadcast_attempted=" << stats.broadcast_attempted
               << " broadcast_compared=" << stats.broadcast_compared
               << " broadcast_skipped=" << stats.broadcast_skipped
+              << " timedwait_attempted=" << stats.timed_wait_attempted
+              << " timedwait_compared=" << stats.timed_wait_compared
+              << " timedwait_skipped=" << stats.timed_wait_skipped
               << " bug_kinds_exercised=5"
               << " seed=0x7b83d52fa9614c0d\n";
     return 0;

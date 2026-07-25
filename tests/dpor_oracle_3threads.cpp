@@ -161,6 +161,17 @@ Action wait(std::string condition, std::string mutex) {
     return action;
 }
 
+Action timed_wait(std::string condition,
+                  std::string mutex,
+                  RegisterId destination = 0) {
+    Action action;
+    action.kind = ActionKind::TimedWait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    action.destination = destination;
+    return action;
+}
+
 Action signal(std::string condition) {
     Action action;
     action.kind = ActionKind::Signal;
@@ -280,6 +291,11 @@ std::string action_string(const Action& action) {
         return "Upgrade " + action.rwlock;
     case ActionKind::Downgrade:
         return "Downgrade " + action.rwlock;
+    case ActionKind::TimedWait:
+        return "TimedWait " + action.condition + " " + action.mutex +
+               " -> r" +
+               std::to_string(
+                   static_cast<unsigned>(action.destination.value_or(0)));
     default:
         return std::to_string(static_cast<int>(action.kind));
     }
@@ -330,6 +346,8 @@ void cross_validate_program(const Program& p,
         {naive_ns, dpor_ns});
 #endif
 
+    require(!naive.exploration_capped && !dpor.exploration_capped,
+            "three-thread oracle must not cap or skip generated programs");
     if (dpor.first_race.has_value() != naive.first_race.has_value() ||
         dpor.first_deadlock.has_value() != naive.first_deadlock.has_value() ||
         dpor.first_error.has_value() != naive.first_error.has_value() ||
@@ -368,6 +386,7 @@ int main() {
         try_lock("m"),
         unlock("m"),
         wait("cv", "m"),
+        timed_wait("cv", "m"),
         signal("cv"),
         broadcast("cv"),
         spawn(1),
@@ -386,16 +405,17 @@ int main() {
         barrier_wait("bar", 3),
     };
     const std::size_t k = alphabet.size();
-    require(k == 25,
-            "three-thread oracle alphabet must include TryLock and conversions");
+    require(k == 26,
+            "three-thread oracle alphabet must include TimedWait and conversions");
     const Action& try_lock_entry = alphabet.at(6);
     require(try_lock_entry.kind == ActionKind::TryLock &&
                 try_lock_entry.mutex == "m" &&
                 try_lock_entry.destination.has_value() &&
                 *try_lock_entry.destination == 0,
             "three-thread oracle TryLock entry must be try_lock m -> r0");
-    const std::array<ActionKind, 3> condition_kinds{
+    const std::array<ActionKind, 4> condition_kinds{
         ActionKind::Wait,
+        ActionKind::TimedWait,
         ActionKind::Signal,
         ActionKind::Broadcast,
     };
@@ -403,8 +423,13 @@ int main() {
         const Action& action = alphabet.at(8 + i);
         require(action.kind == condition_kinds.at(i) &&
                     action.condition == "cv" &&
-                    (action.kind != ActionKind::Wait || action.mutex == "m"),
-                "three-thread oracle must contain Wait/Signal/Broadcast on cv");
+                    ((action.kind != ActionKind::Wait &&
+                      action.kind != ActionKind::TimedWait) ||
+                     action.mutex == "m") &&
+                    (action.kind != ActionKind::TimedWait ||
+                     (action.destination.has_value() &&
+                      *action.destination == 0)),
+                "three-thread oracle must contain valid Wait/TimedWait/Signal/Broadcast on cv");
     }
     const std::array<ActionKind, 6> rwlock_kinds{
         ActionKind::RLock,
@@ -415,7 +440,7 @@ int main() {
         ActionKind::Downgrade,
     };
     for (std::size_t i = 0; i < rwlock_kinds.size(); ++i) {
-        const Action& action = alphabet.at(16 + i);
+        const Action& action = alphabet.at(17 + i);
         require(action.kind == rwlock_kinds.at(i) && action.rwlock == "rw",
                 "three-thread oracle must contain all six rwlock operations");
     }

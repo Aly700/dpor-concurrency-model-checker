@@ -20,8 +20,9 @@
   `independent()` predicate, and checker-local transition refinements for
   per-name reader-writer-lock static guards, enabled valid `Join` operations,
   failed same-mutex `TryLock` pairs under a third-party owner, and
-  generation-stamped barrier arrivals. Exact waking-set-stamped Broadcast
-  occurrences additionally protect cyclic historical transition matching.
+  generation-stamped barrier arrivals. Exact TimedWait phase/episode and
+  Signal/Broadcast wake-target occurrences additionally protect cyclic
+  historical transition matching.
 - `ModelChecker::replay` re-executes a deterministic schedule under the same
   step bound and rejects disabled, out-of-range, or post-terminal steps with a
   clear error.
@@ -62,14 +63,16 @@ The checker interprets a program as a small-step state machine:
   acquire-release RMWs, and SC-per-location; it does not model relaxed atomics.
 - `condition_waiters[cv]` records sleeping waiters in deterministic thread-id
   order. Signal wakes the lowest-numbered parked waiter; Broadcast atomically
-  snapshots and wakes the complete current set. Neither queues a permit when
-  the set is empty.
+  snapshots and wakes the complete current set. TimedWait timeout removes its
+  own exact parked episode. Neither wake action queues a permit when the set is
+  empty.
 - `thread_clock[tid]` records each thread's happens-before frontier.
 - `started[tid]` records whether a static thread body is alive in the current
   execution. Threads targeted by valid `Spawn` actions start disabled and
   become schedulable only after a successful spawn.
 - `wait_phase[tid]` records whether a thread is not waiting, asleep in a
-  condition variable, or woken and waiting to reacquire its mutex.
+  condition variable, or resolved by wake/timeout and waiting to reacquire its
+  mutex.
 - `memory[address]` records the last plain write, the plain reads since that
   write, and deterministic plain/atomic access lists used only for the mixed
   plain/atomic race check.
@@ -114,11 +117,18 @@ transition. Every use of a barrier name must specify the same positive party
 count.
 `Join(target)` is enabled only when `target` has started and finished.
 `Wait(cv, mutex)` is one IR action with two schedule steps at the same action
-index: release-and-sleep, then after wakeup reacquire-and-resume. A state with
-started unfinished threads and no enabled action is a deadlock; the report
-tags each started blocked thread as waiting on a mutex, join target, condition
-variable, rwlock writer, rwlock reader set, rwlock upgrade, semaphore, or
-incomplete barrier generation. Upgrade waits use the distinct
+index: release-and-sleep, then after wakeup reacquire-and-resume.
+`TimedWait(cv, mutex, rN)` adds an explicit parked timeout step at that same
+index. While parked, timeout is permanently enabled; it writes `0` and enters
+reacquisition, while Signal/Broadcast wake writes `1`. Reacquisition remains
+the existing effective Lock step and is the only one that advances the waiter
+pc.
+A state with started unfinished threads and no enabled action is a deadlock;
+the report tags each started blocked thread as waiting on a mutex, join target,
+plain condition variable, rwlock writer, rwlock reader set, rwlock upgrade,
+semaphore, or incomplete barrier generation. A parked TimedWait cannot appear
+in such a terminal state because timeout is enabled; after resolution, its
+mutex reacquisition can be a normal mutex blocker. Upgrade waits use the distinct
 `rwlock NAME upgrade_waiting_for_readers_to_drain` blocker. A state where all
 started threads are finished is normal
 termination, even if some static thread bodies were never spawned. If an
@@ -132,7 +142,9 @@ waits, spawn, join, and `Fence` are ordered points: they are disabled until all
 of the executing thread's buffers are empty. A nonempty buffer always enables
 a flush for that thread, including after the source pc is done, so buffered
 completion is not deadlock. In particular, `Wait`, `Signal`, and `Broadcast`
-wait for explicit drains and never flush a buffer internally.
+wait for explicit drains and never flush a buffer internally. TimedWait uses
+the same ordered-point rule: park waits for explicit drains, timeout performs
+no hidden drain, and reacquisition is an effective Lock.
 
 ## Mesa Condition Variables
 
@@ -150,6 +162,27 @@ condition permit, clock, or history, so a later Wait still parks and can
 produce the ordinary condition-variable deadlock. The effective Broadcast
 occurrence nevertheless records an engaged exact empty waking set for DPOR;
 that analysis identity is distinct from a non-Broadcast's absent component.
+
+`TimedWait(cv, mutex, rN)`, spelled
+`timedwait CONDITION MUTEX -> rN`, uses the same release-and-park phase. While
+parked, its own source endpoint remains enabled as a nondeterministic logical
+timeout. Taking timeout removes exactly that parked episode, writes `0`, and
+moves to mutex reacquisition. Signal or Broadcast may win instead, write `1`,
+and move the waiter to that same phase. Neither resolution grants the mutex;
+only the later effective Lock advances the waiter pc.
+
+There is no duration, deadline, wall-clock query, step threshold, or hidden
+random branch. Timeout is an explicit schedule choice. A timeout replay
+therefore contains park, timeout, and reacquisition at one numeric endpoint; a
+wake replay contains park and reacquisition with the wake action between them.
+A lost wake remains a deadlock for plain Wait but is an explorable timeout
+schedule for TimedWait.
+
+Each TimedWait park/timeout carries exact phase-and-episode identity. Signal
+and Broadcast carry exact internal wake targets as
+`(thread, wait action_index, episode)` vectors, including engaged empty
+vectors. This strengthens Broadcast's public thread-only waking-set diagnostic
+without changing numeric schedules.
 
 ## Cyclic Barriers
 
@@ -214,6 +247,10 @@ join after becoming owner. A failed `TryLock` performs no join at all: neither
 the stored release clock nor the current owner's live clock is acquired.
 `Wait` first performs the same release update as
 `Unlock`, then its woken second step performs the same acquire join as `Lock`.
+TimedWait performs those same park and reacquisition updates. A wake writes
+`1` and retains the following Signal/Broadcast edge; timeout writes `0` and
+performs no condition-variable join in either direction. Its only later
+ordering is the mutex-clock join at reacquisition.
 `Signal` joins its post-tick clock into the selected waiter.
 `Broadcast` snapshots every currently parked waiter and independently joins
 the same broadcaster post-tick clock into each receiver. Waking one receiver
@@ -274,7 +311,8 @@ register operand. Atomic RMW returns the old value and adds its operand. CAS
 stores on success and writes `1` or `0` to its result register. `TryLock`
 likewise writes `1` for acquisition and `0` for failure into its destination
 register, so existing value flow and `BranchNonzero` directly implement retry
-loops.
+loops. TimedWait uses the same value path: `0` selects timeout/retry/fallback
+logic and `1` selects wake logic.
 
 Memory accesses compare their current vector clock against prior conflicting
 accesses to the same address. Under TSO or PSO, an enqueued plain write records no
@@ -322,6 +360,14 @@ Broadcast, including an empty one, advances normalized pc. The existing state
 therefore distinguishes its program-observable outcomes while excluding wake
 clocks and occurrence metadata.
 
+TimedWait also adds no behavioral-fingerprint field. Fingerprints are compared
+within one fixed Program, so normalized pc identifies whether its static action
+is Wait or TimedWait. Existing waiter membership and Wait phase distinguish
+park and resolution, the destination register distinguishes timeout `0` from
+wake `1`, and mutex ownership plus pc distinguish reacquisition. Per-thread
+step ordinals and exact episode/wake-target stamps remain analysis metadata;
+including them would prevent a genuine timeout-spin state from recurring.
+
 Programs without a normalized self/backward `BranchNonzero` do not allocate or
 construct cycle history. Every ordinary source step advances a normalized pc;
 `TryLock` does so on both outcomes, with its result already represented by the
@@ -331,6 +377,10 @@ pc exactly once; every fired `Broadcast`, including an empty one, also advances
 pc exactly once, and nonempty fan-out changes fingerprinted waiter state;
 the exceptional first `Wait` phase changes the fingerprinted wait/ownership
 state and needs a later pc-advancing Signal or Broadcast before it can resume;
+a TimedWait park changes the same state, timeout then changes waiter membership
+and phase at the unchanged pc, and its effective Lock changes phase/ownership
+and advances pc; a wake instead requires the existing pc-advancing wake action
+before that reacquisition;
 a non-last
 `BarrierWait` strictly grows the fingerprinted arrival set and disables that
 participant until another participant's pc-advancing arrival releases the
@@ -379,18 +429,30 @@ action fairness within a participating thread or program-level liveness.
 Classification runs only after exact cycle closure; acyclic and residual-bound
 executions pay no added search or post-processing cost.
 
+A single thread that repeatedly parks, chooses timeout, reacquires, and
+re-parks owns every step of its exact cycle and is therefore `fair divergence`.
+If a separate Signal endpoint remains enabled at every state but is never
+scheduled, that nonparticipant makes the witnessed timeout spin an
+`unfair-schedule witness`. The timeout choice owned by the participating waiter
+is intentionally outside this inter-thread fairness field.
+
 ## DPOR Reduction
 
 DPOR maintains a stack of prefix nodes with sorted enabled, backtrack, done, and
 sleep schedule-step sets. Each enabled node records both the replay endpoint and the
-phase-aware effective action for each enabled thread, so `Wait` release/sleep
-and woken mutex reacquire are reduced as different transition semantics while
-source and TSO schedule steps remain `(thread, action_index)` pairs. Barrier
+phase-aware effective action for each enabled thread, so `Wait` release/sleep,
+TimedWait park/timeout, and resolved mutex reacquire are reduced as different
+transition semantics while source and TSO schedule steps remain
+`(thread, action_index)` pairs. TimedWait park and timeout additionally carry
+their exact per-thread episode; resolved reacquisition is an effective Lock.
+Barrier
 occurrences additionally carry the current generation ordinal internally,
 because a cyclic program can execute the same `(thread, action_index)` in more
-than one generation. Broadcast occurrences carry an exact sorted waking set:
-the component is absent for non-Broadcast actions, engaged empty for an empty
-Broadcast, and engaged with every parked receiver for a nonempty Broadcast.
+than one generation. Signal and Broadcast occurrences carry exact wake-target
+vectors of `(thread, wait action_index, episode)`: engaged empty when they wake
+nobody, one target for nonempty Signal, and every parked receiver for
+Broadcast. The public Broadcast trace retains its sorted thread-only waking
+set.
 
 TSO and PSO flushes use the reserved action index `kFlushActionIndex` in those
 same sets. TSO keeps the original two-number endpoint; PSO adds the canonical
@@ -422,7 +484,9 @@ rwlock readers that must drain for `WLock` or `Upgrade`, or a
 `Signal`/`Broadcast` chain for a sleeping waiter. Anonymous/cyclic/unknown
 chains, including semaphore posts, barrier arrivals, and mutually blocked
 upgraders, use ADR 0010's all-enabled repair. A top-level blocked `Lock` or
-woken wait reacquire also retains that fallback.
+woken wait reacquire also retains that fallback. A parked TimedWait needs no
+wake enabler repair because timeout is itself enabled; after resolution its
+blocked effective Lock uses the ordinary mutex repair.
 
 Godefroid sleep sets prune alternatives whose trace class has already been
 represented. A child inherits slept threads only while their current effective
@@ -432,17 +496,24 @@ later alternatives. Modeled-error endpoints still clear pruning at that node and
 add every enabled sibling, and sleep-blocked prefixes still apply the disabled
 fallback before being pruned.
 
-Same-condition `Wait`, `Signal`, and `Broadcast` remain pairwise dependent;
-different condition names commute subject to the existing cross-cutting rules.
-There is no empty-Broadcast/empty-Broadcast exception. The complete waking-set
-identity is compared at enabled and executed records, node matching,
-backtracking and persistent closure, disabled repair, checker-local
-independence, and sleep inheritance. Conservative dependence already prevents
-a same-condition parked-set mutation from crossing an inherited sleep edge.
-The exact stamp separately prevents a later cyclic Broadcast with a different
-fan-out from falsely matching an earlier historical occurrence. Multi-wake
-reacquisition then uses ordinary same-mutex dependence. ADR 0029 records the
-mutation discriminator and the boundary-by-boundary audit.
+Same-condition `Wait`, `TimedWait`, `Signal`, and `Broadcast` remain pairwise
+dependent; different condition names commute subject to the existing
+cross-cutting rules. This deliberately keeps different waiters'
+same-condition timeouts dependent: their adjacent final-state updates commute
+locally, but no complete proof covers persistent closure, a middle wake,
+historical matching, repair, and sleep inheritance. There is no empty-wake
+exception.
+
+Complete TimedWait episode and wake-target identity is compared at enabled and
+executed records, node matching, backtracking and persistent closure, disabled
+repair, checker-local independence, and sleep inheritance. Conservative
+dependence already prevents a same-condition parked-set mutation from crossing
+an inherited sleep edge. Exact stamps separately prevent a later cyclic park,
+timeout, Signal, or Broadcast from falsely matching an earlier historical
+occurrence at the same numeric endpoint. Resolved reacquisition then uses
+ordinary same-mutex dependence. ADR 0030 records the mutation discriminator
+and boundary-by-boundary audit; ADR 0029 remains the Broadcast fan-out
+predecessor.
 
 Race, error, and assertion detection still run through the same interpreter as
 naive exploration, and every DPOR report is expected to replay identically.
@@ -556,42 +627,43 @@ because it was previously slept.
 ## Verification Gates
 
 The DPOR implementation is checked against deterministic gates. The 2-thread
-oracle sweep enumerates small programs by length pair over a 27-action alphabet
+oracle sweep enumerates small programs by length pair over a 28-action alphabet
 and compares naive vs. DPOR race/deadlock/error/assertion existence, the
 bound-hit boolean, total-cycle existence, all three fairness-class existence
 booleans, schedule dominance, and report replay identity. The
 3-thread oracle sweep uses an evenly strided deterministic sample of the larger
-25-action, 6-slot space, plus hand-picked disabled-transition cases, to
+26-action, 6-slot space, plus hand-picked disabled-transition cases, to
 exercise spawn, join, condition-variable, rwlock, semaphore, and barrier
 enabledness. Fixed spin and mutex-blink lassos keep its weak, strong, and fair
 class comparisons non-vacuous. A
 separate three-reader fixture pins 1680 naive leaves and one DPOR
-representative. The seeded differential fuzz gate generates 3000 fixed-seed
-programs across 2-5 threads, 1-6 actions per thread, plain and atomic memory,
-mutexes, rwlocks, semaphores, barriers, TryLock, condition variables, joins,
+representative. The fixed-seed differential fuzz gate combines 3,000 random
+2-5-thread, 1-6-action programs with deterministic one-thread TimedWait
+coverage programs. The random lanes cover plain and atomic memory, mutexes,
+rwlocks, semaphores, barriers, TryLock, TimedWait, condition variables, joins,
 yields, spawn-shaped programs, and modeled-error cases, plus a value-mode lane
 with registers, branches, CAS, fetch-add, assertions, and deliberate bound
-hits; capped explorations are counted but excluded from verdict equality
+hits. Capped explorations are counted but excluded from verdict equality
 because truncation can legitimately hide a later endpoint. Fuzz compares all
-three lasso classes and runs a fixed uncapped mutex-blink discriminator even
-when the seeded corpus contains no strong-class witness.
+three lasso classes and runs fixed uncapped mutex-blink and TimedWait outcome
+discriminators even when the seeded corpus contains no such witness.
 
-The Broadcast-widened acceptance run checked 22,736 two-thread programs
-(59,119 naive versus 34,419 DPOR schedules), 65,547 three-thread programs
-(789,230 naive versus 331,445 DPOR schedules), 11,740 TSO programs (59,688
-versus 19,517), and 6,621 PSO programs (31,441 versus 10,622). Every oracle
+The TimedWait-widened acceptance run checked 22,903 two-thread programs
+(64,582 naive versus 35,705 DPOR schedules), 65,547 three-thread programs
+(770,547 naive versus 339,177 DPOR schedules), 11,877 TSO programs (54,022
+versus 19,980), and 6,707 PSO programs (30,045 versus 10,882). Every oracle
 observed fair, strongly-unfair, and weakly-unfair cycle existence under both
 naive and DPOR exploration. Both buffered oracles
-enforce zero capped skips. Their action alphabets are respectively 27, 25, 22,
-and 22. The fixed fuzz run compares 2,978 of 3,000 programs and reports 22
-capped programs; it generates 762 Broadcast actions and compares 746
-(737/721 in the mostly-well-formed lane and 25/25 in the adversarial lane).
-Cross-model inclusion compares all 1,741 programs and runs 17,410 checks with
-zero global skips; its dedicated Broadcast corpus is 4 attempted / 4 compared
-/ 0 skipped, and its enumerated/fuzz alphabets contain 25/29 actions. The
+enforce zero capped skips. Their action alphabets are respectively 28, 26, 23,
+and 23. The fixed fuzz run compares 3,369 of 3,392 programs and reports 23
+capped programs; it generates 407 TimedWait actions and compares 406
+(202/201 in the mostly-well-formed lane and 205/205 in the adversarial lane).
+Fixed outcome probes observe both timeout `0` and wake `1`.
+Cross-model inclusion compares all 1,747 programs and runs 17,470 checks with
+zero global skips; its dedicated TimedWait corpus is 4 attempted / 4 compared
+/ 0 skipped. The
 unchanged optimality corpora retain byte-identical meter ratios SC 1.067, TSO
-1.152, and PSO 1.154. The final Campaign 15 Release and deterministic
-restore-assert Debug builds both pass 29/29 suites.
+1.152, and PSO 1.154.
 
 The optimality meter is the fourth gate. Its SC corpus collects all naive
 maximal schedules for small non-error/non-assertion programs, replays them into

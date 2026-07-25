@@ -1,0 +1,2 @@
+verdict: clean
+schedules_explored: 1
