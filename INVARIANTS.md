@@ -34,10 +34,13 @@
   failure, so adding it does not weaken this well-foundedness argument. A
   blocked `Upgrade` does not fire; every fired `Upgrade` or `Downgrade`,
   including modeled misuse, advances its normalized pc exactly once.
+  Every fired `Broadcast`, including an empty one, likewise advances its
+  normalized pc exactly once; a nonempty Broadcast also changes the already
+  fingerprinted condition waiter and Wait-phase state.
   Therefore a complete behavioral state cannot recur. Any future action that
   can decrease a pc or repeatedly mutate behavioral state without advancing a
   pc must extend or invalidate this proof before fingerprint elision is allowed
-  (adr/0023, adr/0024, adr/0025, adr/0028).
+  (adr/0023, adr/0024, adr/0025, adr/0028, adr/0029).
 - The behavioral state includes normalized per-thread PCs, startedness, wait
   phases, registers, memory values, mutex owners, reader-writer lock holders,
   nonzero semaphore permit counts, every nonempty barrier's configured party
@@ -45,7 +48,7 @@
   sets, and ordered TSO store buffers or canonical per-address PSO FIFO maps.
   Vector clocks, absolute barrier generation ordinals,
   atomic/mutex/rwlock/semaphore/barrier clocks, race metadata, step counters,
-  and schedule history are
+  Broadcast waking-set occurrence stamps, and schedule history are
   analysis/budget/history state and are excluded. Consequently a
   lasso proves schedule-existence of non-termination only, not repetition of
   analysis instrumentation. `TryLock` needs no new fingerprint field: its
@@ -54,6 +57,9 @@
   conversions likewise need no new field: their observable mode is already
   present in the canonical reader set and writer owner, and a successful or
   erroneous conversion advances pc.
+  Broadcast likewise needs no new field: nonempty fan-out changes the existing
+  condition waiter and per-thread Wait-phase state, while every fired
+  Broadcast, including an empty one, advances pc.
 - A cycle witness is `stem + one cycle`, split at the first occurrence of the
   revisited state. The claim is existential. Its fairness field classifies only
   that witness and makes no system-level scheduler-fairness,
@@ -104,6 +110,9 @@
   at every cycle state. Replay rejects schedules that continue after the cycle
   closes.
 - Test programs must not depend on OS thread scheduling.
+- Numeric schedules need no Broadcast suffix, but DPOR must retain the exact
+  sorted waking set as internal occurrence identity. A non-Broadcast has no
+  such component; an empty Broadcast has an engaged empty set.
 
 ## Happens-before
 
@@ -166,9 +175,14 @@
   generation accumulator survives the reset: cross-generation HB exists only
   when an actual participant carries its joined thread clock into a later
   generation. `parties == 1` applies this rule immediately (adr/0024).
-- `Signal(cv)` and `Broadcast(cv)` must add a happens-before edge from the
-  signaling thread to every waiter they wake. They must not queue permits when
-  no waiter exists.
+- `Signal(cv)` wakes its selected currently parked waiter, while
+  `Broadcast(cv)` snapshots and wakes every thread currently parked on `cv`.
+  Each woken thread moves independently to the existing mutex-reacquisition
+  phase and joins the same signaler's or broadcaster's post-tick clock.
+  Waking one waiter must not alter the clock used to wake another, and no
+  waiter clock may be joined into another waiter merely because both were
+  woken by one Broadcast. An empty Signal or Broadcast queues no permit; an
+  empty Broadcast also stores no release clock and cannot order a future Wait.
 - Conflicting memory accesses unordered by happens-before are races.
 - Values are deterministic schedule-order int64 cell values. Plain reads have
   no weak-memory value semantics: in racy programs they observe the value
@@ -195,6 +209,9 @@
 - Under TSO and PSO, `Upgrade` and `Downgrade` are full ordered points like the
   other rwlock operations. A conversion remains disabled until every buffer
   owned by the caller is empty and performs no hidden flush.
+- Under TSO and PSO, both phases of `Wait`, plus `Signal` and `Broadcast`, are
+  ordered points. Their source transition remains disabled until every buffer
+  owned by the caller is empty, and none performs a hidden drain.
 - Atomic/atomic accesses are never races. Mixed plain/atomic same-address
   accesses are races when unordered by happens-before and at least one side is
   write-like: plain write, atomic store, successful CAS, or atomic RMW. CAS is
@@ -223,6 +240,18 @@
   Reentrant error endpoints remain protected by the terminal all-siblings
   backtrack safeguard; all conversion pairs and every other same-name pair
   remain dependent (adr/0021, adr/0028).
+- Same-condition `Wait`, `Signal`, and `Broadcast` actions are pairwise
+  dependent. Distinct conditions commute subject to the existing cross-cutting
+  thread, mutex, spawn/join, and buffered-transition rules; no
+  empty-Broadcast/empty-Broadcast exception ships. Each effective Broadcast
+  occurrence carries its engaged exact sorted parked-thread set, including
+  `{}`, through enabled/executed records, node matching, backtracking,
+  persistent closure, disabled repair, checker-local independence, and sleep
+  inheritance. A changed waking set cannot match or inherit an old
+  occurrence. The conservative relation already prevents a parked-set
+  mutation from crossing a sleep edge, while the exact stamp separately
+  protects cyclic historical backtrack matching. Woken second-phase Waits
+  contend through ordinary same-mutex dependence (adr/0029).
 - Cross-thread, co-enabled `SemPost(s)` actions are independent: count addition
   and accumulated release-clock joins commute, neither poster acquires the
   other, and either first post enables the same waiter set. Every same-name

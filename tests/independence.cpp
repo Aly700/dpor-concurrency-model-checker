@@ -271,6 +271,24 @@ int main() {
     assert(!model::independent(sem_wait("sem"), join(0)));
     assert(model::independent(sem_post("sem"), write("x")));
 
+    const std::array<model::Action, 3> same_condition_actions{
+        wait("cv", "left-m"), signal("cv"), broadcast("cv")};
+    for (const model::Action& lhs : same_condition_actions) {
+        for (const model::Action& rhs : same_condition_actions) {
+            require(!model::independent(lhs, rhs),
+                    "same-condition Wait/Signal/Broadcast matrix changed");
+        }
+    }
+    const std::array<model::Action, 3> other_condition_actions{
+        wait("other-cv", "right-m"), signal("other-cv"),
+        broadcast("other-cv")};
+    for (const model::Action& lhs : same_condition_actions) {
+        for (const model::Action& rhs : other_condition_actions) {
+            require(model::independent(lhs, rhs),
+                    "different-condition Wait/Signal/Broadcast actions must remain independent");
+        }
+    }
+
     const std::array<model::Action, 6> same_rwlock_actions{
         rlock("rw"), runlock("rw"), wlock("rw"), wunlock("rw"),
         upgrade("rw"), downgrade("rw")};

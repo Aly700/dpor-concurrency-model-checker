@@ -1,0 +1,29 @@
+# The producer spawns two consumers. Each announces readiness while still
+# owning the mutex paired with its condition wait. After consuming both
+# announcements, the producer cannot acquire that mutex until the second
+# consumer has also atomically released it and parked on `work_available`.
+#
+# One Broadcast therefore wakes the complete parked set. Each consumer
+# reacquires the shared mutex before handling its item.
+thread:
+  spawn 1
+  spawn 2
+  sem_wait ready
+  sem_wait ready
+  lock consumers
+  unlock consumers
+  broadcast work_available
+
+thread:
+  lock consumers
+  sem_post ready
+  wait work_available consumers
+  write item0 1
+  unlock consumers
+
+thread:
+  lock consumers
+  sem_post ready
+  wait work_available consumers
+  write item1 1
+  unlock consumers

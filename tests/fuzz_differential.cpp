@@ -95,6 +95,10 @@ struct FuzzStats {
     // Compared excludes programs discarded at the schedule cap.
     std::array<std::array<std::size_t, 2>, 2> conversion_actions_generated{};
     std::array<std::array<std::size_t, 2>, 2> conversion_actions_compared{};
+    // MostlyWellFormed/Adversarial Broadcast counts. Compared excludes
+    // programs discarded because either explorer reached the schedule cap.
+    std::array<std::size_t, 2> broadcast_actions_generated{};
+    std::array<std::size_t, 2> broadcast_actions_compared{};
 };
 
 model::Action read(std::string address) {
@@ -1089,6 +1093,24 @@ void assert_try_lock_spelling_round_trips() {
     }
 }
 
+void assert_condition_spellings_round_trip() {
+    const model::Program program{{{
+        wait("cv0", "m0"),
+        signal("cv1"),
+        broadcast("cv2"),
+    }}};
+    const std::string rendered = cli::render_program(program);
+    if (rendered !=
+            "thread:\n"
+            "  wait cv0 m0\n"
+            "  signal cv1\n"
+            "  broadcast cv2\n" ||
+        cli::parse_program_text(rendered).threads != program.threads) {
+        throw std::runtime_error(
+            "condition-variable spellings did not round-trip exactly");
+    }
+}
+
 void check_program(std::uint64_t seed,
                    std::size_t program_index,
                    GenerationMode mode,
@@ -1132,6 +1154,7 @@ void check_program(std::uint64_t seed,
     ++stats.total;
     std::size_t try_lock_actions_in_program = 0;
     std::array<std::size_t, 2> conversion_actions_in_program{};
+    std::size_t broadcast_actions_in_program = 0;
     for (const auto& thread : program.threads) {
         for (const model::Action& action : thread) {
             switch (action.kind) {
@@ -1185,6 +1208,13 @@ void check_program(std::uint64_t seed,
             case model::ActionKind::BarrierWait:
                 if (mode != GenerationMode::Value) {
                     ++stats.barrier_waits[
+                        mode == GenerationMode::MostlyWellFormed ? 0 : 1];
+                }
+                break;
+            case model::ActionKind::Broadcast:
+                ++broadcast_actions_in_program;
+                if (mode != GenerationMode::Value) {
+                    ++stats.broadcast_actions_generated[
                         mode == GenerationMode::MostlyWellFormed ? 0 : 1];
                 }
                 break;
@@ -1262,6 +1292,15 @@ void check_program(std::uint64_t seed,
                 conversion_actions_in_program[operation];
         }
     }
+    if (broadcast_actions_in_program != 0) {
+        if (mode == GenerationMode::Value) {
+            throw std::runtime_error(
+                "value fuzz lane unexpectedly generated Broadcast");
+        }
+        stats.broadcast_actions_compared[
+            mode == GenerationMode::MostlyWellFormed ? 0 : 1] +=
+            broadcast_actions_in_program;
+    }
     ++stats.checked;
     if (naive.first_race.has_value()) {
         ++stats.race;
@@ -1327,6 +1366,7 @@ int main(int argc, char** argv) {
     assert_semaphore_spellings_round_trip();
     assert_barrier_spelling_round_trips();
     assert_try_lock_spelling_round_trips();
+    assert_condition_spellings_round_trip();
     require_strong_fairness_discriminator();
 
     // CTest uses these fixed seeds for deterministic coverage. Supplying one
@@ -1376,6 +1416,12 @@ int main(int argc, char** argv) {
         stats.try_lock_actions_generated[0] + stats.try_lock_actions_generated[1];
     const std::size_t try_lock_actions_compared =
         stats.try_lock_actions_compared[0] + stats.try_lock_actions_compared[1];
+    const std::size_t broadcast_actions_generated =
+        stats.broadcast_actions_generated[0] +
+        stats.broadcast_actions_generated[1];
+    const std::size_t broadcast_actions_compared =
+        stats.broadcast_actions_compared[0] +
+        stats.broadcast_actions_compared[1];
     std::cout << "fuzz_differential: programs=" << stats.total
               << " checked=" << stats.checked
               << " skipped_capped=" << stats.skipped
@@ -1449,6 +1495,18 @@ int main(int argc, char** argv) {
               << stats.conversion_actions_generated[1][1]
               << " conversion_adversarial_downgrade_compared="
               << stats.conversion_actions_compared[1][1]
+              << " broadcast_actions_generated="
+              << broadcast_actions_generated
+              << " broadcast_actions_compared="
+              << broadcast_actions_compared
+              << " broadcast_mostly_generated="
+              << stats.broadcast_actions_generated[0]
+              << " broadcast_mostly_compared="
+              << stats.broadcast_actions_compared[0]
+              << " broadcast_adversarial_generated="
+              << stats.broadcast_actions_generated[1]
+              << " broadcast_adversarial_compared="
+              << stats.broadcast_actions_compared[1]
               << '\n';
 
     assert(stats.total >= 3000 || argc > 1);
@@ -1511,6 +1569,26 @@ int main(int argc, char** argv) {
                     throw std::runtime_error(
                         "each fuzz lane must compare substantial conversion coverage");
                 }
+            }
+        }
+        if (broadcast_actions_generated < 300) {
+            throw std::runtime_error(
+                "fixed fuzz corpus must generate hundreds of Broadcast actions");
+        }
+        for (std::size_t lane = 0;
+             lane < stats.broadcast_actions_generated.size();
+             ++lane) {
+            const std::size_t generated =
+                stats.broadcast_actions_generated[lane];
+            const std::size_t compared =
+                stats.broadcast_actions_compared[lane];
+            if (generated == 0) {
+                throw std::runtime_error(
+                    "each non-value fuzz lane must generate Broadcast");
+            }
+            if (compared == 0 || compared * 4 < generated * 3) {
+                throw std::runtime_error(
+                    "each fuzz lane must compare substantial Broadcast coverage");
             }
         }
     }

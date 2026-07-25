@@ -394,6 +394,18 @@ int main() {
                 try_lock_entry.destination.has_value() &&
                 *try_lock_entry.destination == 0,
             "three-thread oracle TryLock entry must be try_lock m -> r0");
+    const std::array<ActionKind, 3> condition_kinds{
+        ActionKind::Wait,
+        ActionKind::Signal,
+        ActionKind::Broadcast,
+    };
+    for (std::size_t i = 0; i < condition_kinds.size(); ++i) {
+        const Action& action = alphabet.at(8 + i);
+        require(action.kind == condition_kinds.at(i) &&
+                    action.condition == "cv" &&
+                    (action.kind != ActionKind::Wait || action.mutex == "m"),
+                "three-thread oracle must contain Wait/Signal/Broadcast on cv");
+    }
     const std::array<ActionKind, 6> rwlock_kinds{
         ActionKind::RLock,
         ActionKind::RUnlock,

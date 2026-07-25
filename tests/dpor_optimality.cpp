@@ -88,6 +88,7 @@ model::EffectiveScheduleStep effective_step(model::ThreadId thread,
     return model::EffectiveScheduleStep{
         model::ScheduleStep{thread, action_index, flush_address},
         std::move(action),
+        std::nullopt,
     };
 }
 
@@ -548,11 +549,29 @@ std::string action_key(const model::Action& action) {
     return out.str();
 }
 
+std::string broadcast_waking_set_key(
+    const std::optional<std::vector<model::ThreadId>>& waking_set) {
+    if (!waking_set.has_value()) {
+        return "-";
+    }
+    std::ostringstream out;
+    out << '{';
+    for (std::size_t index = 0; index < waking_set->size(); ++index) {
+        if (index != 0) {
+            out << ',';
+        }
+        out << waking_set->at(index);
+    }
+    out << '}';
+    return out.str();
+}
+
 std::string transition_label(const model::EffectiveScheduleStep& step, std::size_t occurrence) {
     std::ostringstream out;
     out << "t=" << step.endpoint.thread
         << "|pc=" << step.endpoint.action_index
         << "|occ=" << occurrence
+        << "|wake=" << broadcast_waking_set_key(step.broadcast_waking_set)
         << "|" << action_key(step.effective_action);
     return out.str();
 }
@@ -564,7 +583,9 @@ std::vector<std::string> transition_labels(const std::vector<model::EffectiveSch
     for (const auto& step : trace) {
         std::ostringstream base;
         base << step.endpoint.thread << '|' << step.endpoint.action_index
-             << '|' << action_key(step.effective_action);
+             << '|' << action_key(step.effective_action)
+             << "|wake="
+             << broadcast_waking_set_key(step.broadcast_waking_set);
         const std::size_t occurrence = occurrences[base.str()]++;
         labels.push_back(transition_label(step, occurrence));
     }

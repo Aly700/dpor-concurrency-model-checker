@@ -107,6 +107,17 @@ model::BlockedThread barrier_blocker(model::ThreadId thread, std::string barrier
     return blocked;
 }
 
+model::BlockedThread condition_blocker(model::ThreadId thread,
+                                       std::string condition,
+                                       std::string mutex) {
+    model::BlockedThread blocked;
+    blocked.thread = thread;
+    blocked.condition = std::move(condition);
+    blocked.mutex = std::move(mutex);
+    blocked.kind = model::BlockedOnKind::ConditionVariable;
+    return blocked;
+}
+
 model::BlockedThread rwlock_upgrade_blocker(model::ThreadId thread,
                                             std::string rwlock) {
     model::BlockedThread blocked;
@@ -603,6 +614,38 @@ const std::vector<GalleryCase>& gallery_cases() {
          {barrier_blocker(0, "phase"), barrier_blocker(1, "phase")},
          std::nullopt,
          true},
+        {"mesa_broadcast_consumers.dpor",
+         ExpectedVerdict::Clean,
+         12,
+         100000,
+         false},
+        {"mesa_broadcast_consumers_broken_single_signal.dpor",
+         ExpectedVerdict::Deadlock,
+         12,
+         100000,
+         true,
+         model::MemoryModel::SC,
+         std::nullopt,
+         false,
+         std::nullopt,
+         {condition_blocker(2, "work_available", "consumers")},
+         model::Schedule{{0, 0, std::nullopt},
+                         {0, 1, std::nullopt},
+                         {1, 0, std::nullopt},
+                         {1, 1, std::nullopt},
+                         {0, 2, std::nullopt},
+                         {1, 2, std::nullopt},
+                         {2, 0, std::nullopt},
+                         {2, 1, std::nullopt},
+                         {0, 3, std::nullopt},
+                         {2, 2, std::nullopt},
+                         {0, 4, std::nullopt},
+                         {0, 5, std::nullopt},
+                         {0, 6, std::nullopt},
+                         {1, 2, std::nullopt},
+                         {1, 3, std::nullopt},
+                         {1, 4, std::nullopt}},
+         true},
         {"peterson_tso.dpor", ExpectedVerdict::Race, 12, 300000, true, model::MemoryModel::TSO, true, true},
         {"peterson_tso_fenced.dpor", ExpectedVerdict::Race, 13, 300000, false, model::MemoryModel::TSO, false, true},
         // The unfenced PSO run reaches both race and assertion witnesses but
@@ -686,15 +729,17 @@ void verify_broken_variants_with_cli(const std::filesystem::path& binary,
                                      const std::filesystem::path& source_dir,
                                      const std::filesystem::path& work_dir) {
     for (const GalleryCase& test_case : gallery_cases()) {
-        if (test_case.broken) {
+        if (test_case.broken &&
+            test_case.file !=
+                "mesa_broadcast_consumers_broken_single_signal.dpor") {
             require_cli_round_trip(binary, source_dir, work_dir, test_case);
         }
     }
 }
 
-void verify_rwlock_upgrade_goldens(const std::filesystem::path& binary,
-                                   const std::filesystem::path& source_dir,
-                                   const std::filesystem::path& work_dir) {
+void verify_feature_goldens(const std::filesystem::path& binary,
+                            const std::filesystem::path& source_dir,
+                            const std::filesystem::path& work_dir) {
     struct GoldenCase {
         const char* program;
         const char* golden;
@@ -706,6 +751,12 @@ void verify_rwlock_upgrade_goldens(const std::filesystem::path& binary,
          0},
         {"rwlock_upgrade_double_deadlock.dpor",
          "rwlock_upgrade_double_deadlock_dpor.txt",
+         1},
+        {"mesa_broadcast_consumers.dpor",
+         "mesa_broadcast_consumers_dpor.txt",
+         0},
+        {"mesa_broadcast_consumers_broken_single_signal.dpor",
+         "mesa_broadcast_consumers_broken_single_signal_dpor.txt",
          1},
     };
 
@@ -751,7 +802,7 @@ int main(int argc, char** argv) {
 
     verify_gallery_with_library(source_dir);
     verify_broken_variants_with_cli(binary, source_dir, work_dir);
-    verify_rwlock_upgrade_goldens(binary, source_dir, work_dir);
+    verify_feature_goldens(binary, source_dir, work_dir);
 #ifdef DPOR_SYMMETRY_DIAGNOSIS
     symmetry_diagnosis::print_summaries(std::cout);
 #endif

@@ -72,9 +72,10 @@ remain useful isolation around the invariant-dense interpreter.
    fingerprint/history construction entirely. Without such a branch, ordinary
    source actions advance a normalized pc; the first `Wait` phase changes
    fingerprinted wait/ownership state and cannot return without a pc-advancing
-   signal; a non-last `BarrierWait` changes the fingerprinted arrival set and
-   cannot return without another participant's pc-advancing arrival releasing
-   the generation; and TSO/PSO flushes strictly drain finite pending buffers.
+   Signal or Broadcast; a non-last `BarrierWait` changes the fingerprinted
+   arrival set and cannot return without another participant's pc-advancing
+   arrival releasing the generation; and TSO/PSO flushes strictly drain finite
+   pending buffers.
    Therefore no complete behavioral state can repeat. Missing labels remain
    forward terminal errors. A future same-pc repeatable or pc-decreasing action
    must update this classifier and proof.
@@ -144,6 +145,21 @@ measure or fingerprint field. Under TSO/PSO a pending buffer can delay either
 conversion, but the only intervening internal steps strictly drain the finite
 buffer as already proved. Any path that returns to a conversion necessarily
 contains the self/backward branch that activates exact cycle history.
+
+### Classifier extension for condition-variable Broadcast
+
+ADR 0029 adds no same-pc transition. Every fired Broadcast is an ordinary
+source action that ticks and advances normalized pc exactly once, including
+when no waiter is parked. A nonempty Broadcast also changes the already
+fingerprinted sorted condition waiter set and per-thread Wait phases. Under TSO
+and PSO, pending buffers may delay Broadcast, but only the existing finite
+explicit drain transitions can intervene.
+
+The exact waking-set occurrence stamp is DPOR analysis metadata and must not
+enter behavioral fingerprints. Any path returning to the same Broadcast
+endpoint necessarily contains a self/backward control-flow edge, which already
+activates exact cycle history. The acyclic well-foundedness proof therefore
+extends without a new measure or fingerprint field.
 
 After these changes, the profiled three-thread sweep retained all 2,701,592
 branch state copies but reduced history copies and fingerprint bytes to zero.
@@ -235,7 +251,9 @@ an exploration change.
 - **Soundness:** history is scoped to one DFS path and exact cycle equality is
   unchanged wherever a cycle is possible; same-pc barrier arrivals satisfy the
   extended acyclic-classifier proof because arrivals are fingerprinted and
-  release advances every parked pc.
+  release advances every parked pc. Broadcast satisfies the same proof because
+  an empty fire advances pc and nonempty fan-out also changes fingerprinted
+  Wait state.
 - **Restore exactness:** every inserted key is erased once, with deterministic
   sampled comparison against full reference values in Debug builds.
 - **Replay and behavior:** schedules, order, verdicts, witness bytes, oracle

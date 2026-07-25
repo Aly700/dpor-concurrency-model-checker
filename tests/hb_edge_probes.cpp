@@ -13,6 +13,7 @@ static Action TL(std::string m, RegisterId destination) { Action x; x.kind = Act
 static Action U(std::string m) { Action x; x.kind = ActionKind::Unlock; x.mutex = std::move(m); return x; }
 static Action WAIT(std::string cv, std::string m) { Action x; x.kind = ActionKind::Wait; x.condition = std::move(cv); x.mutex = std::move(m); return x; }
 static Action SIG(std::string cv) { Action x; x.kind = ActionKind::Signal; x.condition = std::move(cv); return x; }
+static Action BCAST(std::string cv) { Action x; x.kind = ActionKind::Broadcast; x.condition = std::move(cv); return x; }
 static Action BW(std::string b, std::uint32_t parties) { Action x; x.kind = ActionKind::BarrierWait; x.barrier = std::move(b); x.parties = parties; return x; }
 static Action RL(std::string rw) { Action x; x.kind = ActionKind::RLock; x.rwlock = std::move(rw); return x; }
 static Action RU(std::string rw) { Action x; x.kind = ActionKind::RUnlock; x.rwlock = std::move(rw); return x; }
@@ -52,6 +53,31 @@ static void require_racy_replay(const Program& program,
     require_probe(reproduced.first_race.has_value() &&
                       *reproduced.first_race == *replay.first_race,
                   "negative HB probe did not replay identically");
+}
+
+static void require_cv_deadlock_replay(const Program& program,
+                                       const Schedule& schedule,
+                                       ThreadId waiter,
+                                       const std::string& condition,
+                                       const char* message) {
+    const ModelChecker checker(program);
+    const auto replay = checker.replay(schedule);
+    require_probe(replay.first_deadlock.has_value(), message);
+
+    bool found_waiter = false;
+    for (const BlockedThread& blocked : replay.first_deadlock->blocked_threads) {
+        found_waiter = found_waiter ||
+                       (blocked.thread == waiter &&
+                        blocked.kind == BlockedOnKind::ConditionVariable &&
+                        blocked.condition == condition);
+    }
+    require_probe(found_waiter,
+                  "lost Broadcast wakeup did not report the parked condition waiter");
+
+    const auto reproduced = checker.replay(replay.first_deadlock->schedule);
+    require_probe(reproduced.first_deadlock.has_value() &&
+                      *reproduced.first_deadlock == *replay.first_deadlock,
+                  "Broadcast lost-wakeup deadlock did not replay identically");
 }
 
 static void require_barrier_agreement(const Program& program, const char* message) {
@@ -102,6 +128,112 @@ static void check_agreement(const Program& p, const char* name) {
 }
 
 int main() {
+    {
+        // Each waiter joins the broadcaster at the wake point. The broadcaster
+        // deliberately does not hold m, so this join is the only HB path from
+        // its write to the post-wake read. Mirror the broadcaster across
+        // thread ids so deterministic iteration order cannot mask one
+        // directional vector-clock defect.
+        const Program low_to_high{{
+            {W("x"), BCAST("cv")},
+            {L("m"), WAIT("cv", "m"), R("x"), U("m")},
+        }};
+        require_clean_replay(
+            low_to_high,
+            {S(1, 0), S(1, 1), S(0, 0), S(0, 1),
+             S(1, 1), S(1, 2), S(1, 3)},
+            "Broadcast lost the low-to-high broadcaster-to-waiter wake edge");
+
+        const Program high_to_low{{
+            {L("m"), WAIT("cv", "m"), R("x"), U("m")},
+            {W("x"), BCAST("cv")},
+        }};
+        require_clean_replay(
+            high_to_low,
+            {S(0, 0), S(0, 1), S(1, 0), S(1, 1),
+             S(0, 1), S(0, 2), S(0, 3)},
+            "Broadcast lost the high-to-low broadcaster-to-waiter wake edge");
+    }
+    {
+        // A shared Broadcast fans one broadcaster edge out to both waiters;
+        // it must not order the waiters with each other. Both accesses occur
+        // after their mutex-protected reacquisition sections, so the ordinary
+        // mutex handoff also cannot order the first access before the second.
+        // Mirror the writer across waiter ids to guard both clock directions.
+        const Program low_to_high{{
+            {L("m"), WAIT("cv", "m"), U("m"), W("x")},
+            {L("m"), WAIT("cv", "m"), U("m"), R("x")},
+            {BCAST("cv")},
+        }};
+        require_racy_replay(
+            low_to_high,
+            {S(0, 0), S(0, 1), S(1, 0), S(1, 1), S(2, 0),
+             S(0, 1), S(0, 2), S(0, 3),
+             S(1, 1), S(1, 2), S(1, 3)},
+            "Broadcast introduced a low-to-high waiter-waiter edge");
+
+        const Program high_to_low{{
+            {L("m"), WAIT("cv", "m"), U("m"), R("x")},
+            {L("m"), WAIT("cv", "m"), U("m"), W("x")},
+            {BCAST("cv")},
+        }};
+        require_racy_replay(
+            high_to_low,
+            {S(0, 0), S(0, 1), S(1, 0), S(1, 1), S(2, 0),
+             S(1, 1), S(1, 2), S(1, 3),
+             S(0, 1), S(0, 2), S(0, 3)},
+            "Broadcast introduced a high-to-low waiter-waiter edge");
+    }
+    {
+        // An empty Broadcast stores neither a permit nor a clock. A later
+        // Signal wakes the eventual waiter, but it cannot carry the earlier
+        // broadcaster's write into that waiter's read.
+        const Program no_clock_trace{{
+            {W("x"), BCAST("cv")},
+            {L("m"), WAIT("cv", "m"), R("x"), U("m")},
+            {SIG("cv")},
+        }};
+        require_racy_replay(
+            no_clock_trace,
+            {S(0, 0), S(0, 1), S(1, 0), S(1, 1),
+             S(2, 0), S(1, 1), S(1, 2), S(1, 3)},
+            "empty Broadcast leaked a clock into a future waiter");
+
+        const Program no_clock_trace_mirrored{{
+            {L("m"), WAIT("cv", "m"), R("x"), U("m")},
+            {SIG("cv")},
+            {W("x"), BCAST("cv")},
+        }};
+        require_racy_replay(
+            no_clock_trace_mirrored,
+            {S(2, 0), S(2, 1), S(0, 0), S(0, 1),
+             S(1, 0), S(0, 1), S(0, 2), S(0, 3)},
+            "empty Broadcast leaked a mirrored clock into a future waiter");
+
+        // The same no-permit rule leaves a waiter issued after an empty
+        // Broadcast parked forever.
+        const Program lost_wakeup{{
+            {BCAST("cv")},
+            {L("m"), WAIT("cv", "m")},
+        }};
+        require_cv_deadlock_replay(
+            lost_wakeup,
+            {S(0, 0), S(1, 0), S(1, 1)},
+            1,
+            "cv",
+            "empty Broadcast queued a permit for a future waiter");
+
+        const Program lost_wakeup_mirrored{{
+            {L("m"), WAIT("cv", "m")},
+            {BCAST("cv")},
+        }};
+        require_cv_deadlock_replay(
+            lost_wakeup_mirrored,
+            {S(1, 0), S(0, 0), S(0, 1)},
+            0,
+            "cv",
+            "mirrored empty Broadcast queued a permit for a future waiter");
+    }
     {
         // Wake-edge isolation: T1 signals WITHOUT holding the mutex, so the
         // only happens-before path from T1's unprotected write to T0's

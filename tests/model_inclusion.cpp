@@ -123,6 +123,28 @@ model::Action sem_wait(std::string semaphore) {
     return semaphore_action(model::ActionKind::SemWait, std::move(semaphore));
 }
 
+model::Action wait(std::string condition, std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Wait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action signal(std::string condition) {
+    model::Action action;
+    action.kind = model::ActionKind::Signal;
+    action.condition = std::move(condition);
+    return action;
+}
+
+model::Action broadcast(std::string condition) {
+    model::Action action;
+    action.kind = model::ActionKind::Broadcast;
+    action.condition = std::move(condition);
+    return action;
+}
+
 model::Action barrier_wait(std::string barrier, std::uint32_t parties) {
     model::Action action;
     action.kind = model::ActionKind::BarrierWait;
@@ -180,7 +202,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 22> kEnumeratedActions{
+const std::array<model::Action, 25> kEnumeratedActions{
     read("x"),
     write("x"),
     write("y"),
@@ -203,9 +225,12 @@ const std::array<model::Action, 22> kEnumeratedActions{
     sem_post("sem"),
     sem_wait("sem"),
     barrier_wait("bar", 2),
+    wait("cv", "m"),
+    signal("cv"),
+    broadcast("cv"),
 };
 
-const std::array<model::Action, 26> kFuzzActions{
+const std::array<model::Action, 29> kFuzzActions{
     read("x", 0),
     read("y", 1),
     write("x", 1),
@@ -232,6 +257,9 @@ const std::array<model::Action, 26> kFuzzActions{
     sem_post("sem"),
     sem_wait("sem"),
     barrier_wait("bar", 2),
+    wait("cv", "m"),
+    signal("cv"),
+    broadcast("cv"),
 };
 
 using BugVector = std::array<bool, static_cast<std::size_t>(BugKind::Count)>;
@@ -278,6 +306,9 @@ std::string action_text(const model::Action& action) {
     }
     if (!action.mutex.empty()) {
         out << " mutex=" << action.mutex;
+    }
+    if (!action.condition.empty()) {
+        out << " condition=" << action.condition;
     }
     if (!action.rwlock.empty()) {
         out << " rwlock=" << action.rwlock;
@@ -356,6 +387,9 @@ struct InclusionStats {
     std::size_t conversion_attempted{0};
     std::size_t conversion_compared{0};
     std::size_t conversion_skipped{0};
+    std::size_t broadcast_attempted{0};
+    std::size_t broadcast_compared{0};
+    std::size_t broadcast_skipped{0};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> sc_antecedents{};
     std::array<std::size_t, static_cast<std::size_t>(BugKind::Count)> tso_antecedents{};
 };
@@ -370,6 +404,7 @@ void compare_program(const model::Program& program,
     const bool barrier_gate = std::string(source) == "barrier";
     const bool try_lock_gate = std::string(source) == "try-lock";
     const bool conversion_gate = std::string(source) == "rwlock-conversion";
+    const bool broadcast_gate = std::string(source) == "broadcast";
     if (barrier_gate) {
         ++stats.barrier_attempted;
     }
@@ -378,6 +413,9 @@ void compare_program(const model::Program& program,
     }
     if (conversion_gate) {
         ++stats.conversion_attempted;
+    }
+    if (broadcast_gate) {
+        ++stats.broadcast_attempted;
     }
 
     std::array<model::CheckResult, 3> results;
@@ -397,6 +435,9 @@ void compare_program(const model::Program& program,
             }
             if (conversion_gate) {
                 ++stats.conversion_skipped;
+            }
+            if (broadcast_gate) {
+                ++stats.broadcast_skipped;
             }
             return;
         }
@@ -443,6 +484,9 @@ void compare_program(const model::Program& program,
     }
     if (conversion_gate) {
         ++stats.conversion_compared;
+    }
+    if (broadcast_gate) {
+        ++stats.broadcast_compared;
     }
     if (std::string(source) == "enumerated") {
         ++stats.enumerated;
@@ -565,10 +609,58 @@ std::vector<model::Program> rwlock_conversion_programs() {
     };
 }
 
+std::vector<model::Program> broadcast_programs() {
+    return {
+        // An empty Broadcast stores no permit: if it fires first, the later
+        // waiter remains parked and every memory model reports the deadlock.
+        model::Program{{{broadcast("cv")},
+                        {lock("m"), wait("cv", "m")}}},
+        // A buffered publication must drain before Broadcast, and a parked
+        // waiter joins the broadcaster clock before its post-wake read.
+        model::Program{{{lock("m"), wait("cv", "m"),
+                         read("published", 0), unlock("m")},
+                        {write("published", 1), broadcast("cv")}}},
+        // Taking both mutexes proves both waits reached their parked phase
+        // before the single Broadcast fans out to the complete waking set.
+        model::Program{{{lock("m0"), wait("cv", "m0"), unlock("m0")},
+                        {lock("m1"), wait("cv", "m1"), unlock("m1")},
+                        {lock("m0"), lock("m1"), broadcast("cv"),
+                         unlock("m1"), unlock("m0")}}},
+        // Broadcast adds no waiter-to-waiter edge. These unprotected
+        // post-critical-section accesses therefore retain their race.
+        model::Program{{{lock("m0"), wait("cv", "m0"),
+                         unlock("m0"), write("x", 1)},
+                        {lock("m1"), wait("cv", "m1"),
+                         unlock("m1"), read("x", 0)},
+                        {broadcast("cv")}}},
+    };
+}
+
 } // namespace
 
 int main() {
     assert_try_lock_action_text();
+    const auto require_condition_tail = [](const auto& actions,
+                                           const char* alphabet_name) {
+        const std::size_t first = actions.size() - 3;
+        const std::array<model::ActionKind, 3> kinds{
+            model::ActionKind::Wait,
+            model::ActionKind::Signal,
+            model::ActionKind::Broadcast,
+        };
+        for (std::size_t index = 0; index < kinds.size(); ++index) {
+            const model::Action& action = actions.at(first + index);
+            if (action.kind != kinds.at(index) || action.condition != "cv" ||
+                (action.kind == model::ActionKind::Wait &&
+                 action.mutex != "m")) {
+                throw std::runtime_error(
+                    std::string("model inclusion ") + alphabet_name +
+                    " alphabet must contain Wait/Signal/Broadcast on cv");
+            }
+        }
+    };
+    require_condition_tail(kEnumeratedActions, "enumerated");
+    require_condition_tail(kFuzzActions, "fuzz");
     InclusionStats stats;
     std::size_t program_index = 0;
 
@@ -609,6 +701,9 @@ int main() {
         compare_program(
             program, "rwlock-conversion", program_index++, stats);
     }
+    for (const model::Program& program : broadcast_programs()) {
+        compare_program(program, "broadcast", program_index++, stats);
+    }
 
     if (stats.skipped != 0) {
         throw std::runtime_error("model inclusion corpus must have zero skips");
@@ -628,6 +723,12 @@ int main() {
         stats.conversion_skipped != 0) {
         throw std::runtime_error(
             "model inclusion rwlock conversion corpus was skipped");
+    }
+    if (stats.broadcast_attempted != broadcast_programs().size() ||
+        stats.broadcast_compared != stats.broadcast_attempted ||
+        stats.broadcast_skipped != 0) {
+        throw std::runtime_error(
+            "model inclusion Broadcast corpus was skipped");
     }
     for (std::size_t bug = 0; bug < static_cast<std::size_t>(BugKind::Count); ++bug) {
         if (stats.sc_antecedents[bug] == 0 || stats.tso_antecedents[bug] == 0) {
@@ -651,6 +752,9 @@ int main() {
               << " conversion_attempted=" << stats.conversion_attempted
               << " conversion_compared=" << stats.conversion_compared
               << " conversion_skipped=" << stats.conversion_skipped
+              << " broadcast_attempted=" << stats.broadcast_attempted
+              << " broadcast_compared=" << stats.broadcast_compared
+              << " broadcast_skipped=" << stats.broadcast_skipped
               << " bug_kinds_exercised=5"
               << " seed=0x7b83d52fa9614c0d\n";
     return 0;

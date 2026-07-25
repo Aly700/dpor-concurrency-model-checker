@@ -1000,6 +1000,175 @@ void assert_barrier_parser_is_strict_and_namespace_is_distinct(
     }
 }
 
+void assert_broadcast_syntax_and_consumer_differential(
+    const std::filesystem::path& binary,
+    const std::filesystem::path& work_dir) {
+    // An empty Broadcast is still a fired, canonically rendered source
+    // action. The following assertion makes its trace available for an exact
+    // check/replay spelling check without manufacturing a condition permit.
+    assert_check_replay_byte_identity(
+        binary,
+        work_dir,
+        "cli_broadcast_spelling",
+        "thread:\n"
+        "  broadcast work_available\n"
+        "  assert r0\n",
+        "assertion",
+        {"broadcast work_available"});
+
+    struct ParseCase {
+        std::string stem;
+        std::string action;
+        std::string expected;
+    };
+    const std::vector<ParseCase> parse_cases = {
+        {"uppercase", "Broadcast work_available", "unknown keyword 'Broadcast'"},
+        {"missing", "broadcast", "keyword 'broadcast' expects 1 operand"},
+        {"extra",
+         "broadcast work_available extra",
+         "keyword 'broadcast' expects 1 operand"},
+    };
+    for (const ParseCase& parse_case : parse_cases) {
+        const auto program_path =
+            work_dir / ("cli_broadcast_" + parse_case.stem + ".dpor");
+        write_file(program_path, "thread:\n  " + parse_case.action + "\n");
+        const auto result = run_command(
+            binary,
+            {"check", program_path.string()},
+            work_dir / ("cli_broadcast_" + parse_case.stem + ".out"),
+            work_dir / ("cli_broadcast_" + parse_case.stem + ".err"));
+        require_cli(result.exit_code == 2,
+                    parse_case.stem + " Broadcast syntax should be rejected");
+        require_cli(result.stdout_text.empty(),
+                    parse_case.stem + " Broadcast syntax wrote stdout");
+        require_cli(result.stderr_text.find("line 2") != std::string::npos,
+                    parse_case.stem + " Broadcast syntax omitted its line");
+        require_cli(result.stderr_text.find(parse_case.expected) !=
+                        std::string::npos,
+                    parse_case.stem + " Broadcast diagnostic mismatch: " +
+                        result.stderr_text);
+    }
+
+    // The differential uses two Signals without depending on a lucky prefix:
+    // the first fires before either worker is spawned and must leave no
+    // permit, while the readiness/mutex handshake forces both workers to park
+    // before the final wake. One Broadcast wakes that exact set; two Signals
+    // with the first lost leave the higher-id waiter asleep.
+    const auto two_signal_correct =
+        work_dir / "cli_broadcast_two_signal_correct.dpor";
+    const auto two_signal_broken =
+        work_dir / "cli_broadcast_two_signal_broken.dpor";
+    write_file(
+        two_signal_correct,
+        "thread:\n"
+        "  spawn 1\n"
+        "  spawn 2\n"
+        "  sem_wait ready\n"
+        "  sem_wait ready\n"
+        "  lock m\n"
+        "  unlock m\n"
+        "  broadcast cv\n"
+        "\n"
+        "thread:\n"
+        "  lock m\n"
+        "  sem_post ready\n"
+        "  wait cv m\n"
+        "  unlock m\n"
+        "\n"
+        "thread:\n"
+        "  lock m\n"
+        "  sem_post ready\n"
+        "  wait cv m\n"
+        "  unlock m\n");
+    write_file(
+        two_signal_broken,
+        "thread:\n"
+        "  signal cv\n"
+        "  spawn 1\n"
+        "  spawn 2\n"
+        "  sem_wait ready\n"
+        "  sem_wait ready\n"
+        "  lock m\n"
+        "  unlock m\n"
+        "  signal cv\n"
+        "\n"
+        "thread:\n"
+        "  lock m\n"
+        "  sem_post ready\n"
+        "  wait cv m\n"
+        "  unlock m\n"
+        "\n"
+        "thread:\n"
+        "  lock m\n"
+        "  sem_post ready\n"
+        "  wait cv m\n"
+        "  unlock m\n");
+
+    struct DifferentialCount {
+        const char* explorer;
+        std::size_t clean_count;
+        std::size_t broken_count;
+    };
+    const std::vector<DifferentialCount> differential_counts = {
+        {"dpor", 30, 15},
+    };
+    for (const DifferentialCount& expected : differential_counts) {
+        const std::string explorer = expected.explorer;
+        const auto clean = run_command(
+            binary,
+            {"check",
+             two_signal_correct.string(),
+             "--explorer",
+             explorer,
+             "--step-bound",
+             "30",
+             "--max-schedules",
+             "100000"},
+            work_dir / ("cli_two_signal_correct_" + explorer + ".out"),
+            work_dir / ("cli_two_signal_correct_" + explorer + ".err"));
+        require_cli(clean.exit_code == 0 && clean.stderr_text.empty() &&
+                        first_line(clean.stdout_text) == "verdict: clean",
+                    "two-Signal differential Broadcast side was not clean under " +
+                        explorer);
+        require_cli(
+            clean.stdout_text.find(
+                "schedules_explored: " +
+                std::to_string(expected.clean_count) + "\n") !=
+                std::string::npos,
+            "two-Signal differential Broadcast count changed under " +
+                explorer);
+
+        const auto broken = run_command(
+            binary,
+            {"check",
+             two_signal_broken.string(),
+             "--explorer",
+             explorer,
+             "--step-bound",
+             "30",
+             "--max-schedules",
+             "100000"},
+            work_dir / ("cli_two_signal_broken_" + explorer + ".out"),
+            work_dir / ("cli_two_signal_broken_" + explorer + ".err"));
+        require_cli(
+            broken.exit_code == 1 && broken.stderr_text.empty() &&
+                first_line(broken.stdout_text) == "verdict: deadlock",
+            "two-Signal differential lost its deadlock under " + explorer);
+        require_cli(
+            broken.stdout_text.find(
+                "schedules_explored: " +
+                std::to_string(expected.broken_count) + "\n") !=
+                std::string::npos,
+            "two-Signal differential deadlock count changed under " +
+                explorer);
+        require_cli(
+            broken.stdout_text.find("thread 2: condition cv mutex m") !=
+                std::string::npos,
+            "two-Signal differential reported the wrong parked waiter under " +
+                explorer);
+    }
+}
+
 void assert_try_lock_syntax_and_witnesses_round_trip_byte_identically(
     const std::filesystem::path& binary,
     const std::filesystem::path& work_dir) {
@@ -1144,6 +1313,7 @@ int main(int argc, char** argv) {
     assert_semaphore_parser_is_strict_and_namespace_is_distinct(binary, work_dir);
     assert_barrier_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
     assert_barrier_parser_is_strict_and_namespace_is_distinct(binary, work_dir);
+    assert_broadcast_syntax_and_consumer_differential(binary, work_dir);
     assert_try_lock_syntax_and_witnesses_round_trip_byte_identically(binary, work_dir);
     assert_try_lock_parser_is_strict_and_uses_the_mutex_namespace(binary, work_dir);
     return 0;

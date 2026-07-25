@@ -73,6 +73,9 @@ target_link_libraries(minimize_tests PRIVATE model_checker)
 add_executable(condvar_tests tests/condvar.cpp)
 target_link_libraries(condvar_tests PRIVATE model_checker)
 
+add_executable(condvar_broadcast_tests tests/condvar_broadcast.cpp)
+target_link_libraries(condvar_broadcast_tests PRIVATE model_checker)
+
 add_executable(rwlock_tests tests/rwlock_tests.cpp)
 target_link_libraries(rwlock_tests PRIVATE model_checker)
 
@@ -234,6 +237,7 @@ add_test(NAME dpor_optimality COMMAND dpor_optimality)
 add_test(NAME dpor_oracle_3threads COMMAND dpor_oracle_3threads)
 add_test(NAME minimize_tests COMMAND minimize_tests)
 add_test(NAME condvar_tests COMMAND condvar_tests)
+add_test(NAME condvar_broadcast_tests COMMAND condvar_broadcast_tests)
 add_test(NAME rwlock_tests COMMAND rwlock_tests)
 add_test(NAME rwlock_upgrade_tests COMMAND rwlock_upgrade_tests)
 add_test(NAME semaphore_tests COMMAND semaphore_tests)

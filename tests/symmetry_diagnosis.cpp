@@ -227,6 +227,23 @@ std::string action_key(const model::Action& action) {
     return out.str();
 }
 
+std::string broadcast_waking_set_key(
+    const std::optional<std::vector<model::ThreadId>>& waking_set) {
+    if (!waking_set.has_value()) {
+        return "-";
+    }
+    std::ostringstream out;
+    out << '{';
+    for (std::size_t index = 0; index < waking_set->size(); ++index) {
+        if (index != 0) {
+            out << ',';
+        }
+        out << waking_set->at(index);
+    }
+    out << '}';
+    return out.str();
+}
+
 bool same_thread_steps_ordered(model::MemoryModel memory_model,
                                const model::EffectiveScheduleStep& lhs,
                                const model::EffectiveScheduleStep& rhs) {
@@ -271,7 +288,9 @@ std::vector<std::string> transition_labels(
         } else {
             base << '-';
         }
-        base << '|' << action_key(effective);
+        base << '|' << action_key(effective)
+             << "|wake="
+             << broadcast_waking_set_key(step.broadcast_waking_set);
         const std::size_t occurrence = occurrences[base.str()]++;
 
         std::ostringstream label;
@@ -283,7 +302,10 @@ std::vector<std::string> transition_labels(
         } else {
             label << '-';
         }
-        label << "|occ=" << occurrence << '|' << action_key(effective);
+        label << "|occ=" << occurrence
+              << "|wake="
+              << broadcast_waking_set_key(step.broadcast_waking_set)
+              << '|' << action_key(effective);
         labels.push_back(label.str());
     }
     return labels;

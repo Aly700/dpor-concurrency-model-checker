@@ -109,6 +109,10 @@ struct CheckResult {
 struct EffectiveScheduleStep {
     ScheduleStep endpoint;
     Action effective_action;
+    // Verification-only dynamic occurrence identity. nullopt means that the
+    // action is not Broadcast; an engaged vector is the exact sorted set of
+    // waiters parked when Broadcast fired, including the engaged empty set.
+    std::optional<std::vector<ThreadId>> broadcast_waking_set;
 
     bool operator==(const EffectiveScheduleStep&) const = default;
 };

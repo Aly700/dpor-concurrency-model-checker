@@ -20,7 +20,8 @@
   `independent()` predicate, and checker-local transition refinements for
   per-name reader-writer-lock static guards, enabled valid `Join` operations,
   failed same-mutex `TryLock` pairs under a third-party owner, and
-  generation-stamped barrier arrivals.
+  generation-stamped barrier arrivals. Exact waking-set-stamped Broadcast
+  occurrences additionally protect cyclic historical transition matching.
 - `ModelChecker::replay` re-executes a deterministic schedule under the same
   step bound and rejects disabled, out-of-range, or post-terminal steps with a
   clear error.
@@ -60,8 +61,9 @@ The checker interprets a program as a small-step state machine:
   modeled atomic operations. The model supports acquire loads, release stores,
   acquire-release RMWs, and SC-per-location; it does not model relaxed atomics.
 - `condition_waiters[cv]` records sleeping waiters in deterministic thread-id
-  order. Signal wakes the lowest-numbered waiter; broadcast wakes all current
-  waiters. No permits are queued when the set is empty.
+  order. Signal wakes the lowest-numbered parked waiter; Broadcast atomically
+  snapshots and wakes the complete current set. Neither queues a permit when
+  the set is empty.
 - `thread_clock[tid]` records each thread's happens-before frontier.
 - `started[tid]` records whether a static thread body is alive in the current
   execution. Threads targeted by valid `Spawn` actions start disabled and
@@ -129,7 +131,25 @@ Under TSO and PSO, atomics, CAS, mutex/condition-variable operations (including
 waits, spawn, join, and `Fence` are ordered points: they are disabled until all
 of the executing thread's buffers are empty. A nonempty buffer always enables
 a flush for that thread, including after the source pc is done, so buffered
-completion is not deadlock.
+completion is not deadlock. In particular, `Wait`, `Signal`, and `Broadcast`
+wait for explicit drains and never flush a buffer internally.
+
+## Mesa Condition Variables
+
+The first phase of `Wait(cv, mutex)` atomically releases the caller's mutex and
+adds the caller to the sorted parked set for `cv`, while retaining the same
+source endpoint. `Signal(cv)` removes and wakes the lowest-numbered parked
+thread. `Broadcast(cv)` snapshots and removes the complete sorted parked set
+at its firing point and moves each member to `wait_phase = reacquiring`.
+Neither wake action grants mutex ownership: every receiver later executes the
+existing second Wait phase and contends through ordinary mutex enabledness and
+dependence before advancing its pc.
+
+An empty Broadcast advances only the broadcaster's pc and clock. It stores no
+condition permit, clock, or history, so a later Wait still parks and can
+produce the ordinary condition-variable deadlock. The effective Broadcast
+occurrence nevertheless records an engaged exact empty waking set for DPOR;
+that analysis identity is distinct from a non-Broadcast's absent component.
 
 ## Cyclic Barriers
 
@@ -194,7 +214,12 @@ join after becoming owner. A failed `TryLock` performs no join at all: neither
 the stored release clock nor the current owner's live clock is acquired.
 `Wait` first performs the same release update as
 `Unlock`, then its woken second step performs the same acquire join as `Lock`.
-`Signal` and `Broadcast` join the signaler's clock into each woken waiter.
+`Signal` joins its post-tick clock into the selected waiter.
+`Broadcast` snapshots every currently parked waiter and independently joins
+the same broadcaster post-tick clock into each receiver. Waking one receiver
+does not change the clock used for another, so Broadcast itself creates no
+waiter-waiter edge. An empty snapshot performs no join and retains no clock
+that a future Wait or Signal could acquire.
 `RLock` joins only the named rwlock's last writer-release clock. `RUnlock`
 joins its post-tick clock into the rwlock's reader-release accumulator.
 `WLock` joins both the last writer release and every accumulated reader
@@ -290,14 +315,23 @@ pc without changing ownership. The existing state therefore distinguishes all
 program-observable conversion outcomes. Rwlock release clocks remain excluded
 analysis state under the established lasso policy.
 
+Broadcast likewise adds no behavioral-fingerprint field. Its exact waking-set
+stamp is DPOR analysis metadata. A nonempty Broadcast changes the already
+fingerprinted `condition_waiters` and per-thread Wait phases; every fired
+Broadcast, including an empty one, advances normalized pc. The existing state
+therefore distinguishes its program-observable outcomes while excluding wake
+clocks and occurrence metadata.
+
 Programs without a normalized self/backward `BranchNonzero` do not allocate or
 construct cycle history. Every ordinary source step advances a normalized pc;
 `TryLock` does so on both outcomes, with its result already represented by the
 existing register array and successful ownership by `mutex_owner`; a blocked
 `Upgrade` does not fire, while every fired `Upgrade` and `Downgrade` advances
-pc exactly once;
+pc exactly once; every fired `Broadcast`, including an empty one, also advances
+pc exactly once, and nonempty fan-out changes fingerprinted waiter state;
 the exceptional first `Wait` phase changes the fingerprinted wait/ownership
-state and needs a later pc-advancing signal before it can resume; a non-last
+state and needs a later pc-advancing Signal or Broadcast before it can resume;
+a non-last
 `BarrierWait` strictly grows the fingerprinted arrival set and disables that
 participant until another participant's pc-advancing arrival releases the
 generation; and TSO/PSO flush-only progress strictly drains finite buffers.
@@ -354,7 +388,9 @@ and woken mutex reacquire are reduced as different transition semantics while
 source and TSO schedule steps remain `(thread, action_index)` pairs. Barrier
 occurrences additionally carry the current generation ordinal internally,
 because a cyclic program can execute the same `(thread, action_index)` in more
-than one generation.
+than one generation. Broadcast occurrences carry an exact sorted waking set:
+the component is absent for non-Broadcast actions, engaged empty for an empty
+Broadcast, and engaged with every parked receiver for a nonempty Broadcast.
 
 TSO and PSO flushes use the reserved action index `kFlushActionIndex` in those
 same sets. TSO keeps the original two-number endpoint; PSO adds the canonical
@@ -395,6 +431,18 @@ are never executed, and explored choices are added to the node sleep set for
 later alternatives. Modeled-error endpoints still clear pruning at that node and
 add every enabled sibling, and sleep-blocked prefixes still apply the disabled
 fallback before being pruned.
+
+Same-condition `Wait`, `Signal`, and `Broadcast` remain pairwise dependent;
+different condition names commute subject to the existing cross-cutting rules.
+There is no empty-Broadcast/empty-Broadcast exception. The complete waking-set
+identity is compared at enabled and executed records, node matching,
+backtracking and persistent closure, disabled repair, checker-local
+independence, and sleep inheritance. Conservative dependence already prevents
+a same-condition parked-set mutation from crossing an inherited sleep edge.
+The exact stamp separately prevents a later cyclic Broadcast with a different
+fan-out from falsely matching an earlier historical occurrence. Multi-wake
+reacquisition then uses ordinary same-mutex dependence. ADR 0029 records the
+mutation discriminator and the boundary-by-boundary audit.
 
 Race, error, and assertion detection still run through the same interpreter as
 naive exploration, and every DPOR report is expected to replay identically.
@@ -528,20 +576,22 @@ because truncation can legitimately hide a later endpoint. Fuzz compares all
 three lasso classes and runs a fixed uncapped mutex-blink discriminator even
 when the seeded corpus contains no strong-class witness.
 
-The Upgrade/Downgrade-widened acceptance run checked 22,736 two-thread programs
+The Broadcast-widened acceptance run checked 22,736 two-thread programs
 (59,119 naive versus 34,419 DPOR schedules), 65,547 three-thread programs
-(789,230 naive versus 331,415 DPOR schedules), 11,365 TSO programs (65,287
-versus 20,781), and 6,246 PSO programs (41,875 versus 11,128). Every oracle
+(789,230 naive versus 331,445 DPOR schedules), 11,740 TSO programs (59,688
+versus 19,517), and 6,621 PSO programs (31,441 versus 10,622). Every oracle
 observed fair, strongly-unfair, and weakly-unfair cycle existence under both
 naive and DPOR exploration. Both buffered oracles
-enforce zero capped skips. Their action alphabets were respectively 27, 25, 19,
-and 19. The fixed fuzz run generated 892 `BarrierWait`, 1,612 `TryLock`, 317
-`Upgrade`, and 363 `Downgrade` actions; 2,978 of its 3,000 programs were
-compared and 22 capped programs were reported. Cross-model inclusion compared
-all 1,731 programs with zero global skips, including the dedicated four-program
-BarrierWait, TryLock, and rwlock-conversion corpora at 4/4/0. The unchanged
-optimality corpora retain byte-identical meter ratios SC 1.067, TSO 1.152, and
-PSO 1.154.
+enforce zero capped skips. Their action alphabets are respectively 27, 25, 22,
+and 22. The fixed fuzz run compares 2,978 of 3,000 programs and reports 22
+capped programs; it generates 762 Broadcast actions and compares 746
+(737/721 in the mostly-well-formed lane and 25/25 in the adversarial lane).
+Cross-model inclusion compares all 1,741 programs and runs 17,410 checks with
+zero global skips; its dedicated Broadcast corpus is 4 attempted / 4 compared
+/ 0 skipped, and its enumerated/fuzz alphabets contain 25/29 actions. The
+unchanged optimality corpora retain byte-identical meter ratios SC 1.067, TSO
+1.152, and PSO 1.154. The final Campaign 15 Release and deterministic
+restore-assert Debug builds both pass 29/29 suites.
 
 The optimality meter is the fourth gate. Its SC corpus collects all naive
 maximal schedules for small non-error/non-assertion programs, replays them into

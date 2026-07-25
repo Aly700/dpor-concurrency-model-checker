@@ -1,0 +1,25 @@
+# This is the same Spawn/readiness/mutex protocol as the paired correct
+# example, except that the producer uses one Signal. Both consumers are parked
+# before it fires, so exactly one wakes and the other remains asleep forever.
+thread:
+  spawn 1
+  spawn 2
+  sem_wait ready
+  sem_wait ready
+  lock consumers
+  unlock consumers
+  signal work_available
+
+thread:
+  lock consumers
+  sem_post ready
+  wait work_available consumers
+  write item0 1
+  unlock consumers
+
+thread:
+  lock consumers
+  sem_post ready
+  wait work_available consumers
+  write item1 1
+  unlock consumers

@@ -20,6 +20,7 @@ treated as findings, not as a reason to adjust core semantics.
 | Reader-writer lock conversion (`rwlock_upgrade_correct.dpor`) | A reader inspects shared state, atomically upgrades before writing, then downgrades while preserving publication | Clean; 8 DPOR schedules | `rwlock_upgrade_double_deadlock.dpor` synchronizes two retained readers before both upgrade, producing the exact two-blocker deadlock |
 | Dining philosophers (`dining_philosophers.dpor`) | A total fork order lets all three philosophers finish | Clean | `dining_philosophers_broken.dpor` acquires every left fork first, exposing a three-thread circular-wait deadlock |
 | Cyclic barrier phases (`cyclic_barrier_phases.dpor`) | Every worker sees all publications made before each three-party phase boundary, and the same barrier resets for generation two | Clean | `cyclic_barrier_phases_broken_missing_worker.dpor` omits one worker from the final phase, leaving the other two waiting forever |
+| Mesa condition-variable consumers (`mesa_broadcast_consumers.dpor`) | A readiness handshake forces both consumers to park before one Broadcast wakes the complete waiter set | Clean | `mesa_broadcast_consumers_broken_single_signal.dpor` wakes only one parked consumer, leaving the other in a replayable deadlock |
 
 ### SC/TSO/PSO verdicts
 
@@ -82,3 +83,9 @@ fences drain every pending address before the entry checks.
   clean model's read→upgrade→write→downgrade sequence remains race-free against
   a transient peer reader through the reader-epoch and writer-publication HB
   edges. Both CLI outputs are compared byte-for-byte with stored goldens.
+- The Mesa Broadcast pair uses Spawn, semaphore announcements, and one shared
+  mutex to force both `wait` first phases to finish before the producer can
+  wake the condition variable. Broadcast wakes both parked consumers; the
+  paired single-Signal model wakes the lowest-id waiter and stores no permit
+  for the other. Both CLI outputs are compared byte-for-byte with stored
+  goldens.

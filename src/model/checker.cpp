@@ -14,6 +14,7 @@
 #include <deque>
 #include <limits>
 #include <map>
+#include <memory>
 #include <optional>
 #include <set>
 #include <sstream>
@@ -565,10 +566,29 @@ struct StepReport {
     std::optional<ThreadId> spawned_thread;
 };
 
+struct TransitionOccurrenceIdentity {
+    std::optional<std::uint64_t> barrier_generation;
+    // The immutable shared value keeps the common non-Broadcast occurrence
+    // compact and avoids repeatedly deep-copying a multi-wake set between the
+    // enabled map and executed trace. Equality remains collision-free: it
+    // compares the exact sorted vectors, never pointer identity or a hash.
+    std::shared_ptr<const std::vector<ThreadId>> broadcast_waking_set;
+
+    bool operator==(const TransitionOccurrenceIdentity& other) const {
+        if (barrier_generation != other.barrier_generation ||
+            static_cast<bool>(broadcast_waking_set) !=
+                static_cast<bool>(other.broadcast_waking_set)) {
+            return false;
+        }
+        return !broadcast_waking_set ||
+               *broadcast_waking_set == *other.broadcast_waking_set;
+    }
+};
+
 struct EnabledTransition {
     ScheduleStep endpoint;
     Action effective_action;
-    std::optional<std::uint64_t> barrier_generation;
+    TransitionOccurrenceIdentity occurrence;
 };
 
 struct DporNode {
@@ -632,7 +652,7 @@ struct ExecutedTransition {
     ScheduleStep endpoint;
     VectorClock clock;
     std::optional<ThreadId> spawned_thread;
-    std::optional<std::uint64_t> barrier_generation;
+    TransitionOccurrenceIdentity occurrence;
 };
 
 std::vector<bool> initially_started_threads(const Program& program) {
@@ -1162,15 +1182,33 @@ Action effective_action_for_step(const Program& program,
     return effective_next_action(program, state, step.thread);
 }
 
-std::optional<std::uint64_t> barrier_generation_for(
+std::optional<std::vector<ThreadId>> broadcast_waking_set_for(
     const ExecutionState& state,
     const Action& action) {
-    if (action.kind != ActionKind::BarrierWait) {
+    if (action.kind != ActionKind::Broadcast) {
         return std::nullopt;
     }
-    const auto barrier = state.barriers.find(action.barrier);
-    assert(barrier != state.barriers.end());
-    return barrier->second.generation;
+    const auto waiters = state.condition_waiters.find(action.condition);
+    return waiters == state.condition_waiters.end()
+               ? std::vector<ThreadId>{}
+               : waiters->second;
+}
+
+TransitionOccurrenceIdentity transition_occurrence_identity_for(
+    const ExecutionState& state,
+    const Action& action) {
+    TransitionOccurrenceIdentity identity;
+    if (action.kind == ActionKind::BarrierWait) {
+        const auto barrier = state.barriers.find(action.barrier);
+        assert(barrier != state.barriers.end());
+        identity.barrier_generation = barrier->second.generation;
+    }
+    if (auto waking_set = broadcast_waking_set_for(state, action)) {
+        identity.broadcast_waking_set =
+            std::make_shared<const std::vector<ThreadId>>(
+                std::move(*waking_set));
+    }
+    return identity;
 }
 
 std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& program,
@@ -1184,7 +1222,8 @@ std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& pro
     for (const ScheduleStep& step : enabled) {
 #if defined(DPOR_EXPLORATION_METRICS)
         Action action = effective_action_for_step(program, state, step);
-        const auto barrier_generation = barrier_generation_for(state, action);
+        const auto occurrence =
+            transition_occurrence_identity_for(state, action);
         ++metrics.dpor_enabled_transition_entries;
         ++metrics.effective_actions_materialized;
         metrics.action_string_bytes_materialized += diagnostic_action_string_bytes(action);
@@ -1193,7 +1232,7 @@ std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& pro
             EnabledTransition{
                 step,
                 std::move(action),
-                barrier_generation,
+                occurrence,
             });
 #else
         Action action = effective_action_for_step(program, state, step);
@@ -1202,7 +1241,7 @@ std::map<ScheduleStep, EnabledTransition> enabled_transitions(const Program& pro
             EnabledTransition{
                 step,
                 action,
-                barrier_generation_for(state, action),
+                transition_occurrence_identity_for(state, action),
             });
 #endif
     }
@@ -1238,7 +1277,7 @@ bool transition_enabled_at_node(const DporNode& node, const ExecutedTransition& 
     return enabled != node.enabled_transitions.end() &&
            enabled->second.endpoint == transition.endpoint &&
            enabled->second.effective_action == transition.effective_action &&
-           enabled->second.barrier_generation == transition.barrier_generation;
+           enabled->second.occurrence == transition.occurrence;
 }
 
 bool has_next_action_at_node(const Program& program, const DporNode& node, ThreadId tid) {
@@ -1753,7 +1792,7 @@ bool node_enabled_transition_matches(
     ThreadId thread,
     const Action& action,
     const ScheduleStep& endpoint,
-    std::optional<std::uint64_t> barrier_generation) {
+    const TransitionOccurrenceIdentity& occurrence) {
     if (endpoint.thread != thread) {
         return false;
     }
@@ -1761,7 +1800,7 @@ bool node_enabled_transition_matches(
     return enabled != node.enabled_transitions.end() &&
            enabled->second.endpoint == endpoint &&
            enabled->second.effective_action == action &&
-           enabled->second.barrier_generation == barrier_generation;
+           enabled->second.occurrence == occurrence;
 }
 
 bool same_mutex_try_locks_independent_at_node(
@@ -1769,19 +1808,20 @@ bool same_mutex_try_locks_independent_at_node(
     ThreadId lhs_thread,
     const Action& lhs,
     const ScheduleStep& lhs_endpoint,
-    std::optional<std::uint64_t> lhs_generation,
+    const TransitionOccurrenceIdentity& lhs_occurrence,
     ThreadId rhs_thread,
     const Action& rhs,
     const ScheduleStep& rhs_endpoint,
-    std::optional<std::uint64_t> rhs_generation) {
+    const TransitionOccurrenceIdentity& rhs_occurrence) {
     if (lhs_thread == rhs_thread || lhs.kind != ActionKind::TryLock ||
         rhs.kind != ActionKind::TryLock || lhs.mutex.empty() ||
-        lhs.mutex != rhs.mutex || lhs_generation.has_value() ||
-        rhs_generation.has_value() ||
+        lhs.mutex != rhs.mutex ||
+        lhs_occurrence != TransitionOccurrenceIdentity{} ||
+        rhs_occurrence != TransitionOccurrenceIdentity{} ||
         !node_enabled_transition_matches(
-            node, lhs_thread, lhs, lhs_endpoint, lhs_generation) ||
+            node, lhs_thread, lhs, lhs_endpoint, lhs_occurrence) ||
         !node_enabled_transition_matches(
-            node, rhs_thread, rhs, rhs_endpoint, rhs_generation)) {
+            node, rhs_thread, rhs, rhs_endpoint, rhs_occurrence)) {
         return false;
     }
 
@@ -1803,11 +1843,11 @@ bool same_barrier_arrivals_independent_at_node(
     ThreadId lhs_thread,
     const Action& lhs,
     const ScheduleStep& lhs_endpoint,
-    std::optional<std::uint64_t> lhs_generation,
+    const TransitionOccurrenceIdentity& lhs_occurrence,
     ThreadId rhs_thread,
     const Action& rhs,
     const ScheduleStep& rhs_endpoint,
-    std::optional<std::uint64_t> rhs_generation) {
+    const TransitionOccurrenceIdentity& rhs_occurrence) {
     assert(lhs.kind == ActionKind::BarrierWait);
     assert(rhs.kind == ActionKind::BarrierWait);
     assert(lhs.barrier == rhs.barrier);
@@ -1815,13 +1855,14 @@ bool same_barrier_arrivals_independent_at_node(
     const auto barrier = node.barriers.find(lhs.barrier);
     if (barrier == node.barriers.end() || lhs.parties == 0 ||
         lhs.parties != barrier->second.parties ||
-        rhs.parties != barrier->second.parties || !lhs_generation.has_value() ||
-        lhs_generation != rhs_generation ||
-        *lhs_generation != barrier->second.generation ||
+        rhs.parties != barrier->second.parties ||
+        !lhs_occurrence.barrier_generation.has_value() ||
+        lhs_occurrence != rhs_occurrence ||
+        *lhs_occurrence.barrier_generation != barrier->second.generation ||
         !node_enabled_transition_matches(
-            node, lhs_thread, lhs, lhs_endpoint, lhs_generation) ||
+            node, lhs_thread, lhs, lhs_endpoint, lhs_occurrence) ||
         !node_enabled_transition_matches(
-            node, rhs_thread, rhs, rhs_endpoint, rhs_generation) ||
+            node, rhs_thread, rhs, rhs_endpoint, rhs_occurrence) ||
         barrier->second.arrivals.find(lhs_thread) !=
             barrier->second.arrivals.end() ||
         barrier->second.arrivals.find(rhs_thread) !=
@@ -1841,20 +1882,20 @@ bool barrier_arrival_releases_parked_thread(
     ThreadId barrier_thread,
     const Action& barrier_action,
     const ScheduleStep& barrier_endpoint,
-    std::optional<std::uint64_t> barrier_generation,
+    const TransitionOccurrenceIdentity& occurrence,
     ThreadId other_thread) {
     if (barrier_action.kind != ActionKind::BarrierWait ||
         !node_enabled_transition_matches(node,
                                          barrier_thread,
                                          barrier_action,
                                          barrier_endpoint,
-                                         barrier_generation)) {
+                                         occurrence)) {
         return false;
     }
     const auto barrier = node.barriers.find(barrier_action.barrier);
     if (barrier == node.barriers.end() || barrier_action.parties == 0 ||
         barrier_action.parties != barrier->second.parties ||
-        barrier_generation !=
+        occurrence.barrier_generation !=
             std::optional<std::uint64_t>{barrier->second.generation}) {
         return false;
     }
@@ -1870,11 +1911,11 @@ bool transitions_independent_at_node(
     ThreadId lhs_thread,
     const Action& lhs,
     const ScheduleStep& lhs_endpoint,
-    std::optional<std::uint64_t> lhs_generation,
+    const TransitionOccurrenceIdentity& lhs_occurrence,
     ThreadId rhs_thread,
     const Action& rhs,
     const ScheduleStep& rhs_endpoint,
-    std::optional<std::uint64_t> rhs_generation) {
+    const TransitionOccurrenceIdentity& rhs_occurrence) {
     if (lhs.kind == ActionKind::TryLock &&
         rhs.kind == ActionKind::TryLock && lhs.mutex == rhs.mutex) {
 #if defined(DPOR_EXPLORATION_METRICS)
@@ -1885,11 +1926,11 @@ bool transitions_independent_at_node(
             lhs_thread,
             lhs,
             lhs_endpoint,
-            lhs_generation,
+            lhs_occurrence,
             rhs_thread,
             rhs,
             rhs_endpoint,
-            rhs_generation);
+            rhs_occurrence);
     }
 
     if (lhs.kind == ActionKind::BarrierWait &&
@@ -1902,11 +1943,11 @@ bool transitions_independent_at_node(
             lhs_thread,
             lhs,
             lhs_endpoint,
-            lhs_generation,
+            lhs_occurrence,
             rhs_thread,
             rhs,
             rhs_endpoint,
-            rhs_generation);
+            rhs_occurrence);
     }
 
     // A last arrival advances every already-parked participant to its next
@@ -1918,13 +1959,13 @@ bool transitions_independent_at_node(
                                                lhs_thread,
                                                lhs,
                                                lhs_endpoint,
-                                               lhs_generation,
+                                               lhs_occurrence,
                                                rhs_thread) ||
         barrier_arrival_releases_parked_thread(node,
                                                rhs_thread,
                                                rhs,
                                                rhs_endpoint,
-                                               rhs_generation,
+                                               rhs_occurrence,
                                                lhs_thread);
     if (release_changes_enabledness) {
 #if defined(DPOR_EXPLORATION_METRICS)
@@ -2915,9 +2956,9 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
                         candidate_action.parties != 0 &&
                         candidate_action.parties == barrier->second.parties &&
                         selected_action.parties == barrier->second.parties &&
-                        candidate_transition.barrier_generation ==
-                            selected_transition.barrier_generation &&
-                        candidate_transition.barrier_generation ==
+                        candidate_transition.occurrence.barrier_generation ==
+                            selected_transition.occurrence.barrier_generation &&
+                        candidate_transition.occurrence.barrier_generation ==
                             std::optional<std::uint64_t>{
                                 barrier->second.generation}) {
                         // Early arrivals commute directly, but a persistent
@@ -2936,11 +2977,11 @@ void initialize_dpor_backtrack(const Program& program, const ExecutionState& sta
                         candidate.thread,
                         candidate_action,
                         candidate_transition.endpoint,
-                        candidate_transition.barrier_generation,
+                        candidate_transition.occurrence,
                         selected.thread,
                         selected_action,
                         selected_transition.endpoint,
-                        selected_transition.barrier_generation)) {
+                        selected_transition.occurrence)) {
                     // INVARIANTS.md Soundness/Independence: an enabled
                     // transition is pruned from the initial persistent set
                     // only when the transition predicate says it commutes
@@ -2992,11 +3033,11 @@ void add_backtracks_for_transition_against_prefix(const Program& program,
                                             previous.thread,
                                             previous.effective_action,
                                             previous.endpoint,
-                                            previous.barrier_generation,
+                                            previous.occurrence,
                                             current.thread,
                                             current.effective_action,
                                             current.endpoint,
-                                            current.barrier_generation)) {
+                                            current.occurrence)) {
             // INVARIANTS.md Soundness/Independence: this is the DPOR pruning
             // predicate. We may commute and therefore avoid a backtrack only
             // when the transition predicate says ordering cannot affect
@@ -3106,7 +3147,7 @@ void add_disabled_backtracks(const Program& program,
             ScheduleStep{tid, state.pc.at(tid), std::nullopt},
             state.thread_clock.at(tid),
             std::nullopt,
-            barrier_generation_for(
+            transition_occurrence_identity_for(
                 state, effective_next_action(program, state, tid)),
         };
         // INVARIANTS.md Soundness/Deadlock: a blocked mutex/rwlock acquisition,
@@ -3144,8 +3185,7 @@ std::vector<ScheduleStep> inherited_sleep_set(const Program& program,
             child == child_transitions.end() ||
             child->second.effective_action !=
                 parent_slept->second.effective_action ||
-            child->second.barrier_generation !=
-                parent_slept->second.barrier_generation) {
+            child->second.occurrence != parent_slept->second.occurrence) {
             continue;
         }
 
@@ -3157,11 +3197,11 @@ std::vector<ScheduleStep> inherited_sleep_set(const Program& program,
                 slept.thread,
                 slept_transition.effective_action,
                 slept_transition.endpoint,
-                slept_transition.barrier_generation,
+                slept_transition.occurrence,
                 transition.thread,
                 transition.effective_action,
                 transition.endpoint,
-                transition.barrier_generation)) {
+                transition.occurrence)) {
             // Classic Godefroid sleep-set propagation: a slept transition is
             // inherited only when its parent/pre-transition occurrence
             // commutes with the transition just executed and that exact
@@ -3308,8 +3348,8 @@ void dpor_dfs(const Program& program,
         const EnabledTransition& selected_transition =
             nodes.at(depth).enabled_transitions.at(*next_step);
         const Action effective_action = selected_transition.effective_action;
-        const auto barrier_generation =
-            selected_transition.barrier_generation;
+        const TransitionOccurrenceIdentity occurrence =
+            selected_transition.occurrence;
         bool cycle_cut = false;
 
 #if defined(DPOR_EXPLORATION_METRICS)
@@ -3323,7 +3363,7 @@ void dpor_dfs(const Program& program,
             *next_step,
             next.thread_clock.at(next_step->thread),
             step_report.spawned_thread,
-            barrier_generation,
+            occurrence,
         };
         trace.push_back(transition);
         add_backtracks_for_transition(program, state.memory_model, nodes, trace);
@@ -3773,9 +3813,12 @@ std::vector<EffectiveScheduleStep> replay_effective_trace(const Program& program
             return trace;
         }
 
+        const Action effective_action =
+            effective_action_for_step(program, state, schedule[i]);
         trace.push_back(EffectiveScheduleStep{
             schedule[i],
-            effective_action_for_step(program, state, schedule[i]),
+            effective_action,
+            broadcast_waking_set_for(state, effective_action),
         });
 
         const StepReport step_report = execute_enabled_step(program, state, schedule[i]);

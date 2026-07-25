@@ -115,6 +115,28 @@ model::Action barrier_wait(std::string barrier, std::uint32_t parties) {
     return action;
 }
 
+model::Action wait(std::string condition, std::string mutex) {
+    model::Action action;
+    action.kind = model::ActionKind::Wait;
+    action.condition = std::move(condition);
+    action.mutex = std::move(mutex);
+    return action;
+}
+
+model::Action signal(std::string condition) {
+    model::Action action;
+    action.kind = model::ActionKind::Signal;
+    action.condition = std::move(condition);
+    return action;
+}
+
+model::Action broadcast(std::string condition) {
+    model::Action action;
+    action.kind = model::ActionKind::Broadcast;
+    action.condition = std::move(condition);
+    return action;
+}
+
 model::ValueOperand imm(model::Value value) {
     model::ValueOperand operand;
     operand.kind = model::ValueOperandKind::Immediate;
@@ -145,7 +167,7 @@ model::Action bnz(model::RegisterId reg, std::string target) {
     return action;
 }
 
-const std::array<model::Action, 19> kActions{
+const std::array<model::Action, 22> kActions{
     read("x"),
     read("y"),
     write("x"),
@@ -165,6 +187,9 @@ const std::array<model::Action, 19> kActions{
     downgrade("rw"),
     fence(),
     barrier_wait("bar", 2),
+    wait("cv", "m"),
+    signal("cv"),
+    broadcast("cv"),
 };
 
 model::Program two_thread_program(std::uint64_t encoded, std::size_t lhs_length, std::size_t rhs_length) {
@@ -261,6 +286,12 @@ std::string action_string(const model::Action& action) {
         return "Upgrade " + action.rwlock;
     case model::ActionKind::Downgrade:
         return "Downgrade " + action.rwlock;
+    case model::ActionKind::Wait:
+        return "Wait " + action.condition + " " + action.mutex;
+    case model::ActionKind::Signal:
+        return "Signal " + action.condition;
+    case model::ActionKind::Broadcast:
+        return "Broadcast " + action.condition;
     default:
         break;
     }
@@ -380,9 +411,9 @@ void cross_validate_program(const model::Program& program,
 } // namespace
 
 int main() {
-    if (kActions.size() != 19) {
+    if (kActions.size() != 22) {
         throw std::runtime_error(
-            "TSO oracle alphabet must include TryLock and all rwlock actions");
+            "TSO oracle alphabet must include TryLock, rwlocks, and condvars");
     }
     const model::Action& try_lock_entry = kActions.at(9);
     if (try_lock_entry.kind != model::ActionKind::TryLock ||
@@ -405,6 +436,20 @@ int main() {
         if (action.kind != rwlock_kinds.at(i) || action.rwlock != "rw") {
             throw std::runtime_error(
                 "TSO oracle must contain all six same-name rwlock operations");
+        }
+    }
+    const std::array<model::ActionKind, 3> condition_kinds{
+        model::ActionKind::Wait,
+        model::ActionKind::Signal,
+        model::ActionKind::Broadcast,
+    };
+    for (std::size_t i = 0; i < condition_kinds.size(); ++i) {
+        const model::Action& action = kActions.at(19 + i);
+        if (action.kind != condition_kinds.at(i) ||
+            action.condition != "cv" ||
+            (action.kind == model::ActionKind::Wait && action.mutex != "m")) {
+            throw std::runtime_error(
+                "TSO oracle must contain Wait/Signal/Broadcast on cv");
         }
     }
     std::size_t programs_checked = 0;
