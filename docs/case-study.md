@@ -715,6 +715,71 @@ including Debug restore assertions, and four fresh CLI probes independently
 confirmed wake ordering, timeout's missing condition edge, lost-wakeup rescue,
 and the fair timeout lasso.
 
+## The seventeenth campaign: the certificate stopped at its theorem
+
+The desired new axis was a certifying algorithm for one exact run. The existing
+DPOR explorer would emit deterministic evidence bound to a program, memory
+model, bound, and run; a smaller checker would replay it, reconstruct demand
+closure, and validate every independence claim by executing both adjacent
+orders from the recorded claim state. Crucially, that checker could share
+deterministic stepping and canonical encodings, but not ask the independence
+relation under audit whether its own claims were sound.
+
+One ordinary reducer path made that theorem unavailable. While scanning a
+later occurrence against an earlier prefix, the reducer tests independence
+before it tests whether the later exact occurrence is enabled there. On
+`T0: Write(x)` beside `T1: Lock(m); Write(y)`, it can therefore treat the two
+writes as independent at the root even though `T1:Write(y)` is still disabled
+behind the lock. The required adjacent execution beginning with that write
+does not exist; no richer recording can make it executable at that state.
+
+The certifier would then have to reject an ordinary current run, trust the
+predicate it was meant to audit, or prove a multi-step enabler-and-mover
+argument instead of an adjacent diamond. Reordering the reducer's enabledness
+test or conservatively repairing every such prefix would change exploration
+and could change the pinned class counts. None of those choices was the
+predeclared per-run certificate with byte-identical exploration.
+
+A smaller replay-and-closure design was reviewed before implementation and
+failed on its own terms. It proposed sorting race-history records into a
+canonical multiset, but their stored order selects the first conflicting
+access and therefore the exact public `RaceReport`. A verifier cannot
+normalize away state that can change a future replay identity.
+
+It also consumed the producer's happens-before label while trying to
+rediscover suppressed reversal demands. A buggy producer could mark the
+missing pair HB-ordered and hide precisely the obligation under review.
+Transition clocks and HB must be reconstructed independently from the replayed
+prefix, with producer metadata serving only as evidence to compare.
+
+Its coverage vocabulary confused bound attempts with explored children. The
+current search can mark an endpoint done, increment the bound-outcome
+counters, and create no child or retained public schedule because it executes
+no transition. A sound format needs a distinct bound-attempt disposition
+rather than treating membership in `done` as proof that an edge was explored.
+
+Most decisively, closure over the producer's demand ledger cannot detect a
+demand the producer omitted entirely. It can prove that recorded obligations
+were discharged, but a suppressed-race-reversal mutation removes the
+obligation at its source and passes that check vacuously. Finding it requires
+independent enumeration of candidate occurrences, enabledness, dependence,
+HB, and reversal obligations—the very completeness boundary the partial
+design had not established.
+
+The campaign therefore shipped no certificate emitter, public API, CLI
+command, test suite, golden, mutation hook, or exploration change. The trust
+base remains the one already made falsifiable: exhaustive naive/DPOR oracle
+comparison on enumerable corpora, fixed-seed differential fuzz, replayable bug
+and lasso witnesses, the class-count optimality meter, and deterministic
+Release plus restore-assert Debug gates.
+
+That was the honest stop clause, not a negotiated weaker success. The campaign
+records the blocker and leaves the certificate surface unnamed until a future
+design can prove non-co-enabled uses—by changing the reducer or by a complete
+multi-step mover theorem—and independently reconstruct every obligation it
+claims is closed. A passing badge that cannot state that theorem would reduce
+confidence rather than add evidence.
+
 ## Takeaway
 
 The takeaway this project argues for: **in this domain, review confidence
