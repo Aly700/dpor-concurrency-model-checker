@@ -678,6 +678,34 @@ the transition alphabet and class-count argument. The cross-model
 existence is monotone from SC to TSO to PSO, excluding capped or residual-bound
 runs where truncation would invalidate the implication.
 
+## Pruning-Certificate Status
+
+The checker does not currently emit or certify pruning-soundness
+certificates. ADR 0031 records the Campaign 17 diagnosis and deferral.
+
+The decisive mismatch is in disabled-transition repair. The backward scan can
+use a positive independence result before discovering that the later exact
+occurrence is disabled at the candidate prefix. A two-order semantic checker
+cannot execute that occurrence from the recorded state, while trusting the
+existing independence predicate would place the audited heuristic inside the
+certifier's trust base. Changing the reducer to make all such claims
+co-enabled can change explored schedules and requires a separate campaign.
+
+Nor is replay plus an explorer-authored obligation log a pruning certificate.
+It can check recorded leaves and recorded demands, but it cannot discover a
+demand the producer omitted. Sleep provenance additionally depends on exact
+occurrence survival and semantic commutation. Any future certifier must
+independently reconstruct enabled occurrences, clocks, HB, and reversal
+obligations; either preserve ordered race histories in its verdict state or
+prove an explicit existential-verdict quotient; distinguish executed edges
+from terminal, bound-attempt, and cycle-cut dispositions; and compare
+intermediate enabledness in every supported local diamond.
+
+Until those conditions are met, the verification trust base remains the
+naive/DPOR differential gates, replayable public witnesses, fixed-seed fuzz,
+cross-model inclusion, and the optimality meter. No CLI syntax or public API
+name is reserved for an unimplemented certificate theorem.
+
 ## Design bias
 
 The checker should first be obviously correct on tiny programs. Reduction is valuable only while the naive oracle can still validate it on small state spaces.
