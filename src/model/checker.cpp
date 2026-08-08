@@ -3420,7 +3420,8 @@ void dpor_dfs(const Program& program,
               std::vector<DporNode>& nodes,
               std::vector<ExecutedTransition>& trace,
               std::vector<ScheduleStep> sleep_set,
-              StateHistory& state_history) {
+              StateHistory& state_history,
+              std::vector<Schedule>* terminal_schedules) {
     if (result.schedules_explored >= max_schedules) {
         return;
     }
@@ -3451,6 +3452,9 @@ void dpor_dfs(const Program& program,
 
     if (nodes.at(depth).enabled.empty()) {
         ++result.schedules_explored;
+        if (terminal_schedules != nullptr) {
+            terminal_schedules->push_back(state.schedule);
+        }
         if (!all_finished(program, state)) {
             add_disabled_backtracks(program, state, nodes, trace);
         }
@@ -3502,6 +3506,11 @@ void dpor_dfs(const Program& program,
                 insert_step(nodes.at(depth).backtrack, enabled);
             }
             record_bound_exceeded(result);
+            if (terminal_schedules != nullptr) {
+                Schedule bounded = state.schedule;
+                bounded.push_back(*next_step);
+                terminal_schedules->push_back(std::move(bounded));
+            }
             insert_step(nodes.at(depth).sleep, *next_step);
             continue;
         }
@@ -3544,6 +3553,9 @@ void dpor_dfs(const Program& program,
                 insert_step(nodes.at(depth).backtrack, enabled);
             }
             ++result.schedules_explored;
+            if (terminal_schedules != nullptr) {
+                terminal_schedules->push_back(next.schedule);
+            }
         } else {
 #if defined(DPOR_RESTORE_ASSERTS)
             RestoreExactnessReference restore_reference(
@@ -3571,6 +3583,9 @@ void dpor_dfs(const Program& program,
                         next.schedule,
                         *observation.cycle_start,
                         next.memory_model));
+                if (terminal_schedules != nullptr) {
+                    terminal_schedules->push_back(next.schedule);
+                }
             } else {
                 // INVARIANTS.md Soundness/Independence: enabled transitions not
                 // in this node's backtrack set are the only schedules pruned
@@ -3589,7 +3604,8 @@ void dpor_dfs(const Program& program,
                          nodes,
                          trace,
                          std::move(child_sleep),
-                         state_history);
+                         state_history,
+                         terminal_schedules);
             }
             history_restore.restore();
 #if defined(DPOR_RESTORE_ASSERTS)
@@ -3995,6 +4011,142 @@ std::vector<EffectiveScheduleStep> replay_effective_trace(const Program& program
             observe_behavioral_state(state, state_history).has_value()) {
             if (i + 1 < schedule.size()) {
                 throw invalid_schedule(i + 1, "schedule continues after a nontermination cycle");
+            }
+            return trace;
+        }
+    }
+
+    return trace;
+}
+
+std::vector<std::uint64_t> dense_clock(const VectorClock& clock,
+                                       std::size_t thread_count) {
+    std::vector<std::uint64_t> components;
+    components.reserve(thread_count);
+    for (ThreadId tid = 0; tid < thread_count; ++tid) {
+        components.push_back(clock.get(tid));
+    }
+    return components;
+}
+
+std::vector<BufferedStoreObservation> observed_buffer(const ExecutionState& state,
+                                                      ThreadId tid) {
+    std::vector<BufferedStoreObservation> stores;
+    if (state.memory_model == MemoryModel::TSO) {
+        for (const StoreBufferEntry& entry : state.store_buffers.at(tid)) {
+            stores.push_back(BufferedStoreObservation{entry.address, entry.value});
+        }
+    } else if (state.memory_model == MemoryModel::PSO) {
+        for (const auto& [address, values] : state.pso_store_buffers.at(tid)) {
+            for (const Value value : values) {
+                stores.push_back(BufferedStoreObservation{address, value});
+            }
+        }
+    }
+    return stores;
+}
+
+std::optional<Value> observed_memory_value(const ExecutionState& state,
+                                           const std::string& address) {
+    const auto found = state.memory_values.find(address);
+    return found == state.memory_values.end()
+        ? std::optional<Value>{0}
+        : std::optional<Value>{found->second};
+}
+
+std::vector<InspectedScheduleStep> inspect_replay_schedule(
+    const Program& program,
+    const Schedule& schedule,
+    std::size_t step_bound,
+    MemoryModel memory_model) {
+    std::vector<InspectedScheduleStep> trace;
+    ExecutionState state = initial_state(program, memory_model);
+    const bool detect_cycles = requires_cycle_detection(program);
+    StateHistory state_history =
+        detect_cycles ? initial_state_history(state) : StateHistory{};
+    const std::vector<std::string> addresses = program_addresses(program);
+
+    for (std::size_t index = 0; index < schedule.size(); ++index) {
+        const ScheduleStep& endpoint = schedule.at(index);
+        validate_replay_step(program, state, endpoint, index);
+
+        InspectedScheduleStep inspected;
+        inspected.endpoint = endpoint;
+        inspected.effective_action = effective_action_for_step(program, state, endpoint);
+        inspected.enabled_before = enabled_steps(program, state);
+        inspected.broadcast_waking_set =
+            broadcast_waking_set_for(state, inspected.effective_action);
+        inspected.timed_wait_occurrence =
+            timed_wait_occurrence_for(state, endpoint, inspected.effective_action);
+        inspected.clock_before =
+            dense_clock(state.thread_clock.at(endpoint.thread), program.threads.size());
+
+        if (step_bound_reached(state, endpoint.thread, step_bound)) {
+            if (index + 1 < schedule.size()) {
+                throw invalid_schedule(
+                    index + 1, "schedule continues after a step-bound outcome");
+            }
+            inspected.executed = false;
+            inspected.clock_after = inspected.clock_before;
+            trace.push_back(std::move(inspected));
+            return trace;
+        }
+
+        const auto registers_before = state.registers;
+        std::vector<std::vector<BufferedStoreObservation>> buffers_before;
+        buffers_before.reserve(program.threads.size());
+        for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+            buffers_before.push_back(observed_buffer(state, tid));
+        }
+        std::map<std::string, std::optional<Value>> memory_before;
+        for (const std::string& address : addresses) {
+            memory_before.emplace(address, observed_memory_value(state, address));
+        }
+
+        const StepReport report = execute_enabled_step(program, state, endpoint);
+        inspected.clock_after =
+            dense_clock(state.thread_clock.at(endpoint.thread), program.threads.size());
+
+        for (ThreadId tid = 0; tid < program.threads.size(); ++tid) {
+            for (RegisterId reg = 0; reg < kRegisterCount; ++reg) {
+                const Value before = registers_before.at(tid).at(reg);
+                const Value after = state.registers.at(tid).at(reg);
+                if (before != after) {
+                    inspected.register_effects.push_back(
+                        RegisterEffect{tid, reg, before, after});
+                }
+            }
+
+            const std::vector<BufferedStoreObservation> after =
+                observed_buffer(state, tid);
+            if (buffers_before.at(tid) != after) {
+                inspected.buffer_effects.push_back(
+                    BufferEffect{tid, buffers_before.at(tid), after});
+            }
+        }
+
+        for (const std::string& address : addresses) {
+            const std::optional<Value> after = observed_memory_value(state, address);
+            if (memory_before.at(address) != after) {
+                inspected.memory_effects.push_back(
+                    MemoryEffect{address, memory_before.at(address), after});
+            }
+        }
+
+        trace.push_back(std::move(inspected));
+        if (report.error.has_value() || report.assertion.has_value()) {
+            if (index + 1 < schedule.size()) {
+                throw invalid_schedule(
+                    index + 1, "schedule continues after a terminal execution report");
+            }
+            return trace;
+        }
+
+        if (detect_cycles &&
+            observe_behavioral_state(state, state_history).has_value()) {
+            if (index + 1 < schedule.size()) {
+                throw invalid_schedule(
+                    index + 1, "schedule continues after a nontermination cycle");
             }
             return trace;
         }
@@ -4431,7 +4583,8 @@ CheckResult ModelChecker::explore_dpor(std::size_t max_schedules) const {
              nodes,
              trace,
              {},
-             state_history);
+             state_history,
+             nullptr);
     result.exploration_capped = result.schedules_explored >= max_schedules;
     minimize_result_reports(program_, result, step_bound_, memory_model_);
     return result;
@@ -4457,8 +4610,36 @@ std::vector<Schedule> ModelChecker::collect_naive_schedules(std::size_t max_sche
     return schedules;
 }
 
+std::vector<Schedule> ModelChecker::collect_dpor_schedules(std::size_t max_schedules) const {
+    CheckResult result;
+    std::vector<Schedule> schedules;
+    std::vector<DporNode> nodes;
+    std::vector<ExecutedTransition> trace;
+    ExecutionState state = initial_state(program_, memory_model_);
+    const bool detect_cycles = requires_cycle_detection(program_);
+    StateHistory state_history =
+        detect_cycles ? initial_state_history(state) : StateHistory{};
+    dpor_dfs(program_,
+             std::move(state),
+             result,
+             max_schedules,
+             step_bound_,
+             detect_cycles,
+             nodes,
+             trace,
+             {},
+             state_history,
+             &schedules);
+    assert(schedules.size() == result.schedules_explored);
+    return schedules;
+}
+
 std::vector<EffectiveScheduleStep> ModelChecker::replay_effective_trace(const Schedule& schedule) const {
     return model::replay_effective_trace(program_, schedule, step_bound_, memory_model_);
+}
+
+std::vector<InspectedScheduleStep> ModelChecker::inspect_schedule(const Schedule& schedule) const {
+    return inspect_replay_schedule(program_, schedule, step_bound_, memory_model_);
 }
 
 bool ModelChecker::dpor_transitions_independent(ThreadId lhs_thread,

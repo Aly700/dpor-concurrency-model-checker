@@ -1,0 +1,298 @@
+{
+  "configuration": {
+    "max_schedules": 100000,
+    "step_bound_per_thread": 4
+  },
+  "memory_model": "sc",
+  "program_id": "data_race",
+  "provenance": "MEASURED",
+  "pruning": {
+    "dpor_schedules_explored": 2,
+    "naive_equivalent_schedules": 2,
+    "pruning_fraction_denominator": 2,
+    "pruning_fraction_numerator": 0,
+    "pruning_percent_milli": 0,
+    "schedules_pruned": 0
+  },
+  "runs": {
+    "dpor": {
+      "bound_exceeded_executions": 0,
+      "bug_shape": {
+        "assertion": false,
+        "deadlock": false,
+        "error": false,
+        "nontermination": false,
+        "race": true
+      },
+      "cycles_detected": 0,
+      "exploration_capped": false,
+      "fair_cycles": 0,
+      "max_depth": 2,
+      "prefix_states_visited": 5,
+      "primary_verdict": "race",
+      "schedules_explored": 2,
+      "schedules_pruned": 0,
+      "strongly_unfair_cycles": 0,
+      "unfair_cycles": 0
+    },
+    "naive": {
+      "bound_exceeded_executions": 0,
+      "bug_shape": {
+        "assertion": false,
+        "deadlock": false,
+        "error": false,
+        "nontermination": false,
+        "race": true
+      },
+      "cycles_detected": 0,
+      "exploration_capped": false,
+      "fair_cycles": 0,
+      "max_depth": 2,
+      "prefix_states_visited": 5,
+      "primary_verdict": "race",
+      "schedules_explored": 2,
+      "schedules_pruned": 0,
+      "strongly_unfair_cycles": 0,
+      "unfair_cycles": 0
+    }
+  },
+  "schema_version": 1,
+  "tree": {
+    "edges": [
+      {
+        "action": {
+          "address": "x",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "write",
+          "label": "write x",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 0,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 0
+        },
+        "target": 1
+      },
+      {
+        "action": {
+          "address": "x",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "write",
+          "label": "write x",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 0,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 2
+      },
+      {
+        "action": {
+          "address": "x",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "write",
+          "label": "write x",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 1,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 3
+      },
+      {
+        "action": {
+          "address": "x",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "write",
+          "label": "write x",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 2,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 0
+        },
+        "target": 4
+      }
+    ],
+    "expansion": "DPOR-reached prefixes plus exact counted boundaries for naive-only PRUNED subtrees",
+    "nodes": [
+      {
+        "choice_point": true,
+        "depth": 0,
+        "dpor_schedules_below": 2,
+        "enabled": [
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 0,
+        "naive_schedules_below": 2,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 1,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 1,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 1,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 0
+          }
+        ],
+        "enabled_threads": [
+          0
+        ],
+        "id": 2,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 2,
+        "dpor_schedules_below": 1,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 3,
+        "naive_schedules_below": 1,
+        "outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": false,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "status": "EXPLORED",
+        "terminal": true
+      },
+      {
+        "choice_point": false,
+        "depth": 2,
+        "dpor_schedules_below": 1,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 4,
+        "naive_schedules_below": 1,
+        "outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": false,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "status": "EXPLORED",
+        "terminal": true
+      }
+    ],
+    "root": 0
+  }
+}

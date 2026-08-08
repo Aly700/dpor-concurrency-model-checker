@@ -134,6 +134,57 @@ struct EffectiveScheduleStep {
     bool operator==(const EffectiveScheduleStep&) const = default;
 };
 
+// Read-only replay observations for external evidence renderers. These are
+// derived by the existing interpreter and never participate in scheduling,
+// enabledness, happens-before, or bug detection.
+struct RegisterEffect {
+    ThreadId thread{0};
+    RegisterId reg{0};
+    Value before{0};
+    Value after{0};
+
+    bool operator==(const RegisterEffect&) const = default;
+};
+
+struct MemoryEffect {
+    std::string address;
+    std::optional<Value> before;
+    std::optional<Value> after;
+
+    bool operator==(const MemoryEffect&) const = default;
+};
+
+struct BufferedStoreObservation {
+    std::string address;
+    Value value{0};
+
+    bool operator==(const BufferedStoreObservation&) const = default;
+};
+
+struct BufferEffect {
+    ThreadId thread{0};
+    std::vector<BufferedStoreObservation> before;
+    std::vector<BufferedStoreObservation> after;
+
+    bool operator==(const BufferEffect&) const = default;
+};
+
+struct InspectedScheduleStep {
+    ScheduleStep endpoint;
+    Action effective_action;
+    bool executed{true};
+    std::vector<ScheduleStep> enabled_before;
+    std::vector<std::uint64_t> clock_before;
+    std::vector<std::uint64_t> clock_after;
+    std::vector<RegisterEffect> register_effects;
+    std::vector<MemoryEffect> memory_effects;
+    std::vector<BufferEffect> buffer_effects;
+    std::optional<std::vector<ThreadId>> broadcast_waking_set;
+    std::optional<TimedWaitOccurrence> timed_wait_occurrence;
+
+    bool operator==(const InspectedScheduleStep&) const = default;
+};
+
 class ModelChecker {
 public:
     static constexpr std::size_t kDefaultStepBound = 2000;
@@ -149,7 +200,9 @@ public:
     // existing interpreter and DPOR transition predicate; they do not alter
     // exploration state or schedule choice.
     std::vector<Schedule> collect_naive_schedules(std::size_t max_schedules = 100000) const;
+    std::vector<Schedule> collect_dpor_schedules(std::size_t max_schedules = 100000) const;
     std::vector<EffectiveScheduleStep> replay_effective_trace(const Schedule& schedule) const;
+    std::vector<InspectedScheduleStep> inspect_schedule(const Schedule& schedule) const;
     bool dpor_transitions_independent(ThreadId lhs_thread,
                                       const Action& lhs,
                                       ThreadId rhs_thread,

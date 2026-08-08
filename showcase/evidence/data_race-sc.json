@@ -1,0 +1,325 @@
+{
+  "configuration": {
+    "max_schedules": 100000,
+    "step_bound_per_thread": 4
+  },
+  "evidence": {
+    "explorer": "dpor",
+    "property": {
+      "name": "assertion_reachability",
+      "reachable": false,
+      "verdict": "holds"
+    },
+    "run_outcome": {
+      "bound_exceeded_executions": 0,
+      "bug_shape": {
+        "assertion": false,
+        "deadlock": false,
+        "error": false,
+        "nontermination": false,
+        "race": true
+      },
+      "cycles_detected": 0,
+      "exploration_capped": false,
+      "fair_cycles": 0,
+      "primary_verdict": "race",
+      "schedules_explored": 2,
+      "strongly_unfair_cycles": 0,
+      "unfair_cycles": 0
+    },
+    "witnesses": [
+      {
+        "conflict": {
+          "address": "x",
+          "first": {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 0
+          },
+          "first_clock": [
+            1,
+            0
+          ],
+          "second": {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          },
+          "second_clock": [
+            0,
+            1
+          ]
+        },
+        "kind": "race",
+        "replay_outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": false,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "reported_primary": {
+          "conflict": {
+            "address": "x",
+            "first": {
+              "action_index": 0,
+              "flush_address_id": null,
+              "thread": 0
+            },
+            "first_clock": [
+              1,
+              0
+            ],
+            "second": {
+              "action_index": 0,
+              "flush_address_id": null,
+              "thread": 1
+            },
+            "second_clock": [
+              0,
+              1
+            ]
+          },
+          "kind": "race",
+          "schedule": [
+            {
+              "action_index": 0,
+              "flush_address_id": null,
+              "thread": 0
+            },
+            {
+              "action_index": 0,
+              "flush_address_id": null,
+              "thread": 1
+            }
+          ],
+          "steps": [
+            {
+              "action": {
+                "address": "x",
+                "barrier": null,
+                "condition": null,
+                "destination_register": null,
+                "expected": null,
+                "kind": "write",
+                "label": "write x",
+                "mutex": null,
+                "parties": 0,
+                "rwlock": null,
+                "semaphore": null,
+                "source_register": null,
+                "target_thread": 0,
+                "value": null
+              },
+              "broadcast_waking_set": null,
+              "clock_after": [
+                1,
+                0
+              ],
+              "clock_before": [
+                0,
+                0
+              ],
+              "enabled_before": [
+                {
+                  "action_index": 0,
+                  "flush_address_id": null,
+                  "thread": 0
+                },
+                {
+                  "action_index": 0,
+                  "flush_address_id": null,
+                  "thread": 1
+                }
+              ],
+              "endpoint": {
+                "action_index": 0,
+                "flush_address_id": null,
+                "thread": 0
+              },
+              "executed": true,
+              "happens_before_predecessors": [],
+              "index": 0,
+              "memory_effects": [],
+              "register_effects": [],
+              "store_buffer_effects": [],
+              "timed_wait_occurrence": null
+            },
+            {
+              "action": {
+                "address": "x",
+                "barrier": null,
+                "condition": null,
+                "destination_register": null,
+                "expected": null,
+                "kind": "write",
+                "label": "write x",
+                "mutex": null,
+                "parties": 0,
+                "rwlock": null,
+                "semaphore": null,
+                "source_register": null,
+                "target_thread": 0,
+                "value": null
+              },
+              "broadcast_waking_set": null,
+              "clock_after": [
+                0,
+                1
+              ],
+              "clock_before": [
+                0,
+                0
+              ],
+              "enabled_before": [
+                {
+                  "action_index": 0,
+                  "flush_address_id": null,
+                  "thread": 1
+                }
+              ],
+              "endpoint": {
+                "action_index": 0,
+                "flush_address_id": null,
+                "thread": 1
+              },
+              "executed": true,
+              "happens_before_predecessors": [],
+              "index": 1,
+              "memory_effects": [],
+              "register_effects": [],
+              "store_buffer_effects": [],
+              "timed_wait_occurrence": null
+            }
+          ]
+        },
+        "schedule": [
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "steps": [
+          {
+            "action": {
+              "address": "x",
+              "barrier": null,
+              "condition": null,
+              "destination_register": null,
+              "expected": null,
+              "kind": "write",
+              "label": "write x",
+              "mutex": null,
+              "parties": 0,
+              "rwlock": null,
+              "semaphore": null,
+              "source_register": null,
+              "target_thread": 0,
+              "value": null
+            },
+            "broadcast_waking_set": null,
+            "clock_after": [
+              1,
+              0
+            ],
+            "clock_before": [
+              0,
+              0
+            ],
+            "enabled_before": [
+              {
+                "action_index": 0,
+                "flush_address_id": null,
+                "thread": 0
+              },
+              {
+                "action_index": 0,
+                "flush_address_id": null,
+                "thread": 1
+              }
+            ],
+            "endpoint": {
+              "action_index": 0,
+              "flush_address_id": null,
+              "thread": 0
+            },
+            "executed": true,
+            "happens_before_predecessors": [],
+            "index": 0,
+            "memory_effects": [],
+            "register_effects": [],
+            "store_buffer_effects": [],
+            "timed_wait_occurrence": null
+          },
+          {
+            "action": {
+              "address": "x",
+              "barrier": null,
+              "condition": null,
+              "destination_register": null,
+              "expected": null,
+              "kind": "write",
+              "label": "write x",
+              "mutex": null,
+              "parties": 0,
+              "rwlock": null,
+              "semaphore": null,
+              "source_register": null,
+              "target_thread": 0,
+              "value": null
+            },
+            "broadcast_waking_set": null,
+            "clock_after": [
+              0,
+              1
+            ],
+            "clock_before": [
+              0,
+              0
+            ],
+            "enabled_before": [
+              {
+                "action_index": 0,
+                "flush_address_id": null,
+                "thread": 1
+              }
+            ],
+            "endpoint": {
+              "action_index": 0,
+              "flush_address_id": null,
+              "thread": 1
+            },
+            "executed": true,
+            "happens_before_predecessors": [],
+            "index": 1,
+            "memory_effects": [],
+            "register_effects": [],
+            "store_buffer_effects": [],
+            "timed_wait_occurrence": null
+          }
+        ]
+      }
+    ]
+  },
+  "memory_model": "sc",
+  "program_id": "data_race",
+  "program_source": "programs/data_race.dpor",
+  "provenance": "MEASURED",
+  "schema_version": 1
+}

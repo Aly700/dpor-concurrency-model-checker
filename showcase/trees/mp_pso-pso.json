@@ -1,0 +1,2182 @@
+{
+  "configuration": {
+    "max_schedules": 100000,
+    "step_bound_per_thread": 20
+  },
+  "memory_model": "pso",
+  "program_id": "mp_pso",
+  "provenance": "MEASURED",
+  "pruning": {
+    "dpor_schedules_explored": 6,
+    "naive_equivalent_schedules": 210,
+    "pruning_fraction_denominator": 210,
+    "pruning_fraction_numerator": 204,
+    "pruning_percent_milli": 97142,
+    "schedules_pruned": 204
+  },
+  "runs": {
+    "dpor": {
+      "bound_exceeded_executions": 0,
+      "bug_shape": {
+        "assertion": true,
+        "deadlock": false,
+        "error": false,
+        "nontermination": false,
+        "race": true
+      },
+      "cycles_detected": 0,
+      "exploration_capped": false,
+      "fair_cycles": 0,
+      "max_depth": 8,
+      "prefix_states_visited": 35,
+      "primary_verdict": "race",
+      "schedules_explored": 6,
+      "schedules_pruned": 204,
+      "strongly_unfair_cycles": 0,
+      "unfair_cycles": 0
+    },
+    "naive": {
+      "bound_exceeded_executions": 0,
+      "bug_shape": {
+        "assertion": true,
+        "deadlock": false,
+        "error": false,
+        "nontermination": false,
+        "race": true
+      },
+      "cycles_detected": 0,
+      "exploration_capped": false,
+      "fair_cycles": 0,
+      "max_depth": 8,
+      "prefix_states_visited": 677,
+      "primary_verdict": "race",
+      "schedules_explored": 210,
+      "schedules_pruned": 0,
+      "strongly_unfair_cycles": 0,
+      "unfair_cycles": 0
+    }
+  },
+  "schema_version": 1,
+  "tree": {
+    "edges": [
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "write",
+          "label": "write data 1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": {
+            "immediate": 1,
+            "kind": "immediate"
+          }
+        },
+        "executed": true,
+        "source": 0,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 0
+        },
+        "target": 1
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 0,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 2
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "write",
+          "label": "write flag 1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": {
+            "immediate": 1,
+            "kind": "immediate"
+          }
+        },
+        "executed": true,
+        "source": 1,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 0
+        },
+        "target": 3
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush data",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 1,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 0,
+          "thread": 0
+        },
+        "target": 4
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 1,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 5
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush data",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 3,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 0,
+          "thread": 0
+        },
+        "target": 6
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 3,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 1,
+          "thread": 0
+        },
+        "target": 7
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 3,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 8
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "write",
+          "label": "write flag 1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": {
+            "immediate": 1,
+            "kind": "immediate"
+          }
+        },
+        "executed": true,
+        "source": 4,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 0
+        },
+        "target": 9
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 4,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 10
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 6,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 1,
+          "thread": 0
+        },
+        "target": 11
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 6,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 12
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush data",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 7,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 0,
+          "thread": 0
+        },
+        "target": 13
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 7,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 14
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 9,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 1,
+          "thread": 0
+        },
+        "target": 15
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 9,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 16
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 11,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 17
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 12,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 1,
+          "thread": 0
+        },
+        "target": 18
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r0 saw_flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 0,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 12,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 19
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush data",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 14,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 0,
+          "thread": 0
+        },
+        "target": 20
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r0 saw_flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 0,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 14,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 21
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 0,
+          "expected": null,
+          "kind": "read",
+          "label": "read flag -> r0",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 15,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 0,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 22
+      },
+      {
+        "action": {
+          "address": "flag",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 16,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 1,
+          "thread": 0
+        },
+        "target": 23
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r0 saw_flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 0,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 16,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 24
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r0 saw_flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 0,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 17,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 25
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r0 saw_flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 0,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 18,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 26
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush data",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 21,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 0,
+          "thread": 0
+        },
+        "target": 27
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 1,
+          "expected": null,
+          "kind": "read",
+          "label": "read data -> r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 21,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 5,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 28
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r0 saw_flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 0,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 22,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 29
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r0 saw_flag",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 0,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 23,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 1,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 30
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 1,
+          "expected": null,
+          "kind": "read",
+          "label": "read data -> r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 25,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 5,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 31
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": 7,
+          "expected": null,
+          "kind": "set",
+          "label": "set r7 1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": {
+            "immediate": 1,
+            "kind": "immediate"
+          }
+        },
+        "executed": true,
+        "source": 26,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 2,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 32
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 1,
+          "expected": null,
+          "kind": "read",
+          "label": "read data -> r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 27,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 5,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 33
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "flush",
+          "label": "flush data",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 28,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 4294967295,
+          "flush_address_id": 0,
+          "thread": 0
+        },
+        "target": 34
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "assert",
+          "label": "assert r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 1,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 28,
+        "status": "PRUNED",
+        "step": {
+          "action_index": 6,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 35
+      },
+      {
+        "action": {
+          "address": "data",
+          "barrier": null,
+          "condition": null,
+          "destination_register": 1,
+          "expected": null,
+          "kind": "read",
+          "label": "read data -> r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 29,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 5,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 36
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": 7,
+          "expected": null,
+          "kind": "set",
+          "label": "set r7 1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": null,
+          "target_thread": 0,
+          "value": {
+            "immediate": 1,
+            "kind": "immediate"
+          }
+        },
+        "executed": true,
+        "source": 30,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 2,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 37
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "assert",
+          "label": "assert r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 1,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 31,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 6,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 38
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r7 done",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 7,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 32,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 3,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 39
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "assert",
+          "label": "assert r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 1,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 33,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 6,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 40
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "assert",
+          "label": "assert r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 1,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 34,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 6,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 41
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "assert",
+          "label": "assert r1",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 1,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 36,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 6,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 42
+      },
+      {
+        "action": {
+          "address": null,
+          "barrier": null,
+          "condition": null,
+          "destination_register": null,
+          "expected": null,
+          "kind": "branch_nonzero",
+          "label": "bnz r7 done",
+          "mutex": null,
+          "parties": 0,
+          "rwlock": null,
+          "semaphore": null,
+          "source_register": 7,
+          "target_thread": 0,
+          "value": null
+        },
+        "executed": true,
+        "source": 37,
+        "status": "EXPLORED",
+        "step": {
+          "action_index": 3,
+          "flush_address_id": null,
+          "thread": 1
+        },
+        "target": 43
+      }
+    ],
+    "expansion": "DPOR-reached prefixes plus exact counted boundaries for naive-only PRUNED subtrees",
+    "nodes": [
+      {
+        "choice_point": true,
+        "depth": 0,
+        "dpor_schedules_below": 6,
+        "enabled": [
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 0,
+        "naive_schedules_below": 210,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 1,
+        "dpor_schedules_below": 6,
+        "enabled": [
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 0
+          },
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 0,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 1,
+        "naive_schedules_below": 105,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 1,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 2,
+        "naive_schedules_below": 105,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 2,
+        "dpor_schedules_below": 4,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 0,
+            "thread": 0
+          },
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 1,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 3,
+        "naive_schedules_below": 30,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 2,
+        "dpor_schedules_below": 2,
+        "enabled": [
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 4,
+        "naive_schedules_below": 15,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 2,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 5,
+        "naive_schedules_below": 60,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 3,
+        "dpor_schedules_below": 2,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 1,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 6,
+        "naive_schedules_below": 5,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 3,
+        "dpor_schedules_below": 2,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 0,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 7,
+        "naive_schedules_below": 5,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 3,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 8,
+        "naive_schedules_below": 20,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 3,
+        "dpor_schedules_below": 2,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 1,
+            "thread": 0
+          },
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 9,
+        "naive_schedules_below": 5,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 3,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 10,
+        "naive_schedules_below": 10,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 4,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 11,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 4,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 1,
+            "thread": 0
+          },
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 12,
+        "naive_schedules_below": 4,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 4,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 13,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 4,
+        "dpor_schedules_below": 2,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 0,
+            "thread": 0
+          },
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 14,
+        "naive_schedules_below": 4,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 4,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 0,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 15,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 4,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 1,
+            "thread": 0
+          },
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 16,
+        "naive_schedules_below": 4,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 5,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 17,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 5,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 18,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 5,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 19,
+        "naive_schedules_below": 3,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 5,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 20,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 5,
+        "dpor_schedules_below": 2,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 0,
+            "thread": 0
+          },
+          {
+            "action_index": 5,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 21,
+        "naive_schedules_below": 3,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 5,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 22,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 5,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 1,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 23,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 5,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 24,
+        "naive_schedules_below": 3,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 6,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 5,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 25,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 6,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 2,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 26,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 6,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 5,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 27,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": true,
+        "depth": 6,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 4294967295,
+            "flush_address_id": 0,
+            "thread": 0
+          },
+          {
+            "action_index": 6,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          0,
+          1
+        ],
+        "id": 28,
+        "naive_schedules_below": 2,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 6,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 5,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 29,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 6,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 2,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 30,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 7,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 6,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 31,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 7,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 3,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 32,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 7,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 6,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 33,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 7,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 6,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 34,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 7,
+        "dpor_schedules_below": 0,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 35,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "PRUNED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 7,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 6,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 36,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 7,
+        "dpor_schedules_below": 1,
+        "enabled": [
+          {
+            "action_index": 3,
+            "flush_address_id": null,
+            "thread": 1
+          }
+        ],
+        "enabled_threads": [
+          1
+        ],
+        "id": 37,
+        "naive_schedules_below": 1,
+        "outcome": null,
+        "status": "EXPLORED",
+        "terminal": false
+      },
+      {
+        "choice_point": false,
+        "depth": 8,
+        "dpor_schedules_below": 1,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 38,
+        "naive_schedules_below": 1,
+        "outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": false,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "status": "EXPLORED",
+        "terminal": true
+      },
+      {
+        "choice_point": false,
+        "depth": 8,
+        "dpor_schedules_below": 1,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 39,
+        "naive_schedules_below": 1,
+        "outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": false,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "status": "EXPLORED",
+        "terminal": true
+      },
+      {
+        "choice_point": false,
+        "depth": 8,
+        "dpor_schedules_below": 1,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 40,
+        "naive_schedules_below": 1,
+        "outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": false,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "status": "EXPLORED",
+        "terminal": true
+      },
+      {
+        "choice_point": false,
+        "depth": 8,
+        "dpor_schedules_below": 1,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 41,
+        "naive_schedules_below": 1,
+        "outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": true,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "status": "EXPLORED",
+        "terminal": true
+      },
+      {
+        "choice_point": false,
+        "depth": 8,
+        "dpor_schedules_below": 1,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 42,
+        "naive_schedules_below": 1,
+        "outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": false,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "status": "EXPLORED",
+        "terminal": true
+      },
+      {
+        "choice_point": false,
+        "depth": 8,
+        "dpor_schedules_below": 1,
+        "enabled": [],
+        "enabled_threads": [],
+        "id": 43,
+        "naive_schedules_below": 1,
+        "outcome": {
+          "bound_exceeded_executions": 0,
+          "bug_shape": {
+            "assertion": false,
+            "deadlock": false,
+            "error": false,
+            "nontermination": false,
+            "race": true
+          },
+          "cycles_detected": 0,
+          "exploration_capped": false,
+          "fair_cycles": 0,
+          "primary_verdict": "race",
+          "schedules_explored": 1,
+          "strongly_unfair_cycles": 0,
+          "unfair_cycles": 0
+        },
+        "status": "EXPLORED",
+        "terminal": true
+      }
+    ],
+    "root": 0
+  }
+}

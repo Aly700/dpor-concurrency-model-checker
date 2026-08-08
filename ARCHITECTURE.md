@@ -4,6 +4,7 @@
 
 ```text
 .dpor text program -> CLI parser -> model::Program -> scheduler -> explored schedules -> HB/race/deadlock analysis -> minimal replay -> CLI report/replay schedule
+                                                        \-> read-only showcase observations -> deterministic tree/evidence export
 ```
 
 ## Current scaffold
@@ -31,8 +32,47 @@
   identity still reproduces; public exploration reports are normalized through
   it before return.
 - `VectorClock` is the base happens-before data structure.
+- `ModelChecker::collect_naive_schedules`, `collect_dpor_schedules`, and
+  `inspect_schedule` are read-only observation APIs for verification and
+  evidence tooling. They reuse the exact scheduler and replay interpreter;
+  ordinary exploration passes no collector and pays no evidence-allocation
+  cost.
 - The cross-validation executable `dpor_oracle` checks a deterministic capped
   family of tiny programs against the naive oracle.
+
+## Showcase observation and export boundary
+
+The `showcase/` layer turns complete bounded checker runs into portfolio data
+without becoming another semantics implementation. `collect_dpor_schedules`
+threads an optional terminal-schedule sink through DPOR. The ordinary
+`explore_dpor` call passes `nullptr`; the collection call records the exact
+numeric representative whenever the existing result count records a normal
+leaf, terminal error/assertion, exact cycle cut, or step-bound attempt. A
+bound attempt is retained as a numeric terminal edge but is explicitly marked
+`executed: false` by `inspect_schedule`.
+
+`inspect_schedule` validates and advances through the same replay functions as
+the CLI. For each step it exposes the sorted enabled endpoints, effective
+action, executing thread's dense pre/post vector clock, and deterministic
+register/shared-memory/store-buffer diffs. The observations are copied after
+the scheduler decision; they cannot feed back into enabledness, HB, race
+detection, or DPOR.
+
+The export comparison expands every DPOR-reached numeric prefix. At an enabled
+child prefix absent from the complete naive terminal set's DPOR subset, it
+writes one `PRUNED` boundary with the exact number of naive schedules below
+that prefix. These disjoint counts conserve
+`dpor_explored + pruned == naive_equivalent`. This is an evidence visualization
+of two actual complete explorations, not the independently checkable pruning
+certificate deferred by ADR 0031: it does not claim to prove each local
+independence decision.
+
+`showcase/manifest.json` labels selected source/configuration bytes `CURATED`,
+deterministic checker products `MEASURED`, and the stats ledger
+`MEASURED_ENVIRONMENT_DEPENDENT`. Wall-clock microseconds are taken only in the
+export process, never in core logic, and are the sole fields excluded from
+regeneration comparison. Trees, witnesses, vector clocks, verdicts, schedule
+counts, state-prefix counts, and depths remain byte-deterministic.
 
 ## Phase 1 execution model
 

@@ -1,0 +1,30 @@
+# Fresh verifier probe: both zero observations are SC-impossible but TSO-reachable.
+thread:
+  write x 1
+  read y -> r0
+  bnz r0 t0_done
+  atomic_store t0_zero 1
+t0_done:
+
+thread:
+  write y 1
+  read x -> r0
+  bnz r0 t1_done
+  atomic_store t1_zero 1
+t1_done:
+
+thread:
+  join 0
+  join 1
+  atomic_load t0_zero -> r0
+  bnz r0 check_other
+  set r6 1
+  bnz r6 done
+check_other:
+  atomic_load t1_zero -> r1
+  bnz r1 fail
+  set r6 1
+  bnz r6 done
+fail:
+  assert r7
+done:

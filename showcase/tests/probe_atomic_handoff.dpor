@@ -1,0 +1,14 @@
+# Fresh verifier probe: the release/acquire handoff must order payload.
+thread:
+  write payload 7
+  atomic_store ready 1
+
+thread:
+  atomic_load ready -> r0
+  bnz r0 saw_ready
+  set r7 1
+  bnz r7 done
+saw_ready:
+  read payload -> r1
+  assert r1
+done:

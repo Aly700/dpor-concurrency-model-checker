@@ -1,6 +1,8 @@
 cmake_minimum_required(VERSION 3.20)
 project(dpor_model_checker LANGUAGES CXX)
 
+find_package(Python3 COMPONENTS Interpreter REQUIRED)
+
 # The verification gates are exhaustive sweeps; unoptimized builds make them
 # ~10x slower. Default to Release when the user does not choose.
 if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
@@ -134,6 +136,15 @@ add_executable(classic_gallery_tests tests/classic_gallery.cpp)
 target_link_libraries(classic_gallery_tests PRIVATE dpor_cli_lib)
 target_compile_options(classic_gallery_tests PRIVATE -Wall -Wextra -Wpedantic)
 
+add_executable(showcase_export_api_tests showcase/tests/export_api.cpp)
+target_link_libraries(showcase_export_api_tests PRIVATE model_checker)
+target_compile_options(showcase_export_api_tests PRIVATE -Wall -Wextra -Wpedantic)
+
+add_executable(dpor_showcase_export showcase/exporter.cpp)
+target_include_directories(dpor_showcase_export PRIVATE showcase)
+target_link_libraries(dpor_showcase_export PRIVATE dpor_cli_lib)
+target_compile_options(dpor_showcase_export PRIVATE -Wall -Wextra -Wpedantic)
+
 add_executable(dpor_fuzz_differential
     tests/fuzz_differential.cpp
 )
@@ -261,6 +272,22 @@ add_test(NAME spawn_tests COMMAND spawn_tests)
 add_test(NAME cli_tests COMMAND cli_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})
 add_test(NAME classic_gallery_tests COMMAND classic_gallery_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})
 add_test(NAME dpor_fuzz_differential COMMAND dpor_fuzz_differential)
+add_test(NAME showcase_export_api_tests COMMAND showcase_export_api_tests)
+add_test(
+    NAME showcase_python_tests
+    COMMAND ${Python3_EXECUTABLE} -m unittest
+            showcase.tests.test_generate showcase.tests.test_verify -v
+)
+set_tests_properties(showcase_python_tests PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
+add_test(
+    NAME showcase_verifier
+    COMMAND ${Python3_EXECUTABLE} showcase/verify.py
+            --source-dir ${CMAKE_SOURCE_DIR}
+            --showcase-dir ${CMAKE_SOURCE_DIR}/showcase
+            --build-dir ${CMAKE_BINARY_DIR}
+            --skip-build
+)
+set_tests_properties(showcase_verifier PROPERTIES WORKING_DIRECTORY ${CMAKE_SOURCE_DIR})
 
 if(DPOR_BUILD_EXPLORATION_PROFILE)
     add_test(NAME exploration_metrics_tests COMMAND exploration_metrics_tests)

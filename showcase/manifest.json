@@ -1,0 +1,445 @@
+{
+  "artifacts": [
+    {
+      "bytes": 4441,
+      "contains": "The selected teaching corpus, complete bounds, and expected semantic shapes.",
+      "deterministic": true,
+      "path": "config.json",
+      "provenance": "CURATED",
+      "sha256": "352db4f029389852202c589b6b25477a8f3135a1cca04b3dd37150e6980542a0",
+      "source": "showcase/config.json"
+    },
+    {
+      "bytes": 8696,
+      "contains": "Checker verdicts, minimal witnesses, effects, and vector clocks for The smallest race under SC.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "evidence/data_race-sc.json",
+      "program_id": "data_race",
+      "provenance": "MEASURED",
+      "run_id": "data_race-sc",
+      "sha256": "4b6309c47ed39bb39b8e6d08af7781a2b3188a43ed3c590ad4a44c1477e33ad6"
+    },
+    {
+      "bytes": 65008,
+      "contains": "Checker verdicts, minimal witnesses, effects, and vector clocks for Dekker's algorithm under SC.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "evidence/dekker_counter-sc.json",
+      "program_id": "dekker_counter",
+      "provenance": "MEASURED",
+      "run_id": "dekker_counter-sc",
+      "sha256": "0083963c04922756500de7319bf6e9c082e1cb89610d53e6d2fbb316c335cb6d"
+    },
+    {
+      "bytes": 130009,
+      "contains": "Checker verdicts, minimal witnesses, effects, and vector clocks for Dekker with one missing wait under SC.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "evidence/dekker_counter_broken_drop_turn_wait-sc.json",
+      "program_id": "dekker_counter_broken_drop_turn_wait",
+      "provenance": "MEASURED",
+      "run_id": "dekker_counter_broken_drop_turn_wait-sc",
+      "sha256": "788e13faa624aa08fb0fd862c7258f8815975a6bb194ff343203fdac3705893f"
+    },
+    {
+      "bytes": 21539,
+      "contains": "Checker verdicts, minimal witnesses, effects, and vector clocks for Lost wakeup under SC.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "evidence/lost_wakeup-sc.json",
+      "program_id": "lost_wakeup",
+      "provenance": "MEASURED",
+      "run_id": "lost_wakeup-sc",
+      "sha256": "986420c20bd5f5db443d5c7663bee181d688123e3bbbd569a4e16bb103ad9494"
+    },
+    {
+      "baseline_model": "sc",
+      "bytes": 1309,
+      "contains": "Paired SC/PSO records proving the assertion-reachability property flip.",
+      "deterministic": true,
+      "path": "evidence/mp_pso-model-comparison.json",
+      "program_id": "mp_pso",
+      "provenance": "MEASURED",
+      "sha256": "c526e9a4bc9aeb19fb7563c88eb05ea12c70a7ce79d611746d660fa052f7d362",
+      "variant_model": "pso"
+    },
+    {
+      "bytes": 47287,
+      "contains": "Checker verdicts, minimal witnesses, effects, and vector clocks for PSO message-passing discriminator under PSO.",
+      "deterministic": true,
+      "memory_model": "pso",
+      "path": "evidence/mp_pso-pso.json",
+      "program_id": "mp_pso",
+      "provenance": "MEASURED",
+      "run_id": "mp_pso-pso",
+      "sha256": "1170d645650fcae3a4475f447a6024927872b22682ef4fb4e14a41e168a7a7c2"
+    },
+    {
+      "bytes": 13257,
+      "contains": "Checker verdicts, minimal witnesses, effects, and vector clocks for PSO message-passing discriminator under SC.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "evidence/mp_pso-sc.json",
+      "program_id": "mp_pso",
+      "provenance": "MEASURED",
+      "run_id": "mp_pso-sc",
+      "sha256": "87f52ffb0e32de0b5f6caa2d64df76a874461e55feefb084862421271d465b0d"
+    },
+    {
+      "bytes": 35865,
+      "contains": "Checker verdicts, minimal witnesses, effects, and vector clocks for Test-and-set spin lasso under SC.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "evidence/test_and_set_spinlock_counter-sc.json",
+      "program_id": "test_and_set_spinlock_counter",
+      "provenance": "MEASURED",
+      "run_id": "test_and_set_spinlock_counter-sc",
+      "sha256": "707f47c503c38b9ea83c1d9322c9914e02ebf10572998cba495609fbd489c877"
+    },
+    {
+      "bytes": 83,
+      "contains": "Exact source text for The smallest race.",
+      "deterministic": true,
+      "path": "programs/data_race.dpor",
+      "program_id": "data_race",
+      "provenance": "CURATED",
+      "sha256": "c9822e3d70e8d10e86beb4e238888ae8f3e2f00d1305e01644a5152e2e5f6711",
+      "source": "examples/data_race.dpor"
+    },
+    {
+      "bytes": 1081,
+      "contains": "Exact source text for Dekker's algorithm.",
+      "deterministic": true,
+      "path": "programs/dekker_counter.dpor",
+      "program_id": "dekker_counter",
+      "provenance": "CURATED",
+      "sha256": "c2f9b2a1492fbda8cc3a5f0bd1021018d52352c44079d302ca549ce5481c6325",
+      "source": "examples/classic/dekker_counter.dpor"
+    },
+    {
+      "bytes": 1002,
+      "contains": "Exact source text for Dekker with one missing wait.",
+      "deterministic": true,
+      "path": "programs/dekker_counter_broken_drop_turn_wait.dpor",
+      "program_id": "dekker_counter_broken_drop_turn_wait",
+      "provenance": "CURATED",
+      "sha256": "a63a1b9a96cec6bd0ec36bff460b792a27045dece7dade5166a51b9109b70837",
+      "source": "examples/classic/dekker_counter_broken_drop_turn_wait.dpor"
+    },
+    {
+      "bytes": 145,
+      "contains": "Exact source text for Lost wakeup.",
+      "deterministic": true,
+      "path": "programs/lost_wakeup.dpor",
+      "program_id": "lost_wakeup",
+      "provenance": "CURATED",
+      "sha256": "ec6c7b0a3ffd7a67a79c5f29bd998f8a6b8fc16cd461b398e4fae90c5e433bae",
+      "source": "examples/lost_wakeup.dpor"
+    },
+    {
+      "bytes": 305,
+      "contains": "Exact source text for PSO message-passing discriminator.",
+      "deterministic": true,
+      "path": "programs/mp_pso.dpor",
+      "program_id": "mp_pso",
+      "provenance": "CURATED",
+      "sha256": "08144962b02e75395abf9fb322ac720760606742cf1c0c336bb5437d81ef21c5",
+      "source": "examples/classic/mp_pso.dpor"
+    },
+    {
+      "bytes": 608,
+      "contains": "Exact source text for Test-and-set spin lasso.",
+      "deterministic": true,
+      "path": "programs/test_and_set_spinlock_counter.dpor",
+      "program_id": "test_and_set_spinlock_counter",
+      "provenance": "CURATED",
+      "sha256": "446972667c8c57040da1f4dbfbe9b0eef8efb5382087381fa62eff4d999f80b9",
+      "source": "examples/classic/test_and_set_spinlock_counter.dpor"
+    },
+    {
+      "bytes": 8,
+      "contains": "CLI-replayable minimal race schedule for The smallest race under SC.",
+      "deterministic": true,
+      "evidence": "evidence/data_race-sc.json",
+      "memory_model": "sc",
+      "path": "schedules/data_race-sc-race.schedule",
+      "program_id": "data_race",
+      "provenance": "MEASURED",
+      "run_id": "data_race-sc",
+      "sha256": "a7620f74c519e64e5258ad490663eb7fc96442a7be2881ba156db48949463add",
+      "witness_kind": "race"
+    },
+    {
+      "bytes": 67,
+      "contains": "CLI-replayable minimal nontermination schedule for Dekker's algorithm under SC.",
+      "deterministic": true,
+      "evidence": "evidence/dekker_counter-sc.json",
+      "memory_model": "sc",
+      "path": "schedules/dekker_counter-sc-nontermination.schedule",
+      "program_id": "dekker_counter",
+      "provenance": "MEASURED",
+      "run_id": "dekker_counter-sc",
+      "sha256": "d051ec1ee101d5e0db0ae0161ffb978cbb7f0c18eece2cc19f629c373a378856",
+      "witness_kind": "nontermination"
+    },
+    {
+      "bytes": 67,
+      "contains": "CLI-replayable minimal nontermination schedule for Dekker with one missing wait under SC.",
+      "deterministic": true,
+      "evidence": "evidence/dekker_counter_broken_drop_turn_wait-sc.json",
+      "memory_model": "sc",
+      "path": "schedules/dekker_counter_broken_drop_turn_wait-sc-nontermination.schedule",
+      "program_id": "dekker_counter_broken_drop_turn_wait",
+      "provenance": "MEASURED",
+      "run_id": "dekker_counter_broken_drop_turn_wait-sc",
+      "sha256": "625e1e0f01d47b315f2fa586857cf95e8245cc33d9b5301b2e9b39a685cc6482",
+      "witness_kind": "nontermination"
+    },
+    {
+      "bytes": 74,
+      "contains": "CLI-replayable minimal race schedule for Dekker with one missing wait under SC.",
+      "deterministic": true,
+      "evidence": "evidence/dekker_counter_broken_drop_turn_wait-sc.json",
+      "memory_model": "sc",
+      "path": "schedules/dekker_counter_broken_drop_turn_wait-sc-race.schedule",
+      "program_id": "dekker_counter_broken_drop_turn_wait",
+      "provenance": "MEASURED",
+      "run_id": "dekker_counter_broken_drop_turn_wait-sc",
+      "sha256": "f24ea1c7fa499161bea5f9b30583acca577cb5a26523d93775693f77325364fc",
+      "witness_kind": "race"
+    },
+    {
+      "bytes": 24,
+      "contains": "CLI-replayable minimal deadlock schedule for Lost wakeup under SC.",
+      "deterministic": true,
+      "evidence": "evidence/lost_wakeup-sc.json",
+      "memory_model": "sc",
+      "path": "schedules/lost_wakeup-sc-deadlock.schedule",
+      "program_id": "lost_wakeup",
+      "provenance": "MEASURED",
+      "run_id": "lost_wakeup-sc",
+      "sha256": "c271d7b8f89710961866d9f34ae7fe9f0766733b66c8029b4578b133388049d2",
+      "witness_kind": "deadlock"
+    },
+    {
+      "bytes": 39,
+      "contains": "CLI-replayable minimal assertion schedule for PSO message-passing discriminator under PSO.",
+      "deterministic": true,
+      "evidence": "evidence/mp_pso-pso.json",
+      "memory_model": "pso",
+      "path": "schedules/mp_pso-pso-assertion.schedule",
+      "program_id": "mp_pso",
+      "provenance": "MEASURED",
+      "run_id": "mp_pso-pso",
+      "sha256": "457ea851ff5799454d394b5da9596934ee4508424dc0d5f7ef4daff023992f29",
+      "witness_kind": "assertion"
+    },
+    {
+      "bytes": 42,
+      "contains": "CLI-replayable minimal race schedule for PSO message-passing discriminator under PSO.",
+      "deterministic": true,
+      "evidence": "evidence/mp_pso-pso.json",
+      "memory_model": "pso",
+      "path": "schedules/mp_pso-pso-race.schedule",
+      "program_id": "mp_pso",
+      "provenance": "MEASURED",
+      "run_id": "mp_pso-pso",
+      "sha256": "2bc6f4757bb148849aff0a208afc4268898be50c15fb41f4ea97ada27724b696",
+      "witness_kind": "race"
+    },
+    {
+      "bytes": 12,
+      "contains": "CLI-replayable minimal race schedule for PSO message-passing discriminator under SC.",
+      "deterministic": true,
+      "evidence": "evidence/mp_pso-sc.json",
+      "memory_model": "sc",
+      "path": "schedules/mp_pso-sc-race.schedule",
+      "program_id": "mp_pso",
+      "provenance": "MEASURED",
+      "run_id": "mp_pso-sc",
+      "sha256": "fda94807c1f066ce755de6b05813e5ff82c51576c435a6251f6acc60803dd497",
+      "witness_kind": "race"
+    },
+    {
+      "bytes": 36,
+      "contains": "CLI-replayable minimal nontermination schedule for Test-and-set spin lasso under SC.",
+      "deterministic": true,
+      "evidence": "evidence/test_and_set_spinlock_counter-sc.json",
+      "memory_model": "sc",
+      "path": "schedules/test_and_set_spinlock_counter-sc-nontermination.schedule",
+      "program_id": "test_and_set_spinlock_counter",
+      "provenance": "MEASURED",
+      "run_id": "test_and_set_spinlock_counter-sc",
+      "sha256": "f0ce32e1498d7cb61a621d3720b41dd8ed2cd9a279335cbe444c1dab8e868fdc",
+      "witness_kind": "nontermination"
+    },
+    {
+      "bytes": null,
+      "contains": "Per-run schedules, pruned schedules, prefix states, depth, and environment-dependent wall clock.",
+      "deterministic": false,
+      "path": "stats/runs.json",
+      "provenance": "MEASURED_ENVIRONMENT_DEPENDENT",
+      "sha256": null
+    },
+    {
+      "bytes": 7273,
+      "contains": "Exact SC DPOR tree with counted naive-only PRUNED boundaries for The smallest race.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "trees/data_race-sc.json",
+      "program_id": "data_race",
+      "provenance": "MEASURED",
+      "run_id": "data_race-sc",
+      "sha256": "78880ef66b2c7f440f166a9e0464ce0af9efdab6d180b0ff93531454b3db6e0f"
+    },
+    {
+      "bytes": 2154954,
+      "contains": "Exact SC DPOR tree with counted naive-only PRUNED boundaries for Dekker's algorithm.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "trees/dekker_counter-sc.json",
+      "program_id": "dekker_counter",
+      "provenance": "MEASURED",
+      "run_id": "dekker_counter-sc",
+      "sha256": "89f19c73e7516e59cae6e2d7f482b17ca00054e66f35acd1dcc66f31e8a3e313"
+    },
+    {
+      "bytes": 2480865,
+      "contains": "Exact SC DPOR tree with counted naive-only PRUNED boundaries for Dekker with one missing wait.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "trees/dekker_counter_broken_drop_turn_wait-sc.json",
+      "program_id": "dekker_counter_broken_drop_turn_wait",
+      "provenance": "MEASURED",
+      "run_id": "dekker_counter_broken_drop_turn_wait-sc",
+      "sha256": "cd5c8b4fc1dbb1b45d960b390db67a1fd6d92f5a70c6ca79441d8943c645fc4d"
+    },
+    {
+      "bytes": 24727,
+      "contains": "Exact SC DPOR tree with counted naive-only PRUNED boundaries for Lost wakeup.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "trees/lost_wakeup-sc.json",
+      "program_id": "lost_wakeup",
+      "provenance": "MEASURED",
+      "run_id": "lost_wakeup-sc",
+      "sha256": "4cfc4cc49bb1b2805d4e9c9787a9fbc776323ceb4b41ecfd0d79cdd052b98286"
+    },
+    {
+      "bytes": 52670,
+      "contains": "Exact PSO DPOR tree with counted naive-only PRUNED boundaries for PSO message-passing discriminator.",
+      "deterministic": true,
+      "memory_model": "pso",
+      "path": "trees/mp_pso-pso.json",
+      "program_id": "mp_pso",
+      "provenance": "MEASURED",
+      "run_id": "mp_pso-pso",
+      "sha256": "0536f530686aff0b93633c3c031073ee883649203711309bfae96b1290bf9bed"
+    },
+    {
+      "bytes": 17526,
+      "contains": "Exact SC DPOR tree with counted naive-only PRUNED boundaries for PSO message-passing discriminator.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "trees/mp_pso-sc.json",
+      "program_id": "mp_pso",
+      "provenance": "MEASURED",
+      "run_id": "mp_pso-sc",
+      "sha256": "e5aace8b0a8e7bfe6fbfb0103ce6207c2930db66065b895f749115acf772be63"
+    },
+    {
+      "bytes": 602781,
+      "contains": "Exact SC DPOR tree with counted naive-only PRUNED boundaries for Test-and-set spin lasso.",
+      "deterministic": true,
+      "memory_model": "sc",
+      "path": "trees/test_and_set_spinlock_counter-sc.json",
+      "program_id": "test_and_set_spinlock_counter",
+      "provenance": "MEASURED",
+      "run_id": "test_and_set_spinlock_counter-sc",
+      "sha256": "86c043eee443f18d7cbcca265cceb635c77b41d9350f516ec895c5ac29e5b439"
+    }
+  ],
+  "discipline": {
+    "CURATED": "Human-selected input programs and corpus configuration; never represented as measurements.",
+    "MEASURED": "Real checker output recomputed at export time and byte-deterministic.",
+    "MEASURED_ENVIRONMENT_DEPENDENT": "Real checker timing plus deterministic counters; wall clock is excluded from byte comparison."
+  },
+  "generator": {
+    "checker_exporter": "build/dpor_showcase_export",
+    "command": "python3 showcase/generate.py --output showcase --exporter build/dpor_showcase_export",
+    "replay_cli": "build/dpor"
+  },
+  "programs": [
+    {
+      "exported_source": "programs/data_race.dpor",
+      "id": "data_race",
+      "runs": [
+        "data_race-sc"
+      ],
+      "source": "examples/data_race.dpor",
+      "teaching_role": "Two unordered writes establish the minimal conflicting-access and vector-clock picture.",
+      "title": "The smallest race"
+    },
+    {
+      "exported_source": "programs/dekker_counter.dpor",
+      "id": "dekker_counter",
+      "runs": [
+        "dekker_counter-sc"
+      ],
+      "source": "examples/classic/dekker_counter.dpor",
+      "teaching_role": "The intact classic algorithm preserves mutual exclusion while an unfair spinner supplies a lasso witness.",
+      "title": "Dekker's algorithm"
+    },
+    {
+      "exported_source": "programs/dekker_counter_broken_drop_turn_wait.dpor",
+      "id": "dekker_counter_broken_drop_turn_wait",
+      "runs": [
+        "dekker_counter_broken_drop_turn_wait-sc"
+      ],
+      "source": "examples/classic/dekker_counter_broken_drop_turn_wait.dpor",
+      "teaching_role": "The paired one-line wound re-raises the courtesy flag and enters instead of waiting for turn.",
+      "title": "Dekker with one missing wait"
+    },
+    {
+      "exported_source": "programs/lost_wakeup.dpor",
+      "id": "lost_wakeup",
+      "runs": [
+        "lost_wakeup-sc"
+      ],
+      "source": "examples/lost_wakeup.dpor",
+      "teaching_role": "Two signals cannot queue a future condition-variable permit, leaving the second wait deadlocked.",
+      "title": "Lost wakeup"
+    },
+    {
+      "exported_source": "programs/test_and_set_spinlock_counter.dpor",
+      "id": "test_and_set_spinlock_counter",
+      "runs": [
+        "test_and_set_spinlock_counter-sc"
+      ],
+      "source": "examples/classic/test_and_set_spinlock_counter.dpor",
+      "teaching_role": "A correct critical section can still admit an unfair infinite retry schedule with an exact stem and loop.",
+      "title": "Test-and-set spin lasso"
+    },
+    {
+      "exported_source": "programs/mp_pso.dpor",
+      "id": "mp_pso",
+      "runs": [
+        "mp_pso-sc",
+        "mp_pso-pso"
+      ],
+      "source": "examples/classic/mp_pso.dpor",
+      "teaching_role": "PSO may flush the publication flag before data, flipping assertion reachability while the primary race verdict remains honest in both models.",
+      "title": "PSO message-passing discriminator"
+    }
+  ],
+  "schema_version": 1,
+  "summary": {
+    "artifact_count": 32,
+    "by_provenance": {
+      "CURATED": 7,
+      "MEASURED": 24,
+      "MEASURED_ENVIRONMENT_DEPENDENT": 1
+    }
+  }
+}

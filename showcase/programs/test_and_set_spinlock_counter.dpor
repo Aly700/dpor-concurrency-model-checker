@@ -1,0 +1,24 @@
+# Algorithm: test-and-set spinlock built from try_lock.
+# Property: the plain critical-section counter touch has no data race.
+# Expected verdict: nontermination (with no race or assertion).
+# A failed try_lock writes zero, so the second bnz forms the retry path.
+thread:
+  set r7 1
+t0_retry:
+  try_lock counter_lock -> r0
+  bnz r0 t0_acquired
+  bnz r7 t0_retry
+t0_acquired:
+  read counter -> r1
+  write counter 1
+  unlock counter_lock
+thread:
+  set r7 1
+t1_retry:
+  try_lock counter_lock -> r0
+  bnz r0 t1_acquired
+  bnz r7 t1_retry
+t1_acquired:
+  read counter -> r1
+  write counter 2
+  unlock counter_lock

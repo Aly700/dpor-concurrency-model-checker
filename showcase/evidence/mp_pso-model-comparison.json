@@ -1,0 +1,49 @@
+{
+  "baseline_model": "sc",
+  "flip": {
+    "from": "holds",
+    "to": "violated"
+  },
+  "interpretation": "The assertion-reachability property flips. The primary checker verdict remains race in both models because the plain accesses are intentionally racy.",
+  "program_id": "mp_pso",
+  "property": "assertion_reachability",
+  "provenance": "MEASURED",
+  "records": {
+    "pso": {
+      "bug_shape": {
+        "assertion": true,
+        "deadlock": false,
+        "error": false,
+        "nontermination": false,
+        "race": true
+      },
+      "evidence_artifact": "evidence/mp_pso-pso.json",
+      "primary_verdict": "race",
+      "property": {
+        "name": "assertion_reachability",
+        "reachable": true,
+        "verdict": "violated"
+      },
+      "tree_artifact": "trees/mp_pso-pso.json"
+    },
+    "sc": {
+      "bug_shape": {
+        "assertion": false,
+        "deadlock": false,
+        "error": false,
+        "nontermination": false,
+        "race": true
+      },
+      "evidence_artifact": "evidence/mp_pso-sc.json",
+      "primary_verdict": "race",
+      "property": {
+        "name": "assertion_reachability",
+        "reachable": false,
+        "verdict": "holds"
+      },
+      "tree_artifact": "trees/mp_pso-sc.json"
+    }
+  },
+  "schema_version": 1,
+  "variant_model": "pso"
+}

@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "programs": [
+    {
+      "id": "data_race",
+      "source": "examples/data_race.dpor",
+      "title": "The smallest race",
+      "teaching_role": "Two unordered writes establish the minimal conflicting-access and vector-clock picture.",
+      "runs": [
+        {
+          "memory_model": "sc",
+          "step_bound": 4,
+          "max_schedules": 100000,
+          "expected": {
+            "primary_verdict": "race",
+            "race": true,
+            "deadlock": false,
+            "error": false,
+            "assertion": false,
+            "nontermination": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "dekker_counter",
+      "source": "examples/classic/dekker_counter.dpor",
+      "title": "Dekker's algorithm",
+      "teaching_role": "The intact classic algorithm preserves mutual exclusion while an unfair spinner supplies a lasso witness.",
+      "runs": [
+        {
+          "memory_model": "sc",
+          "step_bound": 9,
+          "max_schedules": 300000,
+          "expected": {
+            "primary_verdict": "nontermination",
+            "race": false,
+            "deadlock": false,
+            "error": false,
+            "assertion": false,
+            "nontermination": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "dekker_counter_broken_drop_turn_wait",
+      "source": "examples/classic/dekker_counter_broken_drop_turn_wait.dpor",
+      "title": "Dekker with one missing wait",
+      "teaching_role": "The paired one-line wound re-raises the courtesy flag and enters instead of waiting for turn.",
+      "runs": [
+        {
+          "memory_model": "sc",
+          "step_bound": 10,
+          "max_schedules": 500000,
+          "expected": {
+            "primary_verdict": "race",
+            "race": true,
+            "deadlock": false,
+            "error": false,
+            "assertion": false,
+            "nontermination": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "lost_wakeup",
+      "source": "examples/lost_wakeup.dpor",
+      "title": "Lost wakeup",
+      "teaching_role": "Two signals cannot queue a future condition-variable permit, leaving the second wait deadlocked.",
+      "runs": [
+        {
+          "memory_model": "sc",
+          "step_bound": 20,
+          "max_schedules": 100000,
+          "expected": {
+            "primary_verdict": "deadlock",
+            "race": false,
+            "deadlock": true,
+            "error": false,
+            "assertion": false,
+            "nontermination": false
+          }
+        }
+      ]
+    },
+    {
+      "id": "test_and_set_spinlock_counter",
+      "source": "examples/classic/test_and_set_spinlock_counter.dpor",
+      "title": "Test-and-set spin lasso",
+      "teaching_role": "A correct critical section can still admit an unfair infinite retry schedule with an exact stem and loop.",
+      "runs": [
+        {
+          "memory_model": "sc",
+          "step_bound": 10,
+          "max_schedules": 100000,
+          "expected": {
+            "primary_verdict": "nontermination",
+            "race": false,
+            "deadlock": false,
+            "error": false,
+            "assertion": false,
+            "nontermination": true
+          }
+        }
+      ]
+    },
+    {
+      "id": "mp_pso",
+      "source": "examples/classic/mp_pso.dpor",
+      "title": "PSO message-passing discriminator",
+      "teaching_role": "PSO may flush the publication flag before data, flipping assertion reachability while the primary race verdict remains honest in both models.",
+      "runs": [
+        {
+          "memory_model": "sc",
+          "step_bound": 20,
+          "max_schedules": 100000,
+          "expected": {
+            "primary_verdict": "race",
+            "race": true,
+            "deadlock": false,
+            "error": false,
+            "assertion": false,
+            "nontermination": false
+          }
+        },
+        {
+          "memory_model": "pso",
+          "step_bound": 20,
+          "max_schedules": 100000,
+          "expected": {
+            "primary_verdict": "race",
+            "race": true,
+            "deadlock": false,
+            "error": false,
+            "assertion": true,
+            "nontermination": false
+          }
+        }
+      ]
+    }
+  ],
+  "model_comparisons": [
+    {
+      "program_id": "mp_pso",
+      "property": "assertion_reachability",
+      "baseline_model": "sc",
+      "variant_model": "pso"
+    }
+  ]
+}

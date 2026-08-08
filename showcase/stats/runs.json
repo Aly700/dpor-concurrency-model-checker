@@ -1,0 +1,434 @@
+{
+  "provenance": "MEASURED_ENVIRONMENT_DEPENDENT",
+  "runs": [
+    {
+      "configuration": {
+        "max_schedules": 100000,
+        "step_bound_per_thread": 4
+      },
+      "dpor": {
+        "bound_exceeded_executions": 0,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": false,
+          "race": true
+        },
+        "cycles_detected": 0,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 2,
+        "prefix_states_visited": 5,
+        "primary_verdict": "race",
+        "schedules_explored": 2,
+        "schedules_pruned": 0,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 0,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 29
+      },
+      "memory_model": "sc",
+      "naive": {
+        "bound_exceeded_executions": 0,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": false,
+          "race": true
+        },
+        "cycles_detected": 0,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 2,
+        "prefix_states_visited": 5,
+        "primary_verdict": "race",
+        "schedules_explored": 2,
+        "schedules_pruned": 0,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 0,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 29
+      },
+      "program_id": "data_race",
+      "pruning": {
+        "dpor_schedules_explored": 2,
+        "naive_equivalent_schedules": 2,
+        "pruning_fraction_denominator": 2,
+        "pruning_fraction_numerator": 0,
+        "pruning_percent_milli": 0,
+        "schedules_pruned": 0
+      },
+      "run_id": "data_race-sc"
+    },
+    {
+      "configuration": {
+        "max_schedules": 300000,
+        "step_bound_per_thread": 9
+      },
+      "dpor": {
+        "bound_exceeded_executions": 188,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": true,
+          "race": false
+        },
+        "cycles_detected": 70,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 19,
+        "prefix_states_visited": 1317,
+        "primary_verdict": "nontermination",
+        "schedules_explored": 269,
+        "schedules_pruned": 93615,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 70,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 4477
+      },
+      "memory_model": "sc",
+      "naive": {
+        "bound_exceeded_executions": 81393,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": true,
+          "race": false
+        },
+        "cycles_detected": 12393,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 19,
+        "prefix_states_visited": 245822,
+        "primary_verdict": "nontermination",
+        "schedules_explored": 93884,
+        "schedules_pruned": 0,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 12393,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 513695
+      },
+      "program_id": "dekker_counter",
+      "pruning": {
+        "dpor_schedules_explored": 269,
+        "naive_equivalent_schedules": 93884,
+        "pruning_fraction_denominator": 93884,
+        "pruning_fraction_numerator": 93615,
+        "pruning_percent_milli": 99713,
+        "schedules_pruned": 93615
+      },
+      "run_id": "dekker_counter-sc"
+    },
+    {
+      "configuration": {
+        "max_schedules": 500000,
+        "step_bound_per_thread": 10
+      },
+      "dpor": {
+        "bound_exceeded_executions": 245,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": true,
+          "race": true
+        },
+        "cycles_detected": 25,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 21,
+        "prefix_states_visited": 1492,
+        "primary_verdict": "race",
+        "schedules_explored": 281,
+        "schedules_pruned": 335872,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 25,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 4609
+      },
+      "memory_model": "sc",
+      "naive": {
+        "bound_exceeded_executions": 332023,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": true,
+          "race": true
+        },
+        "cycles_detected": 4032,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 21,
+        "prefix_states_visited": 773918,
+        "primary_verdict": "race",
+        "schedules_explored": 336153,
+        "schedules_pruned": 0,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 4032,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 1211296
+      },
+      "program_id": "dekker_counter_broken_drop_turn_wait",
+      "pruning": {
+        "dpor_schedules_explored": 281,
+        "naive_equivalent_schedules": 336153,
+        "pruning_fraction_denominator": 336153,
+        "pruning_fraction_numerator": 335872,
+        "pruning_percent_milli": 99916,
+        "schedules_pruned": 335872
+      },
+      "run_id": "dekker_counter_broken_drop_turn_wait-sc"
+    },
+    {
+      "configuration": {
+        "max_schedules": 100000,
+        "step_bound_per_thread": 20
+      },
+      "dpor": {
+        "bound_exceeded_executions": 0,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": true,
+          "error": false,
+          "nontermination": false,
+          "race": false
+        },
+        "cycles_detected": 0,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 8,
+        "prefix_states_visited": 18,
+        "primary_verdict": "deadlock",
+        "schedules_explored": 4,
+        "schedules_pruned": 4,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 0,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 118
+      },
+      "memory_model": "sc",
+      "naive": {
+        "bound_exceeded_executions": 0,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": true,
+          "error": false,
+          "nontermination": false,
+          "race": false
+        },
+        "cycles_detected": 0,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 8,
+        "prefix_states_visited": 32,
+        "primary_verdict": "deadlock",
+        "schedules_explored": 8,
+        "schedules_pruned": 0,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 0,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 95
+      },
+      "program_id": "lost_wakeup",
+      "pruning": {
+        "dpor_schedules_explored": 4,
+        "naive_equivalent_schedules": 8,
+        "pruning_fraction_denominator": 8,
+        "pruning_fraction_numerator": 4,
+        "pruning_percent_milli": 50000,
+        "schedules_pruned": 4
+      },
+      "run_id": "lost_wakeup-sc"
+    },
+    {
+      "configuration": {
+        "max_schedules": 100000,
+        "step_bound_per_thread": 10
+      },
+      "dpor": {
+        "bound_exceeded_executions": 21,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": true,
+          "race": false
+        },
+        "cycles_detected": 34,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 17,
+        "prefix_states_visited": 469,
+        "primary_verdict": "nontermination",
+        "schedules_explored": 85,
+        "schedules_pruned": 757,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 34,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 1422
+      },
+      "memory_model": "sc",
+      "naive": {
+        "bound_exceeded_executions": 322,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": true,
+          "race": false
+        },
+        "cycles_detected": 276,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 17,
+        "prefix_states_visited": 4667,
+        "primary_verdict": "nontermination",
+        "schedules_explored": 842,
+        "schedules_pruned": 0,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 276,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 9860
+      },
+      "program_id": "test_and_set_spinlock_counter",
+      "pruning": {
+        "dpor_schedules_explored": 85,
+        "naive_equivalent_schedules": 842,
+        "pruning_fraction_denominator": 842,
+        "pruning_fraction_numerator": 757,
+        "pruning_percent_milli": 89904,
+        "schedules_pruned": 757
+      },
+      "run_id": "test_and_set_spinlock_counter-sc"
+    },
+    {
+      "configuration": {
+        "max_schedules": 100000,
+        "step_bound_per_thread": 20
+      },
+      "dpor": {
+        "bound_exceeded_executions": 0,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": false,
+          "race": true
+        },
+        "cycles_detected": 0,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 6,
+        "prefix_states_visited": 12,
+        "primary_verdict": "race",
+        "schedules_explored": 2,
+        "schedules_pruned": 13,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 0,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 47
+      },
+      "memory_model": "sc",
+      "naive": {
+        "bound_exceeded_executions": 0,
+        "bug_shape": {
+          "assertion": false,
+          "deadlock": false,
+          "error": false,
+          "nontermination": false,
+          "race": true
+        },
+        "cycles_detected": 0,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 6,
+        "prefix_states_visited": 55,
+        "primary_verdict": "race",
+        "schedules_explored": 15,
+        "schedules_pruned": 0,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 0,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 108
+      },
+      "program_id": "mp_pso",
+      "pruning": {
+        "dpor_schedules_explored": 2,
+        "naive_equivalent_schedules": 15,
+        "pruning_fraction_denominator": 15,
+        "pruning_fraction_numerator": 13,
+        "pruning_percent_milli": 86666,
+        "schedules_pruned": 13
+      },
+      "run_id": "mp_pso-sc"
+    },
+    {
+      "configuration": {
+        "max_schedules": 100000,
+        "step_bound_per_thread": 20
+      },
+      "dpor": {
+        "bound_exceeded_executions": 0,
+        "bug_shape": {
+          "assertion": true,
+          "deadlock": false,
+          "error": false,
+          "nontermination": false,
+          "race": true
+        },
+        "cycles_detected": 0,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 8,
+        "prefix_states_visited": 35,
+        "primary_verdict": "race",
+        "schedules_explored": 6,
+        "schedules_pruned": 204,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 0,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 131
+      },
+      "memory_model": "pso",
+      "naive": {
+        "bound_exceeded_executions": 0,
+        "bug_shape": {
+          "assertion": true,
+          "deadlock": false,
+          "error": false,
+          "nontermination": false,
+          "race": true
+        },
+        "cycles_detected": 0,
+        "exploration_capped": false,
+        "fair_cycles": 0,
+        "max_depth": 8,
+        "prefix_states_visited": 677,
+        "primary_verdict": "race",
+        "schedules_explored": 210,
+        "schedules_pruned": 0,
+        "strongly_unfair_cycles": 0,
+        "unfair_cycles": 0,
+        "wall_clock_note": "environment-dependent; excluded from deterministic comparison",
+        "wall_clock_us": 908
+      },
+      "program_id": "mp_pso",
+      "pruning": {
+        "dpor_schedules_explored": 6,
+        "naive_equivalent_schedules": 210,
+        "pruning_fraction_denominator": 210,
+        "pruning_fraction_numerator": 204,
+        "pruning_percent_milli": 97142,
+        "schedules_pruned": 204
+      },
+      "run_id": "mp_pso-pso"
+    }
+  ],
+  "schema_version": 1,
+  "wall_clock_policy": "wall_clock_us is measured with a monotonic host clock and is excluded from byte-determinism checks; all other fields are checked after normalization"
+}
