@@ -4,7 +4,7 @@ This document is the story of how this checker was built and — more
 importantly — how it was kept sound. The short version: **every pruning
 algorithm in this project is checked against an exhaustive oracle by three
 differential gates, and those gates caught two real soundness bugs that had
-survived careful human review.** Everything else is architecture in service
+survived careful review.** Everything else is architecture in service
 of that loop.
 
 ## The core bet: keep the slow oracle forever
