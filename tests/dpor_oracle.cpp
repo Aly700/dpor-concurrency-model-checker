@@ -1,4 +1,5 @@
 #include "model/checker.hpp"
+#include "oracle_options.hpp"
 
 #ifdef DPOR_SYMMETRY_DIAGNOSIS
 #include "symmetry_diagnosis.hpp"
@@ -701,7 +702,7 @@ void assert_disabled_transition_fallback_finds_deadlock() {
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
     require(kActions.size() == 28,
             "two-thread oracle alphabet must include TimedWait and conversions");
     const model::Action& try_lock_entry = kActions.at(8);
@@ -755,11 +756,13 @@ int main() {
     // is capped
     // at 2048 programs; larger length pairs use evenly spaced encoded indexes,
     // not randomness.
-    constexpr std::uint64_t kProgramsPerLengthPairCap = 2048;
+    const std::uint64_t programs_per_length_pair_cap =
+        oracle_options::program_cap(argc, argv, 2048);
     for (std::size_t lhs_length = 0; lhs_length <= 3; ++lhs_length) {
         for (std::size_t rhs_length = 0; rhs_length <= 3; ++rhs_length) {
             const auto count = pow_actions(lhs_length + rhs_length);
-            const auto samples = std::min<std::uint64_t>(count, kProgramsPerLengthPairCap);
+            const auto samples =
+                std::min<std::uint64_t>(count, programs_per_length_pair_cap);
             for (std::uint64_t sample = 0; sample < samples; ++sample) {
                 const auto encoded = count == samples ? sample : (sample * count) / samples;
                 cross_validate_program(
@@ -833,7 +836,7 @@ int main() {
 
     std::cout << "dpor_oracle: programs checked=" << programs_checked
               << " alphabet=" << kActions.size()
-              << " cap_per_length_pair=" << kProgramsPerLengthPairCap
+              << " cap_per_length_pair=" << programs_per_length_pair_cap
               << " naive schedules total=" << naive_total
               << " dpor schedules total=" << dpor_total
               << " naive_fair_cycles=" << cycle_counts.naive_fair

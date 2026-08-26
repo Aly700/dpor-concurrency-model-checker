@@ -7,7 +7,6 @@
 
 #include <chrono>
 #include <cstdint>
-#include <iostream>
 #endif
 
 #include <sys/wait.h>
@@ -15,10 +14,12 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iostream>
 #include <optional>
 #include <sstream>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace {
@@ -685,8 +686,29 @@ const std::vector<GalleryCase>& gallery_cases() {
     return cases;
 }
 
-void verify_gallery_with_library(const std::filesystem::path& source_dir) {
+bool sanitizer_smoke_case(const std::string& file) {
+    constexpr std::string_view files[] = {
+        "test_and_set_spinlock_counter.dpor",
+        "test_and_set_spinlock_counter_broken_outside_section.dpor",
+        "peterson_inside_assert.dpor",
+        "treiber_push.dpor",
+        "treiber_push_broken_load_store.dpor",
+        "rwlock_upgrade_double_deadlock.dpor",
+    };
+    for (const std::string_view candidate : files) {
+        if (file == candidate) {
+            return true;
+        }
+    }
+    return false;
+}
+
+void verify_gallery_with_library(const std::filesystem::path& source_dir,
+                                 bool sanitizer_smoke) {
     for (const GalleryCase& test_case : gallery_cases()) {
+        if (sanitizer_smoke && !sanitizer_smoke_case(test_case.file)) {
+            continue;
+        }
         const model::Program program = cli::parse_program_file(gallery_file(source_dir, test_case.file).string());
         const model::ModelChecker checker(program, test_case.step_bound, test_case.memory_model);
 #ifdef DPOR_SYMMETRY_DIAGNOSIS
@@ -747,9 +769,11 @@ void verify_gallery_with_library(const std::filesystem::path& source_dir) {
 
 void verify_broken_variants_with_cli(const std::filesystem::path& binary,
                                      const std::filesystem::path& source_dir,
-                                     const std::filesystem::path& work_dir) {
+                                     const std::filesystem::path& work_dir,
+                                     bool sanitizer_smoke) {
     for (const GalleryCase& test_case : gallery_cases()) {
-        if (test_case.broken &&
+        if ((!sanitizer_smoke || sanitizer_smoke_case(test_case.file)) &&
+            test_case.broken &&
             test_case.file !=
                 "mesa_broadcast_consumers_broken_single_signal.dpor") {
             require_cli_round_trip(binary, source_dir, work_dir, test_case);
@@ -759,7 +783,8 @@ void verify_broken_variants_with_cli(const std::filesystem::path& binary,
 
 void verify_feature_goldens(const std::filesystem::path& binary,
                             const std::filesystem::path& source_dir,
-                            const std::filesystem::path& work_dir) {
+                            const std::filesystem::path& work_dir,
+                            bool sanitizer_smoke) {
     struct GoldenCase {
         const char* program;
         const char* golden;
@@ -787,6 +812,9 @@ void verify_feature_goldens(const std::filesystem::path& binary,
     };
 
     for (const GoldenCase& test_case : cases) {
+        if (sanitizer_smoke && !sanitizer_smoke_case(test_case.program)) {
+            continue;
+        }
         const auto result = run_command(
             binary,
             {"check",
@@ -818,17 +846,23 @@ void verify_feature_goldens(const std::filesystem::path& binary,
 } // namespace
 
 int main(int argc, char** argv) {
-    if (argc != 3) {
-        fail("usage: classic_gallery_tests <dpor-binary> <source-dir>");
+    const bool sanitizer_smoke =
+        argc == 4 && std::string_view(argv[3]) == "--sanitizer-smoke";
+    if (argc != 3 && !sanitizer_smoke) {
+        fail("usage: classic_gallery_tests <dpor-binary> <source-dir> "
+             "[--sanitizer-smoke]");
     }
 
     const std::filesystem::path binary = argv[1];
     const std::filesystem::path source_dir = argv[2];
     const std::filesystem::path work_dir = std::filesystem::current_path();
 
-    verify_gallery_with_library(source_dir);
-    verify_broken_variants_with_cli(binary, source_dir, work_dir);
-    verify_feature_goldens(binary, source_dir, work_dir);
+    verify_gallery_with_library(source_dir, sanitizer_smoke);
+    verify_broken_variants_with_cli(binary, source_dir, work_dir, sanitizer_smoke);
+    verify_feature_goldens(binary, source_dir, work_dir, sanitizer_smoke);
+    if (sanitizer_smoke) {
+        std::cout << "classic_gallery_tests: sanitizer smoke cases=6\n";
+    }
 #ifdef DPOR_SYMMETRY_DIAGNOSIS
     symmetry_diagnosis::print_summaries(std::cout);
 #endif

@@ -428,6 +428,8 @@ DPOR is from one schedule per Mazurkiewicz class:
    program compares with zero skips; the TimedWait corpus is 4/4/0.
 
 All gates are deterministic and run in CI on Linux and macOS.
+Linux CI runs core tests and bounded exhaustive checks under Clang ASan and UBSan.
+Linux CI runs the same checks under Clang TSan.
 
 ## Design records
 

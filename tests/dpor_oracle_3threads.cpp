@@ -8,6 +8,7 @@
 // of every DPOR report. This targets the disabled-transition backtrack
 // fallback, which 2-thread sweeps exercise only weakly.
 #include "model/checker.hpp"
+#include "oracle_options.hpp"
 
 #ifdef DPOR_SYMMETRY_DIAGNOSIS
 #include "symmetry_diagnosis.hpp"
@@ -375,7 +376,7 @@ void cross_validate_program(const Program& p,
 
 } // namespace
 
-int main() {
+int main(int argc, char* argv[]) {
     const std::vector<Action> alphabet = {
         read("x"),
         write("x"),
@@ -449,8 +450,9 @@ int main() {
     std::size_t combos = 1;
     for (int i = 0; i < 6; ++i) combos *= k;
 
-    constexpr std::size_t kProgramsCap = 65536;
-    const std::size_t samples = std::min(combos, kProgramsCap);
+    const std::size_t programs_cap =
+        oracle_options::program_cap(argc, argv, 65536);
+    const std::size_t samples = std::min(combos, programs_cap);
     for (std::size_t sample = 0; sample < samples; ++sample) {
         const std::size_t code = combos == samples ? sample : (sample * combos) / samples;
         std::size_t c = code;
@@ -574,7 +576,7 @@ int main() {
     std::cout << "3-thread sweep: programs=" << checked
               << " alphabet=" << k
               << " action_slots=6"
-              << " cap=" << kProgramsCap
+              << " cap=" << programs_cap
               << " naive_schedules=" << naive_total
               << " dpor_schedules=" << dpor_total
               << " strict_reductions=" << strict << "\n";

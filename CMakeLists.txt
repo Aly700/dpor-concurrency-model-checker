@@ -22,6 +22,9 @@ option(DPOR_ENABLE_RESTORE_ASSERTS
 option(DPOR_BUILD_SYMMETRY_DIAGNOSIS
        "Build default-off thread-symmetry opportunity diagnostics"
        OFF)
+option(DPOR_BUILD_SANITIZER_SMOKE_TESTS
+       "Register bounded smoke tests for sanitizer builds"
+       OFF)
 
 add_library(model_checker
     src/model/action.cpp
@@ -265,12 +268,82 @@ add_test(NAME tso_litmus COMMAND tso_litmus)
 add_test(NAME pso_litmus COMMAND pso_litmus)
 add_test(NAME tso_oracle COMMAND tso_oracle)
 add_test(NAME pso_oracle COMMAND pso_oracle)
+set_tests_properties(
+    dpor_oracle
+    dpor_oracle_3threads
+    tso_oracle
+    pso_oracle
+    PROPERTIES LABELS exhaustive
+)
+
+if(DPOR_BUILD_SANITIZER_SMOKE_TESTS)
+    add_test(
+        NAME dpor_oracle_sanitizer_smoke
+        COMMAND dpor_oracle --program-cap 8
+    )
+    set_tests_properties(
+        dpor_oracle_sanitizer_smoke
+        PROPERTIES
+            LABELS sanitizer_smoke
+            PASS_REGULAR_EXPRESSION "cap_per_length_pair=8"
+    )
+
+    add_test(
+        NAME dpor_oracle_3threads_sanitizer_smoke
+        COMMAND dpor_oracle_3threads --program-cap 64
+    )
+    set_tests_properties(
+        dpor_oracle_3threads_sanitizer_smoke
+        PROPERTIES
+            LABELS sanitizer_smoke
+            PASS_REGULAR_EXPRESSION "cap=64"
+    )
+
+    add_test(
+        NAME tso_oracle_sanitizer_smoke
+        COMMAND tso_oracle --program-cap 8
+    )
+    set_tests_properties(
+        tso_oracle_sanitizer_smoke
+        PROPERTIES
+            LABELS sanitizer_smoke
+            PASS_REGULAR_EXPRESSION "cap_per_length_pair=8"
+    )
+
+    add_test(
+        NAME pso_oracle_sanitizer_smoke
+        COMMAND pso_oracle --program-cap 8
+    )
+    set_tests_properties(
+        pso_oracle_sanitizer_smoke
+        PROPERTIES
+            LABELS sanitizer_smoke
+            PASS_REGULAR_EXPRESSION "cap_per_length_pair=8"
+    )
+endif()
+
 add_test(NAME model_inclusion COMMAND model_inclusion)
 add_test(NAME nontermination_tests COMMAND nontermination_tests)
 add_test(NAME fairness_tests COMMAND fairness_tests)
 add_test(NAME spawn_tests COMMAND spawn_tests)
 add_test(NAME cli_tests COMMAND cli_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})
 add_test(NAME classic_gallery_tests COMMAND classic_gallery_tests $<TARGET_FILE:dpor> ${CMAKE_SOURCE_DIR})
+set_tests_properties(classic_gallery_tests PROPERTIES LABELS exhaustive)
+if(DPOR_BUILD_SANITIZER_SMOKE_TESTS)
+    add_test(
+        NAME classic_gallery_sanitizer_smoke
+        COMMAND classic_gallery_tests
+                $<TARGET_FILE:dpor>
+                ${CMAKE_SOURCE_DIR}
+                --sanitizer-smoke
+    )
+    set_tests_properties(
+        classic_gallery_sanitizer_smoke
+        PROPERTIES
+            LABELS sanitizer_smoke
+            PASS_REGULAR_EXPRESSION "sanitizer smoke cases=6"
+    )
+endif()
 add_test(NAME dpor_fuzz_differential COMMAND dpor_fuzz_differential)
 add_test(NAME showcase_export_api_tests COMMAND showcase_export_api_tests)
 add_test(

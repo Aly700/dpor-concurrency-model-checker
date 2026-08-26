@@ -20,3 +20,57 @@ jobs:
         run: cmake --build build --parallel
       - name: Test
         run: ctest --test-dir build --output-on-failure
+
+  address-undefined-sanitizers:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S . -B build-asan
+          -DCMAKE_BUILD_TYPE=Debug
+          -DDPOR_BUILD_SANITIZER_SMOKE_TESTS=ON
+          -DCMAKE_CXX_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined -fno-sanitize-recover=all"
+      - name: Build
+        run: cmake --build build-asan --parallel
+      - name: Test core suite
+        run: >-
+          ctest --test-dir build-asan --output-on-failure
+          --parallel 2
+          --label-exclude "exhaustive|sanitizer_smoke"
+      - name: Test bounded checks
+        run: >-
+          ctest --test-dir build-asan --output-on-failure
+          --parallel 2
+          --label-regex sanitizer_smoke
+
+  thread-sanitizer:
+    runs-on: ubuntu-latest
+    env:
+      CC: clang
+      CXX: clang++
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure
+        run: >-
+          cmake -S . -B build-tsan
+          -DCMAKE_BUILD_TYPE=Debug
+          -DDPOR_BUILD_SANITIZER_SMOKE_TESTS=ON
+          -DCMAKE_CXX_FLAGS="-fsanitize=thread"
+          -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=thread"
+      - name: Build
+        run: cmake --build build-tsan --parallel
+      - name: Test core suite
+        run: >-
+          ctest --test-dir build-tsan --output-on-failure
+          --parallel 2
+          --label-exclude "exhaustive|sanitizer_smoke"
+      - name: Test bounded checks
+        run: >-
+          ctest --test-dir build-tsan --output-on-failure
+          --parallel 2
+          --label-regex sanitizer_smoke
