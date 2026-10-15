@@ -1,0 +1,122 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="1000" viewBox="0 0 1200 1000" font-family="Helvetica Neue, Helvetica, Arial, Liberation Sans, sans-serif" font-size="12" fill="#1d2430">
+<title>DPOR model checker architecture</title>
+<defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M0 0L10 5L0 10z" fill="#1d2430"/></marker></defs>
+<rect width="1200" height="1000" fill="#ffffff"/>
+<rect data-kind="region" data-id="cli" x="270" y="40" width="640" height="200" rx="2" fill="none" stroke="#2a9d8f" stroke-width="1.4" stroke-dasharray="6 4"/>
+<rect data-kind="region-icon" data-of="cli" x="278" y="48" width="22" height="22" fill="#2a9d8f"/><g data-kind="region-icon-art" data-of="cli" transform="translate(281.0,51.0) scale(0.667)" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M7 9l3 3-3 3M12 15h5"/></g>
+<text data-kind="region-label" data-of="cli" x="306" y="64" font-size="13" font-weight="600" fill="#1d2430">dpor CLI</text>
+<rect data-kind="region" data-id="lib" x="280" y="300" width="900" height="680" rx="2" fill="none" stroke="#5b4bb7" stroke-width="1.4" stroke-dasharray="6 4"/>
+<rect data-kind="region-icon" data-of="lib" x="288" y="308" width="22" height="22" fill="#5b4bb7"/><g data-kind="region-icon-art" data-of="lib" transform="translate(291.0,311.0) scale(0.667)" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="6" y="6" width="12" height="12" rx="1.5"/><rect x="9.5" y="9.5" width="5" height="5"/><path d="M9 2.5v3.5M15 2.5v3.5M9 18v3.5M15 18v3.5M2.5 9h3.5M2.5 15h3.5M18 9h3.5M18 15h3.5"/></g>
+<text data-kind="region-label" data-of="lib" x="316" y="324" font-size="13" font-weight="600" fill="#1d2430">model_checker library · ModelChecker</text>
+<rect data-kind="region" data-id="gates" x="20" y="440" width="230" height="540" rx="2" fill="none" stroke="#2a9d8f" stroke-width="1.4" stroke-dasharray="6 4"/>
+<rect data-kind="region-icon" data-of="gates" x="28" y="448" width="22" height="22" fill="#2a9d8f"/><g data-kind="region-icon-art" data-of="gates" transform="translate(31.0,451.0) scale(0.667)" fill="none" stroke="#ffffff" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M7.5 12.5l3 3 6-7"/></g>
+<text data-kind="region-label" data-of="gates" x="56" y="464" font-size="13" font-weight="600" fill="#1d2430">Verification gates · ctest ·</text>
+<text data-kind="region-label" data-of="gates" x="56" y="480" font-size="13" font-weight="600" fill="#1d2430">CI on ubuntu and macos ·</text>
+<text data-kind="region-label" data-of="gates" x="56" y="496" font-size="13" font-weight="600" fill="#1d2430">ASan, UBSan, TSan</text>
+<path data-kind="edge" data-edge="0" data-from="program" data-to="parser" data-n="1" d="M230.0 155.0 L300.0 155.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="1" data-edge="0" cx="250.0" cy="155.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="1" data-edge="0" x="250.0" y="159.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">1</text>
+<path data-kind="edge" data-edge="1" data-from="parser" data-to="interp" data-n="2" d="M500.0 155.0 L620.0 155.0 L620.0 345.0 L420.0 345.0 L420.0 390.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="2" data-edge="1" cx="620.0" cy="270.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="2" data-edge="1" x="620.0" y="274.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">2</text>
+<path data-kind="edge" data-edge="2" data-from="interp" data-to="dpor" data-n="3" d="M420.0 500.0 L420.0 550.0 L760.0 550.0 L760.0 600.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-start="url(#arr)" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="3" data-edge="2" cx="600.0" cy="550.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="3" data-edge="2" x="600.0" y="554.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">3</text>
+<text data-kind="edge-label" data-edge="2" x="500.0" y="532.0" font-size="10.5" fill="#6b7280" text-anchor="middle">one step on a copied state</text>
+<path data-kind="edge" data-edge="3" data-from="interp" data-to="clocks" data-n="4" d="M530.0 456.0 L650.0 456.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="4" data-edge="3" cx="590.0" cy="456.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="4" data-edge="3" x="590.0" y="460.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">4</text>
+<path data-kind="edge" data-edge="4" data-from="interp" data-to="lasso" data-n="5" d="M530.0 409.8 L565.0 409.8 L565.0 365.0 L1030.0 365.0 L1030.0 390.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="5" data-edge="4" cx="850.0" cy="365.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="5" data-edge="4" x="850.0" y="369.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">5</text>
+<path data-kind="edge" data-edge="5" data-from="dpor" data-to="dpor" data-n="6" d="M815.0 600.0 L815.0 560.0 L900.0 560.0 L900.0 630.0 L870.0 630.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="6" data-edge="5" cx="900.0" cy="590.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="6" data-edge="5" x="900.0" y="594.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">6</text>
+<text data-kind="edge-label" data-edge="5" x="940.0" y="544.0" font-size="10.5" fill="#6b7280" text-anchor="middle">next interleaving</text>
+<path data-kind="edge" data-edge="6" data-from="dpor" data-to="minimizer" data-n="7" d="M870.0 688.0 L1030.0 688.0 L1030.0 830.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="7" data-edge="6" cx="1030.0" cy="760.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="7" data-edge="6" x="1030.0" y="764.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">7</text>
+<text data-kind="edge-label" data-edge="6" x="940.0" y="771.0" font-size="10.5" fill="#6b7280" text-anchor="middle">CheckResult: first race,</text>
+<text data-kind="edge-label" data-edge="6" x="940.0" y="784.0" font-size="10.5" fill="#6b7280" text-anchor="middle">deadlock, assertion or lasso</text>
+<path data-kind="edge" data-edge="7" data-from="minimizer" data-to="report" data-n="8" d="M1130.0 885.0 L1160.0 885.0 L1160.0 265.0 L780.0 265.0 L780.0 210.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="8" data-edge="7" cx="975.0" cy="265.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="8" data-edge="7" x="975.0" y="269.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">8</text>
+<path data-kind="edge" data-edge="8" data-from="report" data-to="verdict" data-n="9" d="M870.0 155.0 L970.0 155.0" fill="none" stroke="#1d2430" stroke-width="1.4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="9" data-edge="8" cx="940.0" cy="155.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="9" data-edge="8" x="940.0" y="159.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">9</text>
+<path data-kind="edge" data-edge="9" data-from="schedule" data-to="parser" data-n="10" d="M125.0 300.0 L125.0 260.0 L340.0 260.0 L340.0 210.0" fill="none" stroke="#1d2430" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+<circle data-kind="badge" data-n="10" data-edge="9" cx="250.0" cy="260.0" r="10" fill="#232f3e" stroke="#ffffff" stroke-width="1.5"/><text data-kind="badge-text" data-n="10" data-edge="9" x="250.0" y="264.0" text-anchor="middle" font-size="11" font-weight="700" fill="#ffffff">10</text>
+<text data-kind="edge-label" data-edge="9" x="135.0" y="243.0" font-size="10.5" fill="#6b7280" text-anchor="middle">dpor replay --schedule</text>
+<path data-kind="edge" data-edge="10" data-from="naive" data-to="dpor" data-n="" d="M530.0 655.0 L650.0 655.0" fill="none" stroke="#1d2430" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+<text data-kind="edge-label" data-edge="10" x="590.0" y="625.0" font-size="10.5" fill="#6b7280" text-anchor="middle">same bugs,</text>
+<text data-kind="edge-label" data-edge="10" x="590.0" y="638.0" font-size="10.5" fill="#6b7280" text-anchor="middle">more schedules</text>
+<path data-kind="edge" data-edge="11" data-from="g1" data-to="naive" data-n="" d="M230.0 570.0 L270.0 570.0 L270.0 655.0 L310.0 655.0" fill="none" stroke="#1d2430" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+<path data-kind="edge" data-edge="12" data-from="g2" data-to="dpor" data-n="" d="M230.0 682.0 L260.0 682.0 L260.0 750.0 L760.0 750.0 L760.0 710.0" fill="none" stroke="#1d2430" stroke-width="1.4" stroke-dasharray="5 4" marker-end="url(#arr)"/>
+<rect data-kind="node" data-id="program" x="20" y="100" width="210" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="program" transform="translate(110.0,108.0) scale(1.250)" fill="none" stroke="#1d2430" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5"/></g>
+<text data-kind="node-text" data-of="program" x="125.0" y="153.0" text-anchor="middle" font-size="12" font-weight="600">Program</text>
+<text data-kind="node-text" data-of="program" x="125.0" y="167.0" text-anchor="middle" font-size="12" font-weight="400">.dpor text</text>
+<text data-kind="node-text" data-of="program" x="125.0" y="182.0" text-anchor="middle" font-size="10.5" fill="#6b7280">thread: blocks of actions</text>
+<rect data-kind="node" data-id="schedule" x="20" y="300" width="210" height="110" rx="2" fill="#ffffff" stroke="#6b7280" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="schedule" transform="translate(110.0,308.0) scale(1.250)" fill="none" stroke="#6b7280" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></g>
+<text data-kind="node-text" data-of="schedule" x="125.0" y="353.0" text-anchor="middle" font-size="12" font-weight="600">Schedule file</text>
+<text data-kind="node-text" data-of="schedule" x="125.0" y="367.0" text-anchor="middle" font-size="12" font-weight="400">thread action_index per line</text>
+<rect data-kind="node" data-id="verdict" x="970" y="100" width="210" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="verdict" transform="translate(1060.0,108.0) scale(1.250)" fill="none" stroke="#1d2430" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M5 21V4M5 4h11l-2 4 2 4H5"/></g>
+<text data-kind="node-text" data-of="verdict" x="1075.0" y="153.0" text-anchor="middle" font-size="12" font-weight="600">Verdict</text>
+<text data-kind="node-text" data-of="verdict" x="1075.0" y="167.0" text-anchor="middle" font-size="12" font-weight="400">race · deadlock · assertion · error</text>
+<text data-kind="node-text" data-of="verdict" x="1075.0" y="181.0" text-anchor="middle" font-size="12" font-weight="400">nontermination · clean</text>
+<text data-kind="node-text" data-of="verdict" x="1075.0" y="196.0" text-anchor="middle" font-size="10.5" fill="#6b7280">exit 0 clean · 1 bug · 2 error</text>
+<rect data-kind="node" data-id="parser" x="300" y="100" width="200" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="parser" transform="translate(385.0,108.0) scale(1.250)" fill="none" stroke="#2a9d8f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5M13.5 4l-3 16"/></g>
+<text data-kind="node-text" data-of="parser" x="400.0" y="153.0" text-anchor="middle" font-size="12" font-weight="600">Parser</text>
+<text data-kind="node-text" data-of="parser" x="400.0" y="167.0" text-anchor="middle" font-size="12" font-weight="400">parse_program_file</text>
+<text data-kind="node-text" data-of="parser" x="400.0" y="182.0" text-anchor="middle" font-size="10.5" fill="#6b7280">+ parse_schedule_file</text>
+<rect data-kind="node" data-id="report" x="690" y="100" width="180" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="report" transform="translate(765.0,108.0) scale(1.250)" fill="none" stroke="#2a9d8f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></g>
+<text data-kind="node-text" data-of="report" x="780.0" y="153.0" text-anchor="middle" font-size="12" font-weight="600">Report printer</text>
+<text data-kind="node-text" data-of="report" x="780.0" y="167.0" text-anchor="middle" font-size="12" font-weight="400">cli::print_report</text>
+<text data-kind="node-text" data-of="report" x="780.0" y="182.0" text-anchor="middle" font-size="10.5" fill="#6b7280">verdict · trace · schedule</text>
+<rect data-kind="node" data-id="interp" x="310" y="390" width="220" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="interp" transform="translate(405.0,398.0) scale(1.250)" fill="none" stroke="#5b4bb7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M4 6h16M4 12h16M4 18h16"/><circle cx="8" cy="6" r="1.6" fill="currentColor"/><circle cx="15" cy="12" r="1.6" fill="currentColor"/><circle cx="10" cy="18" r="1.6" fill="currentColor"/></g>
+<text data-kind="node-text" data-of="interp" x="420.0" y="443.0" text-anchor="middle" font-size="12" font-weight="600">Interpreter / scheduler</text>
+<text data-kind="node-text" data-of="interp" x="420.0" y="457.0" text-anchor="middle" font-size="12" font-weight="400">ExecutionState · enabled_steps</text>
+<text data-kind="node-text" data-of="interp" x="420.0" y="472.0" text-anchor="middle" font-size="10.5" fill="#6b7280">memory models SC · TSO · PSO</text>
+<rect data-kind="node" data-id="clocks" x="650" y="390" width="220" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="clocks" transform="translate(745.0,398.0) scale(1.250)" fill="none" stroke="#5b4bb7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/></g>
+<text data-kind="node-text" data-of="clocks" x="760.0" y="443.0" text-anchor="middle" font-size="12" font-weight="600">Vector clocks</text>
+<text data-kind="node-text" data-of="clocks" x="760.0" y="457.0" text-anchor="middle" font-size="12" font-weight="400">happens-before · race check</text>
+<text data-kind="node-text" data-of="clocks" x="760.0" y="472.0" text-anchor="middle" font-size="10.5" fill="#6b7280">last write · reads since</text>
+<rect data-kind="node" data-id="lasso" x="930" y="390" width="200" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="lasso" transform="translate(1015.0,398.0) scale(1.250)" fill="none" stroke="#5b4bb7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7h8a4 4 0 0 1 0 8H5"/><path d="M8 12l-3 3 3 3"/></g>
+<text data-kind="node-text" data-of="lasso" x="1030.0" y="443.0" text-anchor="middle" font-size="12" font-weight="600">Lasso detection</text>
+<text data-kind="node-text" data-of="lasso" x="1030.0" y="457.0" text-anchor="middle" font-size="12" font-weight="400">exact state fingerprints</text>
+<text data-kind="node-text" data-of="lasso" x="1030.0" y="472.0" text-anchor="middle" font-size="10.5" fill="#6b7280">stem + cycle · fairness label</text>
+<rect data-kind="node" data-id="dpor" x="650" y="600" width="220" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="dpor" transform="translate(745.0,608.0) scale(1.250)" fill="none" stroke="#5b4bb7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="5" r="2"/><circle cx="18" cy="5" r="2"/><circle cx="12" cy="19" r="2"/><path d="M6 7v3a3 3 0 0 0 3 3h6a3 3 0 0 0 3-3V7M12 13v4"/></g>
+<text data-kind="node-text" data-of="dpor" x="760.0" y="653.0" text-anchor="middle" font-size="12" font-weight="600">DPOR exploration</text>
+<text data-kind="node-text" data-of="dpor" x="760.0" y="667.0" text-anchor="middle" font-size="12" font-weight="400">dpor_dfs · persistent + sleep sets</text>
+<text data-kind="node-text" data-of="dpor" x="760.0" y="682.0" text-anchor="middle" font-size="10.5" fill="#6b7280">backtrack points from the trace</text>
+<rect data-kind="node" data-id="naive" x="310" y="600" width="220" height="110" rx="2" fill="#ffffff" stroke="#6b7280" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="naive" transform="translate(405.0,608.0) scale(1.250)" fill="none" stroke="#6b7280" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="5" r="2.2"/><circle cx="6" cy="13" r="2.2"/><circle cx="18" cy="13" r="2.2"/><circle cx="9" cy="20" r="1.8"/><circle cx="15" cy="20" r="1.8"/><path d="M10.5 6.8 7.4 11M13.5 6.8l3.1 4.2M6.8 15l1.6 3.2M17.2 15l-1.6 3.2"/></g>
+<text data-kind="node-text" data-of="naive" x="420.0" y="653.0" text-anchor="middle" font-size="12" font-weight="600">Naive explorer</text>
+<text data-kind="node-text" data-of="naive" x="420.0" y="667.0" text-anchor="middle" font-size="12" font-weight="400">explore_naive oracle</text>
+<rect data-kind="node" data-id="minimizer" x="930" y="830" width="200" height="110" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="minimizer" transform="translate(1015.0,838.0) scale(1.250)" fill="none" stroke="#5b4bb7" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M7.5 12.5l3 3 6-7"/></g>
+<text data-kind="node-text" data-of="minimizer" x="1030.0" y="883.0" text-anchor="middle" font-size="12" font-weight="600">Minimizer + replay</text>
+<text data-kind="node-text" data-of="minimizer" x="1030.0" y="897.0" text-anchor="middle" font-size="12" font-weight="400">minimize_result_reports</text>
+<text data-kind="node-text" data-of="minimizer" x="1030.0" y="912.0" text-anchor="middle" font-size="10.5" fill="#6b7280">1-minimal · replay-validated</text>
+<rect data-kind="node" data-id="g1" x="40" y="520" width="190" height="100" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="g1" transform="translate(123.0,528.0) scale(1.000)" fill="none" stroke="#2a9d8f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="1"/><path d="M3 9h18M3 14h18M9 4v16M15 4v16"/></g>
+<text data-kind="node-text" data-of="g1" x="135.0" y="567.0" text-anchor="middle" font-size="12" font-weight="600">Oracle sweeps</text>
+<text data-kind="node-text" data-of="g1" x="135.0" y="581.0" text-anchor="middle" font-size="12" font-weight="400">22,903 two-thread</text>
+<text data-kind="node-text" data-of="g1" x="135.0" y="595.0" text-anchor="middle" font-size="12" font-weight="400">65,547 three-thread</text>
+<rect data-kind="node" data-id="g2" x="40" y="632" width="190" height="100" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="g2" transform="translate(123.0,640.0) scale(1.000)" fill="none" stroke="#2a9d8f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12c2-5 4-5 6 0s4 5 6 0 4-5 6 0"/></g>
+<text data-kind="node-text" data-of="g2" x="135.0" y="679.0" text-anchor="middle" font-size="12" font-weight="600">Seeded fuzz</text>
+<text data-kind="node-text" data-of="g2" x="135.0" y="693.0" text-anchor="middle" font-size="12" font-weight="400">3,000 random programs</text>
+<text data-kind="node-text" data-of="g2" x="135.0" y="707.0" text-anchor="middle" font-size="12" font-weight="400">per run, naive vs DPOR</text>
+<rect data-kind="node" data-id="g3" x="40" y="744" width="190" height="100" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="g3" transform="translate(123.0,752.0) scale(1.000)" fill="none" stroke="#2a9d8f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v18M5 21h14M12 6l-6 6h12zM6 12a3 3 0 0 0 6 0M12 12a3 3 0 0 0 6 0"/></g>
+<text data-kind="node-text" data-of="g3" x="135.0" y="791.0" text-anchor="middle" font-size="12" font-weight="600">Optimality + inclusion</text>
+<text data-kind="node-text" data-of="g3" x="135.0" y="805.0" text-anchor="middle" font-size="12" font-weight="400">1,747 programs</text>
+<text data-kind="node-text" data-of="g3" x="135.0" y="819.0" text-anchor="middle" font-size="12" font-weight="400">17,470 checks</text>
+<rect data-kind="node" data-id="g4" x="40" y="856" width="190" height="100" rx="2" fill="#ffffff" stroke="#1d2430" stroke-width="1.2"/>
+<g data-kind="node-icon" data-of="g4" transform="translate(123.0,864.0) scale(1.000)" fill="none" stroke="#2a9d8f" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 3h8l5 5v13H6z"/><path d="M14 3v5h5M9 12h7M9 16h7"/></g>
+<text data-kind="node-text" data-of="g4" x="135.0" y="903.0" text-anchor="middle" font-size="12" font-weight="600">Golden reports</text>
+<text data-kind="node-text" data-of="g4" x="135.0" y="917.0" text-anchor="middle" font-size="12" font-weight="400">byte-identical output</text>
+<text data-kind="node-text" data-of="g4" x="135.0" y="931.0" text-anchor="middle" font-size="12" font-weight="400">across runs and OSes</text>
+<text data-kind="note" data-note="0" x="310" y="910" font-size="10.5" fill="#6b7280" font-style="italic">no OS threads, no clock, no randomness in the core: every run is byte-identical</text>
+<text data-kind="note" data-note="1" x="310" y="935" font-size="10.5" fill="#6b7280" font-style="italic">each ExecutedTransition joins the trace; the last dependent, happens-before-unordered step gets a backtrack point</text>
+</svg>
