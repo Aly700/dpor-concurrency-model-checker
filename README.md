@@ -10,6 +10,12 @@ exactly. Non-termination reports instead ship an intentionally unminimized
 lasso witness, because deleting steps cannot in general preserve the repeated
 state that proves the cycle.
 
+## Architecture
+
+![DPOR model checker architecture: the CLI parses a program, the library explores interleavings and the gates compare DPOR against an exhaustive oracle](docs/architecture.svg)
+
+The numbered arrows are walked one by one in [docs/architecture.md](docs/architecture.md), with the component table, the trust and data boundaries, and where each guarantee is proven.
+
 ## What it models
 
 | Domain | Actions | Semantics |
